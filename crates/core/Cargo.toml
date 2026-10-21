@@ -1,0 +1,10 @@
+[package]
+name = "pudduscroll-core"
+version = "0.1.0"
+edition = "2021"
+description = "Placement, crop, layering, clipping, and export for PudduScroll"
+license = "MIT"
+publish = false
+
+[dependencies]
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp"] }
