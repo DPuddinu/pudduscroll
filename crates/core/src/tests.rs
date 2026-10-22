@@ -260,6 +260,57 @@ fn vertical_overflow_is_clipped_to_the_canvas() {
 }
 
 #[test]
+fn placement_snaps_to_eighth_grid_without_changing_aspect() {
+    assert_eq!(CANVAS_GRID, 8);
+    assert!((CANVAS_GRID_STEP * CANVAS_GRID as f32 - 1.0).abs() < 1e-6);
+
+    let mut doc = Document::new(AspectRatio::FOUR_FIVE);
+    let id = doc.add_photo("wide", 300, 200);
+    let ratio = doc.ratio.value();
+    doc.set_box(id, 1.1, 0.07, 0.41);
+    let photo = doc.photo(id).unwrap();
+    let before = placed_pixel_aspect(photo, ratio);
+    let before_hw = photo.height(ratio) / photo.w;
+    let h = photo.height(ratio);
+    let (x, y) = snap_move(photo.x, photo.y, photo.w, h, CANVAS_GRID_STEP);
+    doc.set_box(id, x, y, photo.w);
+    let photo = doc.photo(id).unwrap();
+    let moved_h = photo.height(ratio);
+    assert!((photo.w - 0.41).abs() < 1e-6);
+    assert!((placed_pixel_aspect(photo, ratio) - before).abs() < 1e-4);
+    assert!((moved_h / photo.w - before_hw).abs() < 1e-4);
+    assert!(on_eighth(photo.x) || on_eighth(photo.x + photo.w));
+    assert!(on_eighth(photo.y) || on_eighth(photo.y + moved_h));
+
+    let origin = photo.placement(ratio);
+    let aspect = origin.h / origin.w;
+    let (x, y, w) = resize_uniform(
+        origin.x,
+        origin.y,
+        origin.w,
+        origin.h,
+        Handle::E,
+        origin.x + origin.w + 0.17,
+        origin.y,
+    );
+    let (x, y, w) = snap_resize(Handle::E, x, y, w, w * aspect, CANVAS_GRID_STEP);
+    let snapped_h = w * aspect;
+    doc.set_box(id, x, y, w);
+    let photo = doc.photo(id).unwrap();
+    assert!((x - origin.x).abs() < 1e-3);
+    assert!((y + snapped_h * 0.5 - (origin.y + origin.h * 0.5)).abs() < 1e-3);
+    assert!((snapped_h / w - aspect).abs() < 1e-4);
+    assert!(on_eighth(x + w));
+    assert!((placed_pixel_aspect(photo, ratio) - before).abs() < 1e-3);
+    assert!((photo.height(ratio) / photo.w - before_hw).abs() < 1e-3);
+}
+
+fn on_eighth(value: f32) -> bool {
+    let nearest = (value / CANVAS_GRID_STEP).round() * CANVAS_GRID_STEP;
+    (nearest - value).abs() < 1e-3
+}
+
+#[test]
 fn byte_estimate_matches_encoded_carousel() {
     let mut doc = Document::new(AspectRatio::SQUARE);
     doc.set_canvas_count(2);
@@ -312,4 +363,225 @@ fn byte_estimate_matches_encoded_carousel() {
     assert!(dir.join("pudduscroll-01.jpg").is_file());
     assert!(dir.join("pudduscroll-02.jpg").is_file());
     std::fs::remove_dir_all(&dir).ok();
+}
+
+fn assert_crop_inside(crop: Crop) {
+    assert!(crop.x >= -1e-3, "{crop:?}");
+    assert!(crop.y >= -1e-3, "{crop:?}");
+    assert!(crop.x + crop.w <= 1.0 + 1e-3, "{crop:?}");
+    assert!(crop.y + crop.h <= 1.0 + 1e-3, "{crop:?}");
+    assert!(crop.w > 0.0 && crop.h > 0.0, "{crop:?}");
+}
+
+#[test]
+fn crop_session_starts_centered_unless_the_aspect_already_matches() {
+    assert!(crop_lock_ratio(CropPreset::Freehand, 800, 400).is_none());
+    assert!((crop_lock_ratio(CropPreset::Original, 800, 400).unwrap() - 1.0).abs() < 1e-6);
+    assert!((crop_lock_ratio(CropPreset::Square, 800, 400).unwrap() - 0.5).abs() < 1e-4);
+
+    for preset in [
+        CropPreset::Square,
+        CropPreset::FourFive,
+        CropPreset::ThreeFour,
+        CropPreset::ThreeTwo,
+        CropPreset::SixteenNine,
+        CropPreset::NineSixteen,
+    ] {
+        let crop = begin_crop_rect(Crop::full(), preset, 800, 400);
+        assert_crop_inside(crop);
+        assert!(
+            (crop.pixel_aspect(800, 400) - preset.target_aspect()).abs() < 1e-3,
+            "{preset:?} {crop:?}"
+        );
+        assert!((crop.x + crop.w * 0.5 - 0.5).abs() < 1e-3);
+        assert!((crop.y + crop.h * 0.5 - 0.5).abs() < 1e-3);
+        assert!(crop.w > 0.99 || crop.h > 0.99);
+    }
+
+    let original = begin_crop_rect(Crop::full(), CropPreset::Original, 800, 400);
+    assert!((original.w - 1.0).abs() < 1e-5);
+    assert!((original.h - 1.0).abs() < 1e-5);
+
+    let square = Crop {
+        x: 0.05,
+        y: 0.1,
+        w: 0.2,
+        h: 0.4,
+    };
+    let kept = begin_crop_rect(square, CropPreset::Square, 800, 400);
+    assert!((kept.x - 0.05).abs() < 1e-4);
+    assert!((kept.h - 0.4).abs() < 1e-4);
+    let reset = begin_crop_rect(square, CropPreset::SixteenNine, 800, 400);
+    assert!(
+        (reset.pixel_aspect(800, 400) - CropPreset::SixteenNine.target_aspect()).abs() < 1e-3
+    );
+    assert!(reset.w > 0.99 || reset.h > 0.99);
+
+    let free = begin_crop_rect(square, CropPreset::Freehand, 800, 400);
+    assert!((free.w - 0.2).abs() < 1e-4);
+    assert!((free.y - 0.1).abs() < 1e-4);
+
+    let different = begin_crop_rect(square, CropPreset::Original, 800, 400);
+    assert!((different.w - 1.0).abs() < 1e-5);
+    let same_aspect = Crop {
+        x: 0.1,
+        y: 0.25,
+        w: 0.5,
+        h: 0.5,
+    };
+    let kept_original = begin_crop_rect(same_aspect, CropPreset::Original, 800, 400);
+    assert!((kept_original.x - 0.1).abs() < 1e-4);
+    assert!((kept_original.w - 0.5).abs() < 1e-4);
+}
+
+#[test]
+fn crop_move_and_resize_stay_inside_and_honor_aspect_lock() {
+    let crop = Crop {
+        x: 0.1,
+        y: 0.2,
+        w: 0.3,
+        h: 0.4,
+    };
+    let moved = move_crop_inside(crop, -0.5, 0.9);
+    assert!((moved.x).abs() < 1e-5);
+    assert!((moved.y - 0.6).abs() < 1e-4);
+    assert!((moved.w - 0.3).abs() < 1e-5);
+    assert!((moved.h - 0.4).abs() < 1e-5);
+    assert_crop_inside(moved);
+
+    let origin = Crop {
+        x: 0.2,
+        y: 0.3,
+        w: 0.4,
+        h: 0.4,
+    };
+    let east = resize_crop_inside(origin, Handle::E, 0.9, 0.1, None);
+    assert!((east.x - 0.2).abs() < 1e-4);
+    assert!((east.y - 0.3).abs() < 1e-4);
+    assert!((east.h - 0.4).abs() < 1e-4);
+    assert!((east.w - 0.7).abs() < 1e-4);
+    let corner = resize_crop_inside(origin, Handle::Se, 0.8, 0.9, None);
+    assert!((corner.x - 0.2).abs() < 1e-4);
+    assert!((corner.y - 0.3).abs() < 1e-4);
+    assert!((corner.w - 0.6).abs() < 1e-4);
+    assert!((corner.h - 0.6).abs() < 1e-4);
+    let clamped = resize_crop_inside(origin, Handle::E, 2.0, 0.5, None);
+    assert!((clamped.x + clamped.w - 1.0).abs() < 1e-4);
+    assert!((clamped.h - origin.h).abs() < 1e-4);
+    let minimum = resize_crop_inside(origin, Handle::W, 5.0, 0.5, None);
+    assert!((minimum.w - 0.02).abs() < 1e-3);
+    assert!((minimum.x + minimum.w - (origin.x + origin.w)).abs() < 1e-3);
+    assert!((minimum.h - origin.h).abs() < 1e-4);
+
+    let locked = Crop {
+        x: 0.25,
+        y: 0.25,
+        w: 0.4,
+        h: 0.4,
+    };
+    let grown = resize_crop_inside(locked, Handle::E, 0.95, 0.2, Some(1.0));
+    assert!((grown.x - 0.25).abs() < 1e-3);
+    assert!((grown.w - grown.h).abs() < 1e-3);
+    assert!(grown.w > locked.w);
+    assert_crop_inside(grown);
+    let blocked = resize_crop_inside(locked, Handle::E, 5.0, 0.2, Some(1.0));
+    assert!((blocked.x - locked.x).abs() < 1e-3);
+    assert!(blocked.x + blocked.w <= 1.0 + 1e-3);
+    assert!((blocked.w - blocked.h).abs() < 1e-3);
+    let shrunk = resize_crop_inside(locked, Handle::E, 0.0, 0.2, Some(1.0));
+    assert!(shrunk.w < 0.03 && shrunk.h < 0.03);
+    assert!((shrunk.x - locked.x).abs() < 1e-3);
+
+    let anchored = resize_crop_inside(
+        Crop {
+            x: 0.2,
+            y: 0.2,
+            w: 0.5,
+            h: 0.5,
+        },
+        Handle::Nw,
+        0.05,
+        0.08,
+        Some(1.0),
+    );
+    assert!((anchored.x + anchored.w - 0.7).abs() < 1e-3);
+    assert!((anchored.y + anchored.h - 0.7).abs() < 1e-3);
+    assert!((anchored.w - anchored.h).abs() < 1e-3);
+
+    let handles = [
+        Handle::N,
+        Handle::S,
+        Handle::E,
+        Handle::W,
+        Handle::Ne,
+        Handle::Nw,
+        Handle::Se,
+        Handle::Sw,
+    ];
+    let box_crop = Crop {
+        x: 0.3,
+        y: 0.3,
+        w: 0.3,
+        h: 0.3,
+    };
+    for handle in handles {
+        for pointer in [(-2.0, -2.0), (3.0, 3.0), (0.5, -1.0), (1.5, 0.4)] {
+            let next = resize_crop_inside(box_crop, handle, pointer.0, pointer.1, Some(1.0));
+            assert_crop_inside(next);
+            assert!(
+                (next.w - next.h).abs() < 1e-3,
+                "{handle:?} {pointer:?} {next:?}"
+            );
+            assert!(next.w + 1e-4 >= 0.02, "{handle:?} {next:?}");
+        }
+        let free = resize_crop_inside(box_crop, handle, 3.0, -2.0, None);
+        assert_crop_inside(free);
+        assert!(free.w + 1e-4 >= 0.02 && free.h + 1e-4 >= 0.02);
+    }
+
+    let ratio = crop_lock_ratio(CropPreset::Square, 800, 400).unwrap();
+    let square = begin_crop_rect(Crop::full(), CropPreset::Square, 800, 400);
+    for handle in handles {
+        let next = resize_crop_inside(square, handle, 0.1, 0.2, Some(ratio));
+        assert_crop_inside(next);
+        let pixel = next.pixel_aspect(800, 400);
+        assert!((pixel - 1.0).abs() < 1e-2, "{handle:?} {next:?} {pixel}");
+    }
+
+    let original_ratio = crop_lock_ratio(CropPreset::Original, 800, 400).unwrap();
+    let original = resize_crop_inside(
+        Crop {
+            x: 0.2,
+            y: 0.2,
+            w: 0.4,
+            h: 0.4,
+        },
+        Handle::E,
+        0.9,
+        0.2,
+        Some(original_ratio),
+    );
+    assert_crop_inside(original);
+    assert!((original.w / original.h - 1.0).abs() < 1e-3);
+    assert!((original.pixel_aspect(800, 400) - 2.0).abs() < 1e-2);
+}
+
+#[test]
+fn moved_square_crop_keeps_placement_on_the_cropped_aspect() {
+    let mut doc = Document::new(AspectRatio::FOUR_FIVE);
+    let id = doc.add_photo("wide", 800, 400);
+    let before_w = doc.photo(id).unwrap().w;
+    let crop = begin_crop_rect(Crop::full(), CropPreset::Square, 800, 400);
+    let moved = move_crop_inside(crop, 0.4, 0.1);
+    assert!((moved.h - 1.0).abs() < 1e-4);
+    assert!(moved.y.abs() < 1e-4);
+    assert!((moved.x - 0.4).abs() < 1e-4);
+    doc.set_crop(id, moved);
+    if let Some(photo) = doc.photos.iter_mut().find(|photo| photo.id == id) {
+        photo.preset = CropPreset::Square;
+    }
+    let photo = doc.photo(id).unwrap();
+    assert_eq!(photo.preset, CropPreset::Square);
+    assert!((photo.w - before_w).abs() < 1e-5);
+    assert!((placed_pixel_aspect(photo, doc.ratio.value()) - 1.0).abs() < 1e-3);
 }

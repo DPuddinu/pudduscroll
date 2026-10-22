@@ -1,5 +1,7 @@
 pub const MAX_CANVASES: usize = 20;
 pub const DEFAULT_EXPORT_WIDTH: u32 = 1080;
+pub const CANVAS_GRID: usize = 8;
+pub const CANVAS_GRID_STEP: f32 = 1.0 / 8.0;
 const MIN_WIDTH: f32 = 0.05;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -155,6 +157,224 @@ pub fn crop_rect_for_aspect(image_w: u32, image_h: u32, target_aspect: f32) -> C
     }
 }
 
+const MIN_CROP: f32 = 0.02;
+
+pub fn crop_lock_ratio(preset: CropPreset, image_w: u32, image_h: u32) -> Option<f32> {
+    match preset {
+        CropPreset::Freehand => None,
+        CropPreset::Original => Some(1.0),
+        preset => {
+            let iw = image_w.max(1) as f32;
+            let ih = image_h.max(1) as f32;
+            Some((preset.target_aspect() * ih / iw).max(1.0e-4))
+        }
+    }
+}
+
+pub fn begin_crop_rect(current: Crop, preset: CropPreset, image_w: u32, image_h: u32) -> Crop {
+    let current = current.clamp();
+    if preset == CropPreset::Freehand || crop_matches_preset(current, preset, image_w, image_h) {
+        return current;
+    }
+    if preset == CropPreset::Original {
+        return Crop::full();
+    }
+    crop_rect_for_aspect(image_w, image_h, preset.target_aspect())
+}
+
+fn crop_matches_preset(crop: Crop, preset: CropPreset, image_w: u32, image_h: u32) -> bool {
+    let target = match preset {
+        CropPreset::Freehand => return true,
+        CropPreset::Original => image_w.max(1) as f32 / image_h.max(1) as f32,
+        preset => preset.target_aspect(),
+    };
+    let actual = crop.pixel_aspect(image_w, image_h);
+    (actual - target).abs() <= 0.02 * target.max(1.0)
+}
+
+pub fn move_crop_inside(crop: Crop, x: f32, y: f32) -> Crop {
+    let crop = crop.clamp();
+    Crop {
+        x: x.clamp(0.0, (1.0 - crop.w).max(0.0)),
+        y: y.clamp(0.0, (1.0 - crop.h).max(0.0)),
+        w: crop.w,
+        h: crop.h,
+    }
+}
+
+pub fn resize_crop_inside(
+    origin: Crop,
+    handle: Handle,
+    pointer_x: f32,
+    pointer_y: f32,
+    lock_ratio: Option<f32>,
+) -> Crop {
+    let origin = origin.clamp();
+    match lock_ratio {
+        Some(ratio) => resize_locked(origin, handle, pointer_x, pointer_y, ratio.max(1.0e-4)),
+        None => resize_free(origin, handle, pointer_x, pointer_y),
+    }
+}
+
+fn resize_free(origin: Crop, handle: Handle, pointer_x: f32, pointer_y: f32) -> Crop {
+    let left0 = origin.x;
+    let right0 = origin.x + origin.w;
+    let top0 = origin.y;
+    let bottom0 = origin.y + origin.h;
+    let (x, w) = if matches!(handle, Handle::N | Handle::S) {
+        (left0, origin.w)
+    } else if matches!(handle, Handle::E | Handle::Ne | Handle::Se) {
+        let right = pointer_x.clamp(left0 + MIN_CROP, 1.0);
+        (left0, right - left0)
+    } else {
+        let left = pointer_x.clamp(0.0, right0 - MIN_CROP);
+        (left, right0 - left)
+    };
+    let (y, h) = if matches!(handle, Handle::E | Handle::W) {
+        (top0, origin.h)
+    } else if matches!(handle, Handle::S | Handle::Se | Handle::Sw) {
+        let bottom = pointer_y.clamp(top0 + MIN_CROP, 1.0);
+        (top0, bottom - top0)
+    } else {
+        let top = pointer_y.clamp(0.0, bottom0 - MIN_CROP);
+        (top, bottom0 - top)
+    };
+    Crop { x, y, w, h }
+}
+
+fn resize_locked(origin: Crop, handle: Handle, pointer_x: f32, pointer_y: f32, ratio: f32) -> Crop {
+    match handle {
+        Handle::E | Handle::W | Handle::N | Handle::S => {
+            resize_locked_edge(origin, handle, pointer_x, pointer_y, ratio)
+        }
+        Handle::Ne | Handle::Nw | Handle::Se | Handle::Sw => {
+            resize_locked_corner(origin, handle, pointer_x, pointer_y, ratio)
+        }
+    }
+}
+
+fn axis_room(center: f32) -> f32 {
+    (center * 2.0).min((1.0 - center) * 2.0).max(0.0)
+}
+
+fn locked_min_w(ratio: f32, max_w: f32, max_h: f32) -> f32 {
+    let want = MIN_CROP.max(MIN_CROP * ratio);
+    let fit = max_w.min(max_h * ratio).max(0.0);
+    want.min(fit)
+}
+
+fn clamp_locked_size(w: f32, ratio: f32, max_w: f32, max_h: f32) -> (f32, f32) {
+    let max_w = max_w.clamp(0.0, 1.0);
+    let max_h = max_h.clamp(0.0, 1.0);
+    let mut width = w.max(0.0).min(max_w);
+    let mut height = width / ratio;
+    if height > max_h {
+        height = max_h;
+        width = height * ratio;
+    }
+    let min_w = locked_min_w(ratio, max_w, max_h);
+    if width < min_w {
+        width = min_w;
+        height = width / ratio;
+        if height > max_h {
+            height = max_h;
+            width = (height * ratio).min(max_w);
+            height = width / ratio;
+        }
+    }
+    (width, height)
+}
+
+fn place_crop(x: f32, y: f32, w: f32, h: f32) -> Crop {
+    let w = w.clamp(0.0, 1.0);
+    let h = h.clamp(0.0, 1.0);
+    Crop {
+        x: x.clamp(0.0, (1.0 - w).max(0.0)),
+        y: y.clamp(0.0, (1.0 - h).max(0.0)),
+        w,
+        h,
+    }
+}
+
+fn resize_locked_edge(
+    origin: Crop,
+    handle: Handle,
+    pointer_x: f32,
+    pointer_y: f32,
+    ratio: f32,
+) -> Crop {
+    match handle {
+        Handle::E | Handle::W => {
+            let move_right = handle == Handle::E;
+            let anchor = if move_right {
+                origin.x
+            } else {
+                origin.x + origin.w
+            };
+            let max_w = if move_right { 1.0 - anchor } else { anchor };
+            let raw = if move_right {
+                pointer_x - anchor
+            } else {
+                anchor - pointer_x
+            };
+            let cy = origin.y + origin.h * 0.5;
+            let (w, h) = clamp_locked_size(raw, ratio, max_w, axis_room(cy));
+            place_crop(if move_right { anchor } else { anchor - w }, cy - h * 0.5, w, h)
+        }
+        Handle::S | Handle::N => {
+            let move_down = handle == Handle::S;
+            let anchor = if move_down {
+                origin.y
+            } else {
+                origin.y + origin.h
+            };
+            let max_h = if move_down { 1.0 - anchor } else { anchor };
+            let raw = if move_down {
+                pointer_y - anchor
+            } else {
+                anchor - pointer_y
+            };
+            let cx = origin.x + origin.w * 0.5;
+            let (w, h) = clamp_locked_size(raw * ratio, ratio, axis_room(cx), max_h);
+            place_crop(cx - w * 0.5, if move_down { anchor } else { anchor - h }, w, h)
+        }
+        Handle::Ne | Handle::Nw | Handle::Se | Handle::Sw => origin,
+    }
+}
+
+fn resize_locked_corner(
+    origin: Crop,
+    handle: Handle,
+    pointer_x: f32,
+    pointer_y: f32,
+    ratio: f32,
+) -> Crop {
+    let anchor_left = matches!(handle, Handle::Se | Handle::Ne);
+    let anchor_top = matches!(handle, Handle::Se | Handle::Sw);
+    let ax = if anchor_left {
+        origin.x
+    } else {
+        origin.x + origin.w
+    };
+    let ay = if anchor_top {
+        origin.y
+    } else {
+        origin.y + origin.h
+    };
+    let sign_x = if anchor_left { 1.0 } else { -1.0 };
+    let sign_y = if anchor_top { 1.0 } else { -1.0 };
+    let along_x = (pointer_x - ax) * sign_x;
+    let along_y = (pointer_y - ay) * sign_y;
+    let denom = ratio * ratio + 1.0;
+    let t = (along_x * ratio + along_y) / denom;
+    let max_w = if anchor_left { 1.0 - ax } else { ax };
+    let max_h = if anchor_top { 1.0 - ay } else { ay };
+    let (w, h) = clamp_locked_size(t * ratio, ratio, max_w, max_h);
+    let x = if anchor_left { ax } else { ax - w };
+    let y = if anchor_top { ay } else { ay - h };
+    place_crop(x, y, w, h)
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct PhotoId(pub u64);
 
@@ -186,7 +406,7 @@ pub struct Placement {
     pub h: f32,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Photo {
     pub id: PhotoId,
     pub name: String,
@@ -279,7 +499,115 @@ pub fn resize_uniform(
     }
 }
 
-#[derive(Clone, Debug)]
+fn snap_scalar(value: f32, step: f32) -> f32 {
+    if step <= 1e-8 {
+        return value;
+    }
+    (value / step).round() * step
+}
+
+fn snap_edge_pair(origin: f32, size: f32, step: f32) -> f32 {
+    let start_delta = snap_scalar(origin, step) - origin;
+    let end = origin + size;
+    let end_delta = snap_scalar(end, step) - end;
+    if start_delta.abs() <= end_delta.abs() {
+        origin + start_delta
+    } else {
+        origin + end_delta
+    }
+}
+
+pub fn snap_move(x: f32, y: f32, w: f32, h: f32, step: f32) -> (f32, f32) {
+    (snap_edge_pair(x, w, step), snap_edge_pair(y, h, step))
+}
+
+pub fn snap_resize(handle: Handle, x: f32, y: f32, w: f32, h: f32, step: f32) -> (f32, f32, f32) {
+    let aspect = if w.abs() < 1e-4 { 1.0 } else { h / w };
+    let aspect = if aspect.abs() < 1e-6 { 1.0 } else { aspect };
+    match handle {
+        Handle::E => {
+            let left = x;
+            let cy = y + h * 0.5;
+            let right = snap_scalar(x + w, step);
+            let new_w = (right - left).max(MIN_WIDTH);
+            let new_h = new_w * aspect;
+            (left, cy - new_h * 0.5, new_w)
+        }
+        Handle::W => {
+            let right = x + w;
+            let cy = y + h * 0.5;
+            let left = snap_scalar(x, step);
+            let new_w = (right - left).max(MIN_WIDTH);
+            let new_h = new_w * aspect;
+            (right - new_w, cy - new_h * 0.5, new_w)
+        }
+        Handle::S => {
+            let top = y;
+            let cx = x + w * 0.5;
+            let bottom = snap_scalar(y + h, step);
+            let new_h = (bottom - top).max(MIN_WIDTH * aspect);
+            let new_w = new_h / aspect;
+            (cx - new_w * 0.5, top, new_w)
+        }
+        Handle::N => {
+            let bottom = y + h;
+            let cx = x + w * 0.5;
+            let top = snap_scalar(y, step);
+            let new_h = (bottom - top).max(MIN_WIDTH * aspect);
+            let new_w = new_h / aspect;
+            (cx - new_w * 0.5, bottom - new_h, new_w)
+        }
+        Handle::Se | Handle::Sw | Handle::Ne | Handle::Nw => {
+            snap_resize_corner(handle, x, y, w, h, aspect, step)
+        }
+    }
+}
+
+fn snap_resize_corner(
+    handle: Handle,
+    x: f32,
+    y: f32,
+    w: f32,
+    h: f32,
+    aspect: f32,
+    step: f32,
+) -> (f32, f32, f32) {
+    let anchor_left = matches!(handle, Handle::Se | Handle::Ne);
+    let anchor_top = matches!(handle, Handle::Sw | Handle::Se);
+    let ax = if anchor_left { x } else { x + w };
+    let ay = if anchor_top { y } else { y + h };
+    let moving_x = if anchor_left { x + w } else { x };
+    let moving_y = if anchor_top { y + h } else { y };
+    let snapped_x = snap_scalar(moving_x, step);
+    let snapped_y = snap_scalar(moving_y, step);
+    let new_w_x = if anchor_left {
+        (snapped_x - ax).max(MIN_WIDTH)
+    } else {
+        (ax - snapped_x).max(MIN_WIDTH)
+    };
+    let new_h_x = new_w_x * aspect;
+    let from_x = (new_w_x - w, new_h_x - h);
+    let new_h_y = if anchor_top {
+        (snapped_y - ay).max(MIN_WIDTH * aspect)
+    } else {
+        (ay - snapped_y).max(MIN_WIDTH * aspect)
+    };
+    let new_w_y = new_h_y / aspect;
+    let from_y = (new_w_y - w, new_h_y - h);
+    let x_dist = from_x.0 * from_x.0 + from_x.1 * from_x.1;
+    let y_dist = from_y.0 * from_y.0 + from_y.1 * from_y.1;
+    if x_dist <= y_dist {
+        let nx = if anchor_left { ax } else { ax - new_w_x };
+        let ny = if anchor_top { ay } else { ay - new_h_x };
+        (nx, ny, new_w_x)
+    } else {
+        let nx = if anchor_left { ax } else { ax - new_w_y };
+        let ny = if anchor_top { ay } else { ay - new_h_y };
+        (nx, ny, new_w_y)
+    }
+}
+
+#[derive(Clone, Debug, PartialEq)]
 pub struct Document {
     pub ratio: AspectRatio,
     pub canvas_count: usize,

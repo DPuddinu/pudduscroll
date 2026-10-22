@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::sync::mpsc::{self, Receiver};
 use std::sync::Arc;
@@ -9,10 +9,11 @@ use eframe::egui;
 use image::imageops::{resize, FilterType};
 use image::RgbaImage;
 use pudduscroll_core::{
-    canvas_file_name, estimate_total_bytes, export_canvases, quality_description, render_canvas,
-    write_canvases, AspectRatio, Crop, CropPreset, Document, ExportError, ExportSettings, Handle,
-    ImageMap, LayerMove, Photo, PhotoId, Placement, CANVAS_PRESETS, CROP_PRESETS,
-    DEFAULT_EXPORT_WIDTH, MAX_CANVASES,
+    begin_crop_rect, canvas_file_name, crop_lock_ratio, estimate_total_bytes, export_canvases,
+    move_crop_inside, quality_description, render_canvas, resize_crop_inside, resize_uniform,
+    snap_move, snap_resize, write_canvases, AspectRatio, Crop, CropPreset, Document, ExportError,
+    ExportSettings, Handle, ImageMap, LayerMove, Photo, PhotoId, Placement, CANVAS_GRID,
+    CANVAS_GRID_STEP, CANVAS_PRESETS, CROP_PRESETS, DEFAULT_EXPORT_WIDTH, MAX_CANVASES,
 };
 
 const BG: egui::Color32 = egui::Color32::from_rgb(16, 16, 16);
@@ -22,6 +23,11 @@ const ACCENT: egui::Color32 = egui::Color32::from_rgb(232, 160, 96);
 const TEXT: egui::Color32 = egui::Color32::from_rgb(240, 236, 230);
 const MUTED: egui::Color32 = egui::Color32::from_rgb(164, 158, 148);
 const SELECT_BG: egui::Color32 = egui::Color32::from_rgb(48, 38, 30);
+const MIN_EDITOR_ZOOM: f32 = 0.25;
+const MAX_EDITOR_ZOOM: f32 = 4.0;
+const EDITOR_ZOOM_SPEED: f32 = 1.0 / 200.0;
+const UNDO_LIMIT: usize = 50;
+const CROP_HANDLE_HIT: f32 = 12.0;
 
 enum Drag {
     Move {
@@ -34,6 +40,19 @@ enum Drag {
         handle: Handle,
         origin: Placement,
     },
+}
+
+struct CropSession {
+    id: PhotoId,
+    preset: CropPreset,
+    crop: Crop,
+    drag: Option<CropGesture>,
+}
+
+#[derive(Clone, Copy)]
+enum CropGesture {
+    Move { grab_x: f32, grab_y: f32 },
+    Resize { handle: Handle, origin: Crop },
 }
 
 struct EstimateMsg {
@@ -65,6 +84,20 @@ pub struct PudduScrollApp {
     export_rx: Option<Receiver<Result<String, String>>>,
     exporting: bool,
     export_open: bool,
+    editor_zoom: f32,
+    zoom_basis: (usize, u32, u32),
+    strip_lead: egui::Vec2,
+    pending_scroll: Option<egui::Vec2>,
+    strip_wheel_pan: bool,
+    center_strip: bool,
+    strip_rect: Option<egui::Rect>,
+    view_rect: Option<egui::Rect>,
+    show_grid: bool,
+    snap_to_grid: bool,
+    undo: Vec<Document>,
+    edit_before: Option<Document>,
+    crop_session: Option<CropSession>,
+    crop_press: Option<egui::Pos2>,
 }
 
 impl PudduScrollApp {
@@ -88,6 +121,20 @@ impl PudduScrollApp {
             export_rx: None,
             exporting: false,
             export_open: false,
+            editor_zoom: 1.0,
+            zoom_basis: (3, 4, 5),
+            strip_lead: egui::Vec2::ZERO,
+            pending_scroll: None,
+            strip_wheel_pan: false,
+            center_strip: true,
+            strip_rect: None,
+            view_rect: None,
+            show_grid: false,
+            snap_to_grid: false,
+            undo: Vec::new(),
+            edit_before: None,
+            crop_session: None,
+            crop_press: None,
         };
         for arg in std::env::args().skip(1) {
             let path = std::path::PathBuf::from(arg);
@@ -204,11 +251,35 @@ impl PudduScrollApp {
     }
 
     fn handle_keys(&mut self, ctx: &egui::Context) {
+        if self.crop_session.is_some() && !self.export_open {
+            let (enter, escape) = ctx.input_mut(|input| {
+                (
+                    input.consume_key(egui::Modifiers::NONE, egui::Key::Enter),
+                    input.consume_key(egui::Modifiers::NONE, egui::Key::Escape),
+                )
+            });
+            if enter {
+                self.commit_crop_session();
+                return;
+            }
+            if escape {
+                self.crop_session = None;
+                self.status = "Crop canceled".to_string();
+                return;
+            }
+        }
         if ctx.egui_wants_keyboard_input() {
             return;
         }
         if ctx.input(|input| input.key_pressed(egui::Key::Delete)) {
             if let Some(id) = self.selected.take() {
+                if self
+                    .crop_session
+                    .as_ref()
+                    .is_some_and(|session| session.id == id)
+                {
+                    self.crop_session = None;
+                }
                 self.doc.remove_photo(id);
                 self.assets.remove(&id);
                 self.drag = None;
@@ -466,7 +537,9 @@ impl PudduScrollApp {
                     ui.label("No photos yet. Import to begin.");
                 }
                 egui::ScrollArea::vertical().show(ui, |ui| {
-                    for (id, name, crop) in rows {
+                    let count = rows.len();
+                    for (index, (id, name, crop)) in rows.iter().enumerate() {
+                        let id = *id;
                         let selected = self.selected == Some(id);
                         let (row, response) = ui.allocate_exact_size(
                             egui::vec2(ui.available_width(), 48.0),
@@ -475,70 +548,77 @@ impl PudduScrollApp {
                         if response.clicked() {
                             self.selected = Some(id);
                         }
-                        let painter = ui.painter();
-                        if selected {
-                            painter.rect_filled(row, 6.0, SELECT_BG);
-                        }
-                        let thumb = egui::Rect::from_min_size(
-                            row.min + egui::vec2(6.0, 4.0),
-                            egui::vec2(40.0, 40.0),
-                        );
-                        painter.rect_filled(thumb, 2.0, egui::Color32::from_rgb(36, 36, 36));
-                        if let Some(asset) = self.assets.get(&id) {
-                            let uv = egui::Rect::from_min_max(
-                                egui::pos2(crop.x, crop.y),
-                                egui::pos2(crop.x + crop.w, crop.y + crop.h),
+                        {
+                            let painter = ui.painter();
+                            if selected {
+                                painter.rect_filled(row, 6.0, SELECT_BG);
+                            }
+                            let thumb = egui::Rect::from_min_size(
+                                row.min + egui::vec2(6.0, 4.0),
+                                egui::vec2(40.0, 40.0),
                             );
-                            painter.image(asset.texture.id(), thumb, uv, egui::Color32::WHITE);
+                            painter.rect_filled(thumb, 2.0, egui::Color32::from_rgb(36, 36, 36));
+                            if let Some(asset) = self.assets.get(&id) {
+                                let uv = egui::Rect::from_min_max(
+                                    egui::pos2(crop.x, crop.y),
+                                    egui::pos2(crop.x + crop.w, crop.y + crop.h),
+                                );
+                                painter.image(asset.texture.id(), thumb, uv, egui::Color32::WHITE);
+                            }
+                            painter.text(
+                                row.min + egui::vec2(54.0, 15.0),
+                                egui::Align2::LEFT_TOP,
+                                short_name(name),
+                                egui::FontId::proportional(14.0),
+                                if selected { ACCENT } else { TEXT },
+                            );
                         }
-                        painter.text(
-                            row.min + egui::vec2(54.0, 15.0),
-                            egui::Align2::LEFT_TOP,
-                            short_name(&name),
-                            egui::FontId::proportional(14.0),
-                            if selected { ACCENT } else { TEXT },
-                        );
-                    }
-                });
-                ui.separator();
-                let enabled = self.selected.is_some();
-                ui.horizontal(|ui| {
-                    if ui
-                        .add_enabled(enabled, egui::Button::new("Up"))
-                        .clicked()
-                    {
-                        if let Some(id) = self.selected {
-                            self.doc.move_layer(id, LayerMove::Up);
-                            self.note_geometry();
-                        }
-                    }
-                    if ui
-                        .add_enabled(enabled, egui::Button::new("Down"))
-                        .clicked()
-                    {
-                        if let Some(id) = self.selected {
-                            self.doc.move_layer(id, LayerMove::Down);
-                            self.note_geometry();
-                        }
-                    }
-                });
-                ui.horizontal(|ui| {
-                    if ui
-                        .add_enabled(enabled, egui::Button::new("Top"))
-                        .clicked()
-                    {
-                        if let Some(id) = self.selected {
-                            self.doc.move_layer(id, LayerMove::Top);
-                            self.note_geometry();
-                        }
-                    }
-                    if ui
-                        .add_enabled(enabled, egui::Button::new("Bottom"))
-                        .clicked()
-                    {
-                        if let Some(id) = self.selected {
-                            self.doc.move_layer(id, LayerMove::Bottom);
-                            self.note_geometry();
+                        let pointer_on_row = ui.input(|input| {
+                            input
+                                .pointer
+                                .latest_pos()
+                                .is_some_and(|pos| row.contains(pos))
+                        });
+                        if ui.rect_contains_pointer(row) || pointer_on_row {
+                            let button = 22.0;
+                            let gap = 3.0;
+                            let cluster_w = button * 4.0 + gap * 3.0;
+                            let origin_x = row.right() - 4.0 - cluster_w;
+                            let cover = egui::Rect::from_min_max(
+                                egui::pos2(origin_x - 6.0, row.top()),
+                                row.right_bottom(),
+                            );
+                            ui.painter().rect_filled(
+                                cover,
+                                egui::CornerRadius {
+                                    nw: 0,
+                                    ne: 6,
+                                    sw: 0,
+                                    se: 6,
+                                },
+                                if selected { SELECT_BG } else { PANEL },
+                            );
+                            let moves = [
+                                (Glyph::Up, LayerMove::Up, index > 0),
+                                (Glyph::Down, LayerMove::Down, index + 1 < count),
+                                (Glyph::Top, LayerMove::Top, index > 0),
+                                (Glyph::Bottom, LayerMove::Bottom, index + 1 < count),
+                            ];
+                            let y = row.center().y - button * 0.5;
+                            for (slot, (glyph, movement, enabled)) in moves.into_iter().enumerate()
+                            {
+                                let rect = egui::Rect::from_min_size(
+                                    egui::pos2(origin_x + (button + gap) * slot as f32, y),
+                                    egui::vec2(button, button),
+                                );
+                                if icon_button(ui, rect, ("layer-move", id, slot), enabled, glyph)
+                                    .clicked()
+                                    && enabled
+                                {
+                                    self.doc.move_layer(id, movement);
+                                    self.note_geometry();
+                                }
+                            }
                         }
                     }
                 });
@@ -557,7 +637,13 @@ impl PudduScrollApp {
                     return;
                 };
                 ui.label(short_name(&photo.name));
-                let ratio = photo.crop.pixel_aspect(photo.image_width, photo.image_height);
+                let shown = self
+                    .crop_session
+                    .as_ref()
+                    .filter(|session| session.id == id)
+                    .map(|session| session.crop)
+                    .unwrap_or(photo.crop);
+                let ratio = shown.pixel_aspect(photo.image_width, photo.image_height);
                 ui.label(
                     egui::RichText::new(format!("Visible {ratio:.2}")).color(MUTED),
                 );
@@ -572,37 +658,26 @@ impl PudduScrollApp {
                 egui::ScrollArea::vertical()
                     .id_salt("crop-list")
                     .auto_shrink([false, false])
+                    .content_margin(0.0)
                     .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysVisible)
                     .show(ui, |ui| {
                     for preset in CROP_PRESETS {
-                        if ui
-                            .selectable_label(photo.preset == preset, preset.label())
-                            .clicked()
-                        {
-                            self.doc.apply_crop_preset(id, preset);
-                            self.note_geometry();
+                        let armed = self
+                            .crop_session
+                            .as_ref()
+                            .filter(|session| session.id == id)
+                            .map(|session| session.preset);
+                        let selected = armed.unwrap_or(photo.preset) == preset;
+                        let preset_response = ui.selectable_label(selected, preset.label());
+                        if preset == CropPreset::Square {
+                            let _ = std::fs::write(
+                                r"C:\Users\dario\AppData\Local\Temp\pudduscroll-square.txt",
+                                format!("{:?}", preset_response.rect),
+                            );
                         }
-                    }
-                    if self.doc.photo(id).is_some_and(|photo| photo.preset == CropPreset::Freehand)
-                    {
-                        ui.add_space(6.0);
-                        let mut crop = self.doc.photo(id).unwrap().crop;
-                        let mut changed = false;
-                        changed |= ui
-                            .add(egui::Slider::new(&mut crop.x, 0.0..=1.0).text("X"))
-                            .changed();
-                        changed |= ui
-                            .add(egui::Slider::new(&mut crop.y, 0.0..=1.0).text("Y"))
-                            .changed();
-                        changed |= ui
-                            .add(egui::Slider::new(&mut crop.w, 0.02..=1.0).text("W"))
-                            .changed();
-                        changed |= ui
-                            .add(egui::Slider::new(&mut crop.h, 0.02..=1.0).text("H"))
-                            .changed();
-                        if changed {
-                            self.doc.set_crop(id, crop);
-                            self.note_geometry();
+                        if preset_response.clicked() {
+                            self.open_crop_session(id, preset);
+                            ui.ctx().request_repaint();
                         }
                     }
                 });
@@ -621,38 +696,31 @@ impl PudduScrollApp {
                         .size(16.0),
                     );
                 });
-                ui.horizontal(|ui| {
-                    let can_prev = self.preview_index > 0;
-                    if ui
-                        .add_enabled(can_prev, egui::Button::new("Previous"))
-                        .clicked()
-                        && self.preview_index > 0
-                    {
-                        self.preview_index -= 1;
-                    }
-                    let can_next = self.preview_index + 1 < self.doc.canvas_count;
-                    if ui
-                        .add_enabled(can_next, egui::Button::new("Next"))
-                        .clicked()
-                        && self.preview_index + 1 < self.doc.canvas_count
-                    {
-                        self.preview_index += 1;
-                    }
-                });
-                ui.vertical_centered(|ui| {
-                    self.draw_phone(ui);
-                });
+                let area = ui.available_rect_before_wrap();
+                if !area.is_positive() {
+                    return;
+                }
+                ui.allocate_rect(area, egui::Sense::hover());
+                let slots = preview_slots(area, self.doc.ratio.value());
+                let can_prev = self.preview_index > 0;
+                if icon_button(ui, slots.left, "preview-prev", can_prev, Glyph::Left).clicked()
+                    && self.preview_index > 0
+                {
+                    self.preview_index -= 1;
+                }
+                self.draw_phone(ui, slots.phone);
+                let can_next = self.preview_index + 1 < self.doc.canvas_count;
+                if icon_button(ui, slots.right, "preview-next", can_next, Glyph::Right).clicked()
+                    && self.preview_index + 1 < self.doc.canvas_count
+                {
+                    self.preview_index += 1;
+                }
     }
 
-    fn draw_phone(&mut self, ui: &mut egui::Ui) {
+    fn draw_phone(&mut self, ui: &mut egui::Ui, bezel: egui::Rect) {
         self.ensure_preview(ui.ctx());
-        let ratio = self.doc.ratio.value();
-        let screen_h = (ui.available_height() - 36.0).clamp(72.0, 168.0);
-        let screen_w = (screen_h * ratio).max(56.0);
-        let (bezel, _) = ui.allocate_exact_size(
-            egui::vec2(screen_w + 28.0, screen_h + 40.0),
-            egui::Sense::hover(),
-        );
+        let screen_w = (bezel.width() - 28.0).max(1.0);
+        let screen_h = (bezel.height() - 40.0).max(1.0);
         let painter = ui.painter();
         painter.rect_filled(bezel, 24.0, egui::Color32::from_rgb(10, 10, 10));
         painter.circle_filled(
@@ -703,103 +771,333 @@ impl PudduScrollApp {
         self.preview_key = Some(key);
     }
 
-    fn editor(&mut self, ui: &mut egui::Ui, bounds: egui::Rect) {
-            let bounds = bounds.intersect(ui.clip_rect());
-            ui.shrink_clip_rect(bounds);
-            if self.doc.photos.is_empty() {
-                ui.vertical_centered(|ui| {
-                    ui.add_space(6.0);
-                    ui.label(
-                        egui::RichText::new("Import photos to start a carousel").size(18.0),
-                    );
-                    if ui.button("Import photos").clicked() {
-                        self.import_dialog(ui.ctx());
-                    }
-                    ui.add_space(8.0);
-                });
-            }
-            let canvas_h = (bounds.height() - 36.0).max(120.0);
-            let canvas_w = canvas_h * self.doc.ratio.value();
-            let strip_w = canvas_w * self.doc.canvas_count as f32;
-            let size = egui::vec2(strip_w, canvas_h);
-            let avail_w = bounds.width() - 16.0;
-            if strip_w <= avail_w {
-                let pad = ((avail_w - strip_w) * 0.5).max(0.0);
-                ui.horizontal(|ui| {
-                    ui.shrink_clip_rect(bounds);
-                    ui.add_space(pad);
-                    self.paint_strip(ui, size, bounds);
-                });
-            } else {
-                egui::ScrollArea::horizontal()
-                    .scroll_source(
-                        egui::scroll_area::ScrollSource::SCROLL_BAR
-                            | egui::scroll_area::ScrollSource::MOUSE_WHEEL,
+    fn paint_rail(&mut self, ui: &mut egui::Ui, rail_rect: egui::Rect) {
+        if !rail_rect.is_positive() {
+            return;
+        }
+        let layer = egui::LayerId::new(egui::Order::Foreground, egui::Id::unique("rail"));
+        ui.ctx().memory_mut(|mem| {
+            mem.areas_mut().set_state(
+                layer,
+                egui::AreaState {
+                    pivot_pos: Some(rail_rect.left_top()),
+                    pivot: egui::Align2::LEFT_TOP,
+                    size: Some(rail_rect.size()),
+                    interactable: true,
+                    last_became_visible_at: None,
+                },
+            );
+        });
+        let mut rail_ui = ui.new_child(
+            egui::UiBuilder::new()
+                .id_salt("rail-ui")
+                .max_rect(rail_rect)
+                .layer_id(layer)
+                .layout(egui::Layout::top_down(egui::Align::Min)),
+        );
+        rail_ui.set_clip_rect(rail_rect);
+        rail_ui.painter().rect_filled(rail_rect, 0.0, PANEL);
+        let inner = egui::Rect::from_min_max(
+            egui::pos2(rail_rect.left() + 12.0, rail_rect.top() + 8.0),
+            egui::pos2(rail_rect.right(), rail_rect.bottom() - 8.0),
+        );
+        let mut content = rail_ui.new_child(
+            egui::UiBuilder::new()
+                .id_salt("rail-content")
+                .max_rect(inner)
+                .layout(egui::Layout::top_down(egui::Align::Min)),
+        );
+        content.set_clip_rect(inner);
+        let (preview_h, crop_h, layers_h) = section_heights(content.available_height());
+        rail_section(&mut content, preview_h, "preview", false, |ui| {
+            self.preview_panel(ui)
+        });
+        rail_section(&mut content, crop_h, "crop", true, |ui| self.crop_panel(ui));
+        rail_section(&mut content, layers_h, "layers", true, |ui| {
+            self.layer_panel(ui)
+        });
+    }
+
+    fn sync_zoom_basis(&mut self) {
+        let basis = (
+            self.doc.canvas_count,
+            self.doc.ratio.width,
+            self.doc.ratio.height,
+        );
+        if self.zoom_basis == basis {
+            return;
+        }
+        self.zoom_basis = basis;
+        self.editor_zoom = 1.0;
+        self.strip_lead = egui::Vec2::ZERO;
+        self.pending_scroll = Some(egui::Vec2::ZERO);
+        self.strip_wheel_pan = false;
+        self.center_strip = true;
+    }
+
+    fn apply_wheel_zoom(&mut self, ui: &egui::Ui, bounds: egui::Rect) {
+        let (pointer, scroll, alt_wheel) = ui.input(|input| {
+            let alt_wheel = input.modifiers.alt
+                || input.events.iter().any(|event| {
+                    matches!(
+                        event,
+                        egui::Event::MouseWheel { modifiers, .. } if modifiers.alt
                     )
-                    .show(ui, |ui| {
-                        ui.shrink_clip_rect(bounds);
-                        self.paint_strip(ui, size, bounds);
-                    });
+                });
+            (input.pointer.latest_pos(), input.smooth_scroll_delta, alt_wheel)
+        });
+        if scroll == egui::Vec2::ZERO {
+            self.strip_wheel_pan = false;
+            return;
+        }
+        let Some(strip) = self.strip_rect else {
+            return;
+        };
+        let Some(view) = self.view_rect else {
+            return;
+        };
+        let Some(pointer) = pointer else {
+            return;
+        };
+        if !strip.contains(pointer) {
+            return;
+        }
+        if ui
+            .layer_id_at(pointer)
+            .is_some_and(|layer| layer != ui.layer_id())
+        {
+            return;
+        }
+        ui.input_mut(|input| {
+            input.smooth_scroll_delta = egui::Vec2::ZERO;
+        });
+        if alt_wheel {
+            self.strip_wheel_pan = true;
+        }
+        if self.strip_wheel_pan {
+            let id = ui.make_persistent_id(egui::IdSalt::new("canvas-strip"));
+            let mut offset = egui::scroll_area::State::load(ui.ctx(), id)
+                .map(|state| state.clamped_offset())
+                .unwrap_or(egui::Vec2::ZERO);
+            offset.x = (offset.x - (scroll.x + scroll.y)).max(0.0);
+            self.pending_scroll = Some(offset);
+            self.center_strip = false;
+            return;
+        }
+        let zoom = next_editor_zoom(self.editor_zoom, scroll.y);
+        if (zoom - self.editor_zoom).abs() < 1.0e-4 {
+            return;
+        }
+        let fx = ((pointer.x - strip.min.x) / strip.width().max(1.0)).clamp(0.0, 1.0);
+        let fy = ((pointer.y - strip.min.y) / strip.height().max(1.0)).clamp(0.0, 1.0);
+        self.editor_zoom = zoom;
+        let new_size = editor_strip_size(
+            bounds,
+            zoom,
+            self.doc.ratio.value(),
+            self.doc.canvas_count,
+        );
+        let desired = pointer - egui::vec2(fx * new_size.x, fy * new_size.y);
+        let (lead, offset) = place_strip(desired, new_size, view);
+        self.strip_lead = lead;
+        self.pending_scroll = Some(offset);
+        self.center_strip = false;
+    }
+
+    fn editor(&mut self, ui: &mut egui::Ui, bounds: egui::Rect) {
+        let bounds = bounds.intersect(ui.clip_rect());
+        ui.shrink_clip_rect(bounds);
+        if self.doc.photos.is_empty() {
+            ui.vertical_centered(|ui| {
+                ui.add_space(6.0);
+                ui.label(egui::RichText::new("Import photos to start a carousel").size(18.0));
+                if ui.button("Import photos").clicked() {
+                    self.import_dialog(ui.ctx());
+                }
+                ui.add_space(8.0);
+            });
+        }
+        self.sync_zoom_basis();
+        self.apply_wheel_zoom(ui, bounds);
+        let size = editor_strip_size(
+            bounds,
+            self.editor_zoom,
+            self.doc.ratio.value(),
+            self.doc.canvas_count,
+        );
+        let mut scroll_source = egui::scroll_area::ScrollSource::SCROLL_BAR;
+        if self.crop_session.is_none() && !self.claims_photo_pointer(ui.ctx(), bounds) {
+            scroll_source |= egui::scroll_area::ScrollSource::DRAG;
+        }
+        let mut area = egui::ScrollArea::both()
+            .id_salt("canvas-strip")
+            .auto_shrink([false, false])
+            .scroll_source(scroll_source);
+        if let Some(offset) = self.pending_scroll.take() {
+            area = area.scroll_offset(offset);
+        }
+        let output = area.show(ui, |ui| {
+            ui.shrink_clip_rect(bounds);
+            ui.spacing_mut().item_spacing = egui::Vec2::ZERO;
+            let view = ui.available_size();
+            if self.center_strip {
+                self.strip_lead.x = ((view.x - size.x) * 0.5).max(0.0);
+                self.strip_lead.y = 0.0;
+                self.center_strip = false;
+            } else {
+                self.strip_lead.x = self.strip_lead.x.clamp(0.0, (view.x - size.x).max(0.0));
+                self.strip_lead.y = self.strip_lead.y.clamp(0.0, (view.y - size.y).max(0.0));
             }
+            ui.add_space(self.strip_lead.y);
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing = egui::Vec2::ZERO;
+                ui.add_space(self.strip_lead.x);
+                self.paint_strip(ui, size, bounds);
+            });
+        });
+        self.view_rect = Some(output.inner_rect);
     }
 
     fn paint_strip(&mut self, ui: &mut egui::Ui, size: egui::Vec2, bounds: egui::Rect) {
         let (rect, response) =
             ui.allocate_exact_size(size, egui::Sense::click_and_drag());
+        self.strip_rect = Some(rect);
         let ctx = ui.ctx().clone();
-        self.handle_strip(&ctx, rect, &response);
+        self.handle_strip(&ctx, rect, bounds);
         let clip = bounds.intersect(ui.clip_rect());
         let painter = ui.painter().with_clip_rect(clip);
         self.draw_strip(&painter, rect, clip);
+        self.paint_crop_handles(&ctx, rect);
+        self.paint_photo_selection(&ctx, rect);
         self.strip_cursor(&response, rect);
     }
 
-    fn handle_strip(&mut self, ctx: &egui::Context, rect: egui::Rect, response: &egui::Response) {
-        if response.drag_started() {
-            let origin = ctx
-                .input(|input| input.pointer.press_origin())
-                .or(response.interact_pointer_pos());
-            if let Some(pos) = origin {
-                self.begin_drag(rect, pos);
-            }
+    fn handle_strip(&mut self, ctx: &egui::Context, rect: egui::Rect, editor: egui::Rect) {
+        if self.crop_session.is_some() {
+            self.drag_crop(ctx, rect, editor);
+            return;
         }
-        if response.dragged() {
-            if let Some(pos) = response.interact_pointer_pos() {
-                self.update_drag(rect, pos);
-            }
-        }
-        if response.drag_stopped() && self.drag.take().is_some() {
-            self.note_geometry();
-        }
-        if response.clicked() {
-            if let Some(pos) = ctx.input(|input| input.pointer.latest_pos()) {
-                self.select_at(rect, pos);
-            }
-        }
+        self.drag_photo(ctx, rect, editor);
     }
 
-    fn begin_drag(&mut self, rect: egui::Rect, pos: egui::Pos2) {
+    fn claims_photo_pointer(&self, ctx: &egui::Context, editor: egui::Rect) -> bool {
+        if self.crop_session.is_some() || self.export_open {
+            return false;
+        }
+        if self.drag.is_some() {
+            return true;
+        }
+        let Some(strip) = self.strip_rect else {
+            return false;
+        };
+        let (down, pos) = ctx.input(|input| {
+            let pointer = &input.pointer;
+            (
+                pointer.primary_down(),
+                pointer
+                    .press_origin()
+                    .or(pointer.interact_pos())
+                    .or(pointer.latest_pos()),
+            )
+        });
+        let Some(pos) = pos else {
+            return false;
+        };
+        down && editor.contains(pos) && self.hits_photo_or_handle(strip, pos)
+    }
+
+    fn hits_photo_or_handle(&self, rect: egui::Rect, pos: egui::Pos2) -> bool {
+        self.gesture_at(rect, pos).is_some()
+    }
+
+    fn gesture_at(&self, rect: egui::Rect, pos: egui::Pos2) -> Option<Drag> {
         let ratio = self.doc.ratio.value();
         if let Some(id) = self.selected {
             if let Some(photo) = self.doc.photo(id) {
                 let screen = photo_screen(rect, self.doc.canvas_count, photo, ratio);
                 if let Some(handle) = handle_at(screen, pos) {
                     let origin = photo.placement(ratio);
-                    self.drag = Some(Drag::Resize { id, handle, origin });
-                    return;
+                    return Some(Drag::Resize { id, handle, origin });
                 }
             }
         }
         let (nx, ny) = screen_to_norm(rect, self.doc.canvas_count, pos);
-        if let Some(id) = self.doc.photo_at(nx, ny) {
-            self.selected = Some(id);
-            if let Some(photo) = self.doc.photo(id) {
-                self.drag = Some(Drag::Move {
-                    id,
-                    grab_x: nx - photo.x,
-                    grab_y: ny - photo.y,
-                });
+        let id = self.doc.photo_at(nx, ny)?;
+        let photo = self.doc.photo(id)?;
+        Some(Drag::Move {
+            id,
+            grab_x: nx - photo.x,
+            grab_y: ny - photo.y,
+        })
+    }
+
+    fn drag_photo(&mut self, ctx: &egui::Context, rect: egui::Rect, editor: egui::Rect) {
+        if self.export_open {
+            return;
+        }
+        let (pressed, down, released, press, interact, latest) = ctx.input(|input| {
+            let pointer = &input.pointer;
+            (
+                pointer.primary_pressed(),
+                pointer.primary_down(),
+                pointer.primary_released(),
+                pointer.press_origin(),
+                pointer.interact_pos(),
+                pointer.latest_pos(),
+            )
+        });
+        if self.drag.is_none() && pressed {
+            if let Some(origin) = press.or(interact).or(latest) {
+                if editor.contains(origin)
+                    && (self.hits_photo_or_handle(rect, origin) || rect.contains(origin))
+                {
+                    self.begin_drag(rect, origin);
+                }
             }
+        }
+        if self.drag.is_some() && (down || released) {
+            if let Some(pos) = interact.or(latest).or(press) {
+                self.update_drag(rect, pos);
+            }
+        }
+        match self.drag {
+            Some(Drag::Move { .. }) => {
+                ctx.set_cursor_icon(egui::CursorIcon::Grabbing);
+                if down {
+                    ctx.set_dragged_id(egui::Id::unique("photo-gesture"));
+                }
+            }
+            Some(Drag::Resize { handle, .. }) => {
+                ctx.set_cursor_icon(cursor_for(handle));
+                if down {
+                    ctx.set_dragged_id(egui::Id::unique("photo-gesture"));
+                }
+            }
+            None => {
+                if let Some(pos) = latest.or(interact).or(press) {
+                    if editor.contains(pos) {
+                        if let Some(icon) = self.cursor_at(rect, pos) {
+                            ctx.set_cursor_icon(icon);
+                        }
+                    }
+                }
+            }
+        }
+        if released {
+            if self.drag.take().is_some() {
+                self.note_geometry();
+                ctx.stop_dragging();
+            }
+        }
+    }
+
+    fn begin_drag(&mut self, rect: egui::Rect, pos: egui::Pos2) {
+        let drag = self.gesture_at(rect, pos);
+        if let Some(Drag::Move { id, .. }) = &drag {
+            self.selected = Some(*id);
+        }
+        if drag.is_some() {
+            self.drag = drag;
         } else {
             self.selected = None;
             self.drag = None;
@@ -818,11 +1116,6 @@ impl PudduScrollApp {
             }
             None => {}
         }
-    }
-
-    fn select_at(&mut self, rect: egui::Rect, pos: egui::Pos2) {
-        let (nx, ny) = screen_to_norm(rect, self.doc.canvas_count, pos);
-        self.selected = self.doc.photo_at(nx, ny);
     }
 
     fn draw_strip(&self, painter: &egui::Painter, rect: egui::Rect, clip: egui::Rect) {
@@ -851,7 +1144,11 @@ impl PudduScrollApp {
         }
         let mut photos: Vec<&Photo> = self.doc.photos.iter().collect();
         photos.sort_by_key(|photo| photo.z);
+        let session_id = self.crop_session.as_ref().map(|session| session.id);
         for photo in photos {
+            if session_id == Some(photo.id) {
+                continue;
+            }
             let Some(asset) = self.assets.get(&photo.id) else {
                 continue;
             };
@@ -878,36 +1175,53 @@ impl PudduScrollApp {
                 egui::Stroke::new(2.0, egui::Color32::from_rgb(18, 18, 18)),
             );
         }
-        if let Some(id) = self.selected {
-            if let Some(photo) = self.doc.photo(id) {
-                let screen = photo_screen(rect, count, photo, ratio).intersect(clip);
-                if screen.is_positive() {
-                    painter.rect_stroke(
-                        screen,
-                        0.0,
-                        egui::Stroke::new(2.0, ACCENT),
-                        egui::StrokeKind::Inside,
-                    );
-                }
-                let full = photo_screen(rect, count, photo, ratio);
-                for (_, pos) in handle_points(full) {
-                    if !clip.contains(pos) {
-                        continue;
-                    }
-                    let handle = egui::Rect::from_center_size(pos, egui::vec2(9.0, 9.0));
-                    painter.rect_filled(handle, 2.0, egui::Color32::WHITE);
-                    painter.rect_stroke(
-                        handle,
-                        2.0,
-                        egui::Stroke::new(1.5, ACCENT),
-                        egui::StrokeKind::Inside,
-                    );
-                }
-            }
+        if self.crop_session.is_some() {
+            self.paint_session_crop(painter, rect, clip);
+        }
+    }
+
+    fn paint_photo_selection(&self, ctx: &egui::Context, strip: egui::Rect) {
+        if self.crop_session.is_some() {
+            return;
+        }
+        let Some(id) = self.selected else {
+            return;
+        };
+        let Some(photo) = self.doc.photo(id) else {
+            return;
+        };
+        let screen = photo_screen(strip, self.doc.canvas_count, photo, self.doc.ratio.value());
+        if !screen.is_positive() {
+            return;
+        }
+        let layer = egui::LayerId::new(egui::Order::Foreground, egui::Id::unique("photo-selection"));
+        let mut painter = ctx.layer_painter(layer);
+        painter.set_clip_rect(ctx.viewport_rect());
+        painter.rect_stroke(
+            screen,
+            0.0,
+            egui::Stroke::new(2.0, ACCENT),
+            egui::StrokeKind::Inside,
+        );
+        for (_, pos) in handle_points(screen) {
+            let handle = egui::Rect::from_center_size(pos, egui::vec2(9.0, 9.0));
+            painter.rect_filled(handle, 2.0, egui::Color32::WHITE);
+            painter.rect_stroke(
+                handle,
+                2.0,
+                egui::Stroke::new(1.5, ACCENT),
+                egui::StrokeKind::Inside,
+            );
         }
     }
 
     fn strip_cursor(&self, response: &egui::Response, rect: egui::Rect) {
+        if self.crop_session.is_some() {
+            if let Some(icon) = self.crop_cursor(response, rect) {
+                response.clone().on_hover_cursor(icon);
+            }
+            return;
+        }
         let icon = match self.drag {
             Some(Drag::Move { .. }) => Some(egui::CursorIcon::Grabbing),
             Some(Drag::Resize { handle, .. }) => Some(cursor_for(handle)),
@@ -919,7 +1233,13 @@ impl PudduScrollApp {
     }
 
     fn hover_cursor(&self, response: &egui::Response, rect: egui::Rect) -> Option<egui::CursorIcon> {
-        let pos = response.hover_pos()?;
+        let pos = response
+            .hover_pos()
+            .or_else(|| response.ctx.input(|input| input.pointer.hover_pos()))?;
+        self.cursor_at(rect, pos)
+    }
+
+    fn cursor_at(&self, rect: egui::Rect, pos: egui::Pos2) -> Option<egui::CursorIcon> {
         let ratio = self.doc.ratio.value();
         if let Some(id) = self.selected {
             if let Some(photo) = self.doc.photo(id) {
@@ -934,6 +1254,413 @@ impl PudduScrollApp {
             .photo_at(nx, ny)
             .map(|_| egui::CursorIcon::Grab)
     }
+
+    fn open_crop_session(&mut self, id: PhotoId, preset: CropPreset) {
+        let Some(photo) = self.doc.photo(id) else {
+            return;
+        };
+        let image_w = photo.image_width;
+        let image_h = photo.image_height;
+        let current = photo.crop;
+        if let Some(session) = self.crop_session.as_mut() {
+            if session.id == id {
+                if session.preset != preset {
+                    session.preset = preset;
+                    session.crop = begin_crop_rect(current, preset, image_w, image_h);
+                    session.drag = None;
+                }
+                return;
+            }
+        }
+        self.drag = None;
+        self.status = "Cropping · Enter or click off the photo applies · Esc cancels".to_string();
+        self.crop_session = Some(CropSession {
+            id,
+            preset,
+            crop: begin_crop_rect(current, preset, image_w, image_h),
+            drag: None,
+        });
+    }
+
+    fn commit_crop_session(&mut self) {
+        let Some(session) = self.crop_session.take() else {
+            return;
+        };
+        let Some(photo) = self.doc.photo(session.id) else {
+            return;
+        };
+        if photo.preset == session.preset && crop_unchanged(photo.crop, session.crop) {
+            return;
+        }
+        self.undo.push(self.doc.clone());
+        if self.undo.len() > UNDO_LIMIT {
+            let extra = self.undo.len() - UNDO_LIMIT;
+            self.undo.drain(0..extra);
+        }
+        let id = session.id;
+        let preset = session.preset;
+        self.doc.set_crop(id, session.crop);
+        if let Some(photo) = self.doc.photos.iter_mut().find(|photo| photo.id == id) {
+            photo.preset = preset;
+        }
+        self.note_geometry();
+        self.status = "Crop updated".to_string();
+    }
+
+    fn drag_crop(&mut self, ctx: &egui::Context, rect: egui::Rect, editor: egui::Rect) {
+        if self.export_open {
+            return;
+        }
+        let Some(id) = self.crop_session.as_ref().map(|session| session.id) else {
+            return;
+        };
+        let Some(photo) = self.doc.photo(id) else {
+            self.crop_session = None;
+            self.crop_press = None;
+            return;
+        };
+        let image_w = photo.image_width;
+        let image_h = photo.image_height;
+        let image_rect =
+            full_image_screen(rect, self.doc.canvas_count, photo, self.doc.ratio.value());
+        let preset = self
+            .crop_session
+            .as_ref()
+            .map(|session| session.preset)
+            .unwrap_or(CropPreset::Freehand);
+        let lock = crop_lock_ratio(preset, image_w, image_h);
+        if !image_rect.is_positive() {
+            return;
+        }
+        let crop_now = self
+            .crop_session
+            .as_ref()
+            .map(|session| session.crop)
+            .unwrap_or_else(Crop::full);
+        let crop_rect = crop_to_screen(image_rect, crop_now);
+        let (pressed, down, released, press, interact, latest) = ctx.input(|input| {
+            let pointer = &input.pointer;
+            (
+                pointer.primary_pressed(),
+                pointer.primary_down(),
+                pointer.primary_released(),
+                pointer.press_origin(),
+                pointer.interact_pos(),
+                pointer.latest_pos(),
+            )
+        });
+        let mut gesture = self.crop_session.as_ref().and_then(|session| session.drag);
+        if gesture.is_none() && pressed {
+            let origin = press.or(interact).or(latest);
+            if let Some(origin) = origin {
+                if let Some(handle) = crop_handle_at(crop_rect, origin) {
+                    gesture = Some(CropGesture::Resize {
+                        handle,
+                        origin: crop_now,
+                    });
+                } else if editor.contains(origin) && crop_rect.contains(origin) {
+                    let (nx, ny) = image_to_norm(image_rect, origin);
+                    gesture = Some(CropGesture::Move {
+                        grab_x: nx - crop_now.x,
+                        grab_y: ny - crop_now.y,
+                    });
+                }
+            }
+        }
+        if gesture.is_none() && down {
+            if let Some(origin) = press.or(interact).or(latest) {
+                if let Some(handle) = crop_handle_at(crop_rect, origin) {
+                    gesture = Some(CropGesture::Resize {
+                        handle,
+                        origin: crop_now,
+                    });
+                }
+            }
+        }
+        if let Some(session) = self.crop_session.as_mut() {
+            session.drag = gesture;
+            let pos = interact.or(latest).or(press);
+            match gesture {
+                Some(CropGesture::Resize { handle, origin }) => {
+                    if let Some(pos) = pos {
+                        let (nx, ny) = image_to_norm(image_rect, pos);
+                        session.crop = resize_crop_inside(origin, handle, nx, ny, lock);
+                    }
+                    ctx.set_cursor_icon(cursor_for(handle));
+                    if down {
+                        ctx.set_dragged_id(egui::Id::unique("crop-gesture"));
+                    }
+                }
+                Some(CropGesture::Move { grab_x, grab_y }) => {
+                    if let Some(pos) = pos {
+                        let (nx, ny) = image_to_norm(image_rect, pos);
+                        session.crop = move_crop_inside(session.crop, nx - grab_x, ny - grab_y);
+                    }
+                    ctx.set_cursor_icon(egui::CursorIcon::Grabbing);
+                    if down {
+                        ctx.set_dragged_id(egui::Id::unique("crop-gesture"));
+                    }
+                }
+                None => {
+                    if let Some(pos) = latest.or(interact) {
+                        if let Some(handle) = crop_handle_at(crop_rect, pos) {
+                            ctx.set_cursor_icon(cursor_for(handle));
+                        }
+                    }
+                }
+            }
+            if released {
+                if gesture.is_some() {
+                    ctx.stop_dragging();
+                }
+                session.drag = None;
+            }
+        }
+    }
+
+    fn paint_session_crop(&self, painter: &egui::Painter, strip: egui::Rect, clip: egui::Rect) {
+        let Some(session) = self.crop_session.as_ref() else {
+            return;
+        };
+        let Some(photo) = self.doc.photo(session.id) else {
+            return;
+        };
+        let Some(texture) = self.assets.get(&session.id).map(|asset| asset.texture.id()) else {
+            return;
+        };
+        let image = full_image_screen(strip, self.doc.canvas_count, photo, self.doc.ratio.value());
+        if !image.is_positive() {
+            return;
+        }
+        let crop_rect = crop_to_screen(image, session.crop);
+        let shadow = image.translate(egui::vec2(4.0, 5.0)).intersect(clip);
+        if shadow.is_positive() {
+            painter.rect_filled(shadow, 2.0, egui::Color32::from_black_alpha(36));
+        }
+        let full_uv = egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0));
+        paint_clipped_image(painter, image, clip, full_uv, texture);
+        paint_crop_veil(painter, image, crop_rect);
+        let inside_uv = egui::Rect::from_min_max(
+            egui::pos2(session.crop.x, session.crop.y),
+            egui::pos2(
+                session.crop.x + session.crop.w,
+                session.crop.y + session.crop.h,
+            ),
+        );
+        paint_clipped_image(painter, crop_rect, clip, inside_uv, texture);
+        painter.rect_stroke(
+            image,
+            0.0,
+            egui::Stroke::new(1.0, egui::Color32::from_rgb(70, 70, 70)),
+            egui::StrokeKind::Outside,
+        );
+        painter.rect_stroke(
+            crop_rect,
+            0.0,
+            egui::Stroke::new(2.0, egui::Color32::WHITE),
+            egui::StrokeKind::Inside,
+        );
+    }
+
+    fn paint_crop_handles(&self, ctx: &egui::Context, strip: egui::Rect) {
+        let Some(crop_rect) = self.session_crop_screen(strip) else {
+            return;
+        };
+        let layer = egui::LayerId::new(egui::Order::Foreground, egui::Id::unique("crop-handles"));
+        let mut painter = ctx.layer_painter(layer);
+        painter.set_clip_rect(ctx.viewport_rect());
+        for (_, pos) in handle_points(crop_rect) {
+            let handle = egui::Rect::from_center_size(pos, egui::vec2(11.0, 11.0));
+            painter.rect_filled(handle, 2.0, egui::Color32::WHITE);
+            painter.rect_stroke(
+                handle,
+                2.0,
+                egui::Stroke::new(1.5, ACCENT),
+                egui::StrokeKind::Inside,
+            );
+        }
+    }
+
+    fn crop_cursor(&self, response: &egui::Response, rect: egui::Rect) -> Option<egui::CursorIcon> {
+        let gesture = self.crop_session.as_ref().and_then(|session| session.drag);
+        match gesture {
+            Some(CropGesture::Move { .. }) => return Some(egui::CursorIcon::Grabbing),
+            Some(CropGesture::Resize { handle, .. }) => return Some(cursor_for(handle)),
+            None => {}
+        }
+        let pos = response
+            .hover_pos()
+            .or_else(|| response.ctx.input(|input| input.pointer.hover_pos()))?;
+        let crop_rect = self.session_crop_screen(rect)?;
+        if let Some(handle) = crop_handle_at(crop_rect, pos) {
+            return Some(cursor_for(handle));
+        }
+        if crop_rect.contains(pos) {
+            return Some(egui::CursorIcon::Grab);
+        }
+        None
+    }
+
+    fn session_image_screen(&self, strip: egui::Rect) -> Option<egui::Rect> {
+        let id = self.crop_session.as_ref()?.id;
+        let photo = self.doc.photo(id)?;
+        let image = full_image_screen(strip, self.doc.canvas_count, photo, self.doc.ratio.value());
+        image.is_positive().then_some(image)
+    }
+
+    fn session_crop_screen(&self, strip: egui::Rect) -> Option<egui::Rect> {
+        let image = self.session_image_screen(strip)?;
+        let crop = self.crop_session.as_ref()?.crop;
+        Some(crop_to_screen(image, crop))
+    }
+
+    fn write_crop_probe(&self, ctx: &egui::Context, editor: egui::Rect) {
+        let Some(strip) = self.strip_rect else {
+            return;
+        };
+        let ratio = self.doc.ratio.value();
+        let count = self.doc.canvas_count.max(1);
+        let canvas_w = strip.width() / count as f32;
+        let mut text = format!(
+            "ppp={}\nviewport={:?}\neditor={:?}\nstrip={:?}\n",
+            ctx.pixels_per_point(),
+            ctx.viewport_rect(),
+            editor,
+            strip
+        );
+        for index in 0..count {
+            let canvas = egui::Rect::from_min_size(
+                egui::pos2(strip.min.x + index as f32 * canvas_w, strip.min.y),
+                egui::vec2(canvas_w, strip.height()),
+            );
+            text.push_str(&format!("canvas {index} {canvas:?}\n"));
+        }
+        for photo in &self.doc.photos {
+            let screen = photo_screen(strip, count, photo, ratio);
+            text.push_str(&format!(
+                "photo {} x={} y={} w={} crop={:?} screen={:?}\n",
+                photo.id.0, photo.x, photo.y, photo.w, photo.crop, screen
+            ));
+        }
+        let (press, interact, latest, scroll) = ctx.input(|input| {
+            let pointer = &input.pointer;
+            (
+                pointer.press_origin(),
+                pointer.interact_pos(),
+                pointer.latest_pos(),
+                input.smooth_scroll_delta,
+            )
+        });
+        text.push_str(&format!(
+            "live zoom={} pointer press={press:?} interact={interact:?} latest={latest:?} scroll={scroll:?}\n",
+            self.editor_zoom
+        ));
+        if let Some(session) = &self.crop_session {
+            let screen = self.session_crop_screen(strip);
+            text.push_str(&format!(
+                "session {:?} crop={:?} screen={:?}\n",
+                session.preset, session.crop, screen
+            ));
+            if let Some(crop_rect) = screen {
+                let canvases: Vec<egui::Rect> = (0..count)
+                    .map(|index| {
+                        egui::Rect::from_min_size(
+                            egui::pos2(strip.min.x + index as f32 * canvas_w, strip.min.y),
+                            egui::vec2(canvas_w, strip.height()),
+                        )
+                    })
+                    .collect();
+                for (handle, pos) in handle_points(crop_rect) {
+                    let outside = canvases.iter().all(|canvas| !canvas.contains(pos));
+                    let hit = crop_handle_target(pos);
+                    text.push_str(&format!(
+                        "handle {handle:?} center={pos:?} hit={hit:?} outside_canvas={outside}\n"
+                    ));
+                }
+                let (press, interact, latest) = ctx.input(|input| {
+                    let pointer = &input.pointer;
+                    (
+                        pointer.press_origin(),
+                        pointer.interact_pos(),
+                        pointer.latest_pos(),
+                    )
+                });
+                let sample = press.or(interact).or(latest);
+                let hit = sample.and_then(|pos| crop_handle_at(crop_rect, pos));
+                let drag = match session.drag {
+                    Some(CropGesture::Move { .. }) => "move".to_string(),
+                    Some(CropGesture::Resize { handle, .. }) => format!("resize {handle:?}"),
+                    None => "none".to_string(),
+                };
+                text.push_str(&format!(
+                    "pointer press={press:?} interact={interact:?} latest={latest:?} hit={hit:?} drag={drag} clip_consulted=false\n"
+                ));
+            }
+        }
+        let _ = std::fs::write(r"C:\Users\dario\AppData\Local\Temp\pudduscroll-crop.txt", text);
+    }
+
+    fn pointer_hits_crop_photo(&self, pos: egui::Pos2) -> bool {
+        let Some(strip) = self.strip_rect else {
+            return true;
+        };
+        let Some(image) = self.session_image_screen(strip) else {
+            return true;
+        };
+        if image.contains(pos) {
+            return true;
+        }
+        self.session_crop_screen(strip)
+            .is_some_and(|crop_rect| crop_handle_at(crop_rect, pos).is_some())
+    }
+
+    fn apply_crop_click(&mut self, ctx: &egui::Context, editor_rect: egui::Rect) {
+        if self.export_open || self.crop_session.is_none() {
+            self.crop_press = None;
+            return;
+        }
+        let (down, clicked, origin, latest) = ctx.input(|input| {
+            let pointer = &input.pointer;
+            let pressed_at = input.events.iter().find_map(|event| match event {
+                egui::Event::PointerButton {
+                    pos,
+                    button,
+                    pressed: true,
+                    ..
+                } if *button == egui::PointerButton::Primary => Some(*pos),
+                _ => None,
+            });
+            (
+                pointer.primary_down(),
+                pointer.primary_clicked(),
+                pointer.press_origin().or(pressed_at),
+                pointer.latest_pos(),
+            )
+        });
+        if let Some(origin) = origin {
+            self.crop_press = Some(origin);
+        }
+        if !clicked {
+            if !down {
+                self.crop_press = None;
+            }
+            return;
+        }
+        let Some(release) = latest else {
+            self.crop_press = None;
+            return;
+        };
+        let press = self.crop_press.take().unwrap_or(release);
+        if !editor_rect.contains(press) || !editor_rect.contains(release) {
+            return;
+        }
+        if self.pointer_hits_crop_photo(press) || self.pointer_hits_crop_photo(release) {
+            return;
+        }
+        self.commit_crop_session();
+        ctx.request_repaint();
+    }
+
 }
 
 impl eframe::App for PudduScrollApp {
@@ -948,31 +1675,93 @@ impl eframe::App for PudduScrollApp {
         let chrome = egui::Frame::new()
             .fill(PANEL)
             .inner_margin(egui::Margin::symmetric(12, 8));
+        let toolbar_h = 64.0;
+        let rail_w = 320.0;
         egui::Panel::top("toolbar")
-            .exact_size(64.0)
+            .exact_size(toolbar_h)
             .resizable(false)
             .show_separator_line(false)
             .frame(chrome)
             .show(ui, |ui| self.toolbar(ui));
-        egui::Panel::right("rail")
-            .exact_size(320.0)
-            .resizable(false)
-            .show_separator_line(false)
-            .frame(chrome)
-            .show(ui, |ui| {
-                let (preview_h, crop_h, layers_h) = section_heights(ui.available_height());
-                rail_section(ui, preview_h, "preview", false, |ui| self.preview_panel(ui));
-                rail_section(ui, crop_h, "crop", true, |ui| self.crop_panel(ui));
-                rail_section(ui, layers_h, "layers", true, |ui| self.layer_panel(ui));
-            });
-        egui::CentralPanel::default()
-            .frame(egui::Frame::new().fill(BG))
-            .show(ui, |ui| {
-                let bounds = ui.max_rect().intersect(ui.clip_rect());
-                ui.set_clip_rect(bounds);
-                self.editor(ui, bounds);
-            });
+        let rail_rect = egui::Rect::from_min_max(
+            egui::pos2(full.right() - rail_w, full.top() + toolbar_h),
+            full.right_bottom(),
+        );
+        let editor_rect = egui::Rect::from_min_max(
+            egui::pos2(full.left(), rail_rect.top()),
+            egui::pos2(rail_rect.left(), full.bottom()),
+        );
+        let mut editor_ui = ui.new_child(
+            egui::UiBuilder::new()
+                .id_salt("editor")
+                .max_rect(editor_rect)
+                .layout(egui::Layout::top_down(egui::Align::Min)),
+        );
+        editor_ui.set_clip_rect(editor_rect);
+        editor_ui.painter().rect_filled(editor_rect, 0.0, BG);
+        self.editor(&mut editor_ui, editor_rect);
+        self.paint_rail(ui, rail_rect);
+        self.write_crop_probe(&ctx, editor_rect);
+        self.apply_crop_click(&ctx, editor_rect);
         self.export_modal(&ctx);
+    }
+}
+
+fn crop_unchanged(a: Crop, b: Crop) -> bool {
+    (a.x - b.x).abs() < 1.0e-4
+        && (a.y - b.y).abs() < 1.0e-4
+        && (a.w - b.w).abs() < 1.0e-4
+        && (a.h - b.h).abs() < 1.0e-4
+}
+
+fn full_image_screen(strip: egui::Rect, count: usize, photo: &Photo, ratio: f32) -> egui::Rect {
+    let placed = photo_screen(strip, count, photo, ratio);
+    let crop = photo.crop;
+    let w = placed.width() / crop.w.max(0.02);
+    let h = placed.height() / crop.h.max(0.02);
+    egui::Rect::from_min_size(
+        egui::pos2(placed.min.x - crop.x * w, placed.min.y - crop.y * h),
+        egui::vec2(w, h),
+    )
+}
+
+fn image_to_norm(image: egui::Rect, pos: egui::Pos2) -> (f32, f32) {
+    (
+        (pos.x - image.min.x) / image.width().max(1.0),
+        (pos.y - image.min.y) / image.height().max(1.0),
+    )
+}
+
+fn crop_to_screen(image: egui::Rect, crop: Crop) -> egui::Rect {
+    egui::Rect::from_min_max(
+        egui::pos2(
+            image.min.x + crop.x * image.width(),
+            image.min.y + crop.y * image.height(),
+        ),
+        egui::pos2(
+            image.min.x + (crop.x + crop.w) * image.width(),
+            image.min.y + (crop.y + crop.h) * image.height(),
+        ),
+    )
+}
+
+fn paint_crop_veil(painter: &egui::Painter, image: egui::Rect, crop: egui::Rect) {
+    let veil = egui::Color32::from_black_alpha(140);
+    let crop = crop.intersect(image);
+    if !crop.is_positive() {
+        painter.rect_filled(image, 0.0, veil);
+        return;
+    }
+    let regions = [
+        egui::Rect::from_min_max(image.left_top(), egui::pos2(image.right(), crop.top())),
+        egui::Rect::from_min_max(egui::pos2(image.left(), crop.bottom()), image.right_bottom()),
+        egui::Rect::from_min_max(egui::pos2(image.left(), crop.top()), crop.left_bottom()),
+        egui::Rect::from_min_max(crop.right_top(), egui::pos2(image.right(), crop.bottom())),
+    ];
+    for region in regions {
+        if region.is_positive() {
+            painter.rect_filled(region, 0.0, veil);
+        }
     }
 }
 
@@ -1079,6 +1868,35 @@ fn editor_preview(src: &RgbaImage) -> RgbaImage {
     resize(src, width, height, FilterType::Triangle)
 }
 
+fn next_editor_zoom(current: f32, scroll_y: f32) -> f32 {
+    (current * (scroll_y * EDITOR_ZOOM_SPEED).exp()).clamp(MIN_EDITOR_ZOOM, MAX_EDITOR_ZOOM)
+}
+
+fn editor_strip_size(bounds: egui::Rect, zoom: f32, ratio: f32, count: usize) -> egui::Vec2 {
+    let fit_h = (bounds.height() - 36.0).max(120.0);
+    let canvas_h = fit_h * zoom;
+    let canvas_w = canvas_h * ratio;
+    egui::vec2(canvas_w * count.max(1) as f32, canvas_h)
+}
+
+fn place_strip(desired: egui::Pos2, size: egui::Vec2, view: egui::Rect) -> (egui::Vec2, egui::Vec2) {
+    let mut lead = egui::Vec2::ZERO;
+    let mut scroll = egui::Vec2::ZERO;
+    let want = [desired.x, desired.y];
+    let len = [size.x, size.y];
+    let origin = [view.min.x, view.min.y];
+    let view_len = [view.width(), view.height()];
+    for axis in 0..2 {
+        if len[axis] <= view_len[axis] {
+            let slack = (view_len[axis] - len[axis]).max(0.0);
+            lead[axis] = (want[axis] - origin[axis]).clamp(0.0, slack);
+        } else {
+            scroll[axis] = (origin[axis] - want[axis]).clamp(0.0, len[axis] - view_len[axis]);
+        }
+    }
+    (lead, scroll)
+}
+
 fn screen_to_norm(strip: egui::Rect, count: usize, pos: egui::Pos2) -> (f32, f32) {
     let canvas_w = strip.width() / count.max(1) as f32;
     let x = (pos.x - strip.min.x) / canvas_w.max(1.0);
@@ -1115,10 +1933,28 @@ fn handle_points(rect: egui::Rect) -> [(Handle, egui::Pos2); 8] {
     ]
 }
 
+fn handle_target(point: egui::Pos2) -> egui::Rect {
+    egui::Rect::from_center_size(point, egui::vec2(20.0, 20.0))
+}
+
 fn handle_at(rect: egui::Rect, pos: egui::Pos2) -> Option<Handle> {
     handle_points(rect)
         .into_iter()
-        .find(|(_, point)| point.distance(pos) <= 10.0)
+        .find(|(_, point)| handle_target(*point).contains(pos))
+        .map(|(handle, _)| handle)
+}
+
+fn crop_handle_target(point: egui::Pos2) -> egui::Rect {
+    egui::Rect::from_center_size(
+        point,
+        egui::vec2(CROP_HANDLE_HIT * 2.0, CROP_HANDLE_HIT * 2.0),
+    )
+}
+
+fn crop_handle_at(rect: egui::Rect, pos: egui::Pos2) -> Option<Handle> {
+    handle_points(rect)
+        .into_iter()
+        .find(|(_, point)| crop_handle_target(*point).contains(pos))
         .map(|(handle, _)| handle)
 }
 
@@ -1141,6 +1977,148 @@ fn short_name(name: &str) -> String {
         out.push(ch);
     }
     out
+}
+
+#[derive(Clone, Copy)]
+enum Glyph {
+    Left,
+    Right,
+    Up,
+    Down,
+    Top,
+    Bottom,
+}
+
+struct PreviewSlots {
+    left: egui::Rect,
+    phone: egui::Rect,
+    right: egui::Rect,
+}
+
+fn preview_slots(area: egui::Rect, ratio: f32) -> PreviewSlots {
+    let button = 34.0;
+    let gap = 10.0;
+    let ratio = ratio.max(0.05);
+    let max_bezel_h = area.height().max(48.0);
+    let max_bezel_w = (area.width() - (button + gap) * 2.0).max(48.0);
+    let mut screen_h = (max_bezel_h - 40.0).clamp(36.0, 168.0);
+    let mut screen_w = screen_h * ratio;
+    let max_screen_w = (max_bezel_w - 28.0).max(36.0);
+    if screen_w > max_screen_w {
+        screen_w = max_screen_w;
+        screen_h = screen_w / ratio;
+    }
+    let phone = egui::Rect::from_center_size(
+        area.center(),
+        egui::vec2(screen_w + 28.0, screen_h + 40.0),
+    );
+    let left = egui::Rect::from_center_size(
+        egui::pos2(phone.left() - gap - button * 0.5, phone.center().y),
+        egui::vec2(button, button),
+    );
+    let right = egui::Rect::from_center_size(
+        egui::pos2(phone.right() + gap + button * 0.5, phone.center().y),
+        egui::vec2(button, button),
+    );
+    PreviewSlots { left, phone, right }
+}
+
+fn icon_button(
+    ui: &mut egui::Ui,
+    rect: egui::Rect,
+    salt: impl std::hash::Hash + std::fmt::Debug,
+    enabled: bool,
+    glyph: Glyph,
+) -> egui::Response {
+    let mut child = ui.new_child(
+        egui::UiBuilder::new()
+            .id_salt(salt)
+            .max_rect(rect)
+            .layout(egui::Layout::centered_and_justified(
+                egui::Direction::TopDown,
+            )),
+    );
+    child.set_clip_rect(rect.expand(1.0).intersect(child.clip_rect()));
+    child.spacing_mut().button_padding = egui::vec2(0.0, 0.0);
+    let icon = egui::Atom::paint(rect.size() * 0.56, move |ui, args| {
+        paint_glyph(
+            ui.painter(),
+            args.rect,
+            glyph,
+            icon_ink(args.fallback_text_color),
+        );
+    });
+    child.add_enabled(
+        enabled,
+        egui::Button::new(icon)
+            .min_size(rect.size())
+            .corner_radius(egui::CornerRadius::same(6)),
+    )
+}
+
+fn icon_ink(color: egui::Color32) -> egui::Color32 {
+    let on_accent = color.r() > 200
+        && color.g() > 120
+        && color.g() < 210
+        && color.b() < 140
+        && color.r() > color.b();
+    if on_accent {
+        egui::Color32::BLACK
+    } else {
+        color
+    }
+}
+
+fn paint_glyph(painter: &egui::Painter, rect: egui::Rect, glyph: Glyph, color: egui::Color32) {
+    let width = (rect.width().min(rect.height()) * 0.14).clamp(1.4, 2.15);
+    let stroke = egui::Stroke::new(width, color);
+    match glyph {
+        Glyph::Left => chevron(painter, rect, std::f32::consts::PI, stroke),
+        Glyph::Right => chevron(painter, rect, 0.0, stroke),
+        Glyph::Up => chevron(painter, rect, -std::f32::consts::FRAC_PI_2, stroke),
+        Glyph::Down => chevron(painter, rect, std::f32::consts::FRAC_PI_2, stroke),
+        Glyph::Top => capped(painter, rect, -std::f32::consts::FRAC_PI_2, stroke),
+        Glyph::Bottom => capped(painter, rect, std::f32::consts::FRAC_PI_2, stroke),
+    }
+}
+
+fn chevron(painter: &egui::Painter, rect: egui::Rect, angle: f32, stroke: egui::Stroke) {
+    let reach = rect.width().min(rect.height()) * 0.34;
+    chevron_at(painter, rect.center(), angle, reach, stroke);
+}
+
+fn chevron_at(
+    painter: &egui::Painter,
+    center: egui::Pos2,
+    angle: f32,
+    reach: f32,
+    stroke: egui::Stroke,
+) {
+    let (sin, cos) = angle.sin_cos();
+    let point = |x: f32, y: f32| {
+        center + egui::vec2(x * cos - y * sin, x * sin + y * cos) * reach
+    };
+    painter.line(
+        vec![point(-0.65, -1.0), point(1.0, 0.0), point(-0.65, 1.0)],
+        stroke,
+    );
+}
+
+fn capped(painter: &egui::Painter, rect: egui::Rect, angle: f32, stroke: egui::Stroke) {
+    let along = egui::vec2(angle.cos(), angle.sin());
+    let side = egui::vec2(-along.y, along.x);
+    let half = rect.width().min(rect.height()) * 0.42;
+    let bar_center = rect.center() + along * half * 0.72;
+    let bar_half = side * half * 0.85;
+    painter.line(vec![bar_center - bar_half, bar_center + bar_half], stroke);
+    let reach = rect.width().min(rect.height()) * 0.24;
+    chevron_at(
+        painter,
+        rect.center() - along * reach * 0.35,
+        angle,
+        reach,
+        stroke,
+    );
 }
 
 fn apply_style(ctx: &egui::Context) {
