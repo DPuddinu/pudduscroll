@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use image::imageops::{crop_imm, overlay, resize, FilterType};
+use image::imageops::{FilterType, crop_imm, overlay, resize};
 use image::{Rgba, RgbaImage};
 
 use crate::{Document, Photo, PhotoId};
@@ -14,19 +14,20 @@ pub struct ClippedRegion {
     pub src: [f32; 4],
 }
 
+#[must_use]
 pub fn clip_photo_to_canvas(photo: &Photo, canvas: usize, ratio: f32) -> Option<ClippedRegion> {
     let height = photo.height(ratio);
     if photo.w <= 1e-6 || height <= 1e-6 {
         return None;
     }
-    let photo_x1 = photo.x + photo.w;
-    let photo_y1 = photo.y + height;
+    let photo_right = photo.x + photo.w;
+    let photo_bottom = photo.y + height;
     let canvas_x0 = canvas as f32;
     let canvas_x1 = canvas_x0 + 1.0;
     let ix0 = photo.x.max(canvas_x0);
     let iy0 = photo.y.max(0.0);
-    let ix1 = photo_x1.min(canvas_x1);
-    let iy1 = photo_y1.min(1.0);
+    let ix1 = photo_right.min(canvas_x1);
+    let iy1 = photo_bottom.min(1.0);
     if ix1 - ix0 <= 1e-5 || iy1 - iy0 <= 1e-5 {
         return None;
     }
@@ -48,6 +49,7 @@ pub fn clip_photo_to_canvas(photo: &Photo, canvas: usize, ratio: f32) -> Option<
     })
 }
 
+#[must_use]
 pub fn render_canvas(
     doc: &Document,
     canvas: usize,
@@ -96,15 +98,15 @@ fn blit(dest: &mut RgbaImage, src: &RgbaImage, region: &ClippedRegion) {
     let sy = region.src[1].clamp(0.0, max_h - 1.0);
     let sx1 = (region.src[0] + region.src[2]).clamp(sx + 1.0, max_w);
     let sy1 = (region.src[1] + region.src[3]).clamp(sy + 1.0, max_h);
-    let sx_i = sx.floor() as u32;
-    let sy_i = sy.floor() as u32;
-    let sw_i = ((sx1.ceil() as u32).saturating_sub(sx_i))
+    let src_x = sx.floor() as u32;
+    let src_y = sy.floor() as u32;
+    let src_w = ((sx1.ceil() as u32).saturating_sub(src_x))
         .max(1)
-        .min(src.width() - sx_i);
-    let sh_i = ((sy1.ceil() as u32).saturating_sub(sy_i))
+        .min(src.width() - src_x);
+    let src_h = ((sy1.ceil() as u32).saturating_sub(src_y))
         .max(1)
-        .min(src.height() - sy_i);
-    let view = crop_imm(src, sx_i, sy_i, sw_i, sh_i);
+        .min(src.height() - src_y);
+    let view = crop_imm(src, src_x, src_y, src_w, src_h);
     let resized = resize(&view.to_image(), rw, rh, FilterType::Triangle);
     overlay(dest, &resized, x0 as i64, y0 as i64);
 }

@@ -29,10 +29,86 @@ fn pixel(image: &RgbaImage, x: u32, y: u32) -> [u8; 4] {
 
 #[test]
 fn instagram_export_sizes() {
-    assert_eq!(AspectRatio::SQUARE.export_size(1080), (1080, 1080));
-    assert_eq!(AspectRatio::FOUR_FIVE.export_size(1080), (1080, 1350));
-    assert_eq!(AspectRatio::THREE_FOUR.export_size(1080), (1080, 1440));
-    assert_eq!(AspectRatio::NINE_SIXTEEN.export_size(1080), (1080, 1920));
+    let empty = Document::new(AspectRatio::FOUR_FIVE);
+    assert_eq!(export_width(&empty), DEFAULT_EXPORT_WIDTH);
+    assert_eq!(empty.ratio.export_size(export_width(&empty)), (1080, 1350));
+
+    let mut wide = Document::new(AspectRatio::SQUARE);
+    wide.set_canvas_count(2);
+    let id = wide.add_photo("detail", 600, 600);
+    wide.set_box(id, 0.0, 0.0, 0.5);
+    let width = export_width(&wide);
+    assert!(width > 1080);
+    assert_eq!(width, 1200);
+    let mut images = ImageMap::new();
+    insert(&mut images, id, solid(600, 600, [20, 40, 60, 255]));
+    let files = export_canvases(&wide, &images, ExportSettings { width, quality: 90 }).unwrap();
+    assert_eq!(files.len(), 2);
+    for file in &files {
+        let encoded = image::load_from_memory(&file.bytes).unwrap().to_rgba8();
+        assert_eq!(encoded.dimensions(), wide.ratio.export_size(width));
+    }
+
+    let mut low = Document::new(AspectRatio::SQUARE);
+    let id = low.add_photo("low", 480, 480);
+    assert!((low.photo(id).unwrap().w - 1.0).abs() < 1e-4);
+    assert_eq!(export_width(&low), 480);
+    assert!(export_width(&low) < 1080);
+    let mut images = ImageMap::new();
+    insert(&mut images, id, solid(480, 480, [8, 8, 8, 255]));
+    let files = export_canvases(
+        &low,
+        &images,
+        ExportSettings {
+            width: export_width(&low),
+            quality: 100,
+        },
+    )
+    .unwrap();
+    let encoded = image::load_from_memory(&files[0].bytes).unwrap().to_rgba8();
+    assert_eq!(encoded.dimensions(), (480, 480));
+
+    let mut pair = Document::new(AspectRatio::SQUARE);
+    let half = pair.add_photo("half", 1000, 1000);
+    let full = pair.add_photo("full", 1500, 1500);
+    pair.set_box(half, 0.0, 0.0, 0.5);
+    pair.set_box(full, 0.0, 0.0, 1.0);
+    assert_eq!(export_width(&pair), 1500);
+
+    let mut frame = Document::new(AspectRatio::FOUR_FIVE);
+    let id = frame.add_photo("frame", 1200, 1200);
+    assert!((frame.photo(id).unwrap().w - 1.0).abs() < 1e-4);
+    let width = export_width(&frame);
+    assert_eq!(width, 1200);
+    let (export_w, export_h) = frame.ratio.export_size(width);
+    assert_eq!(export_h, export_w * 5 / 4);
+    let mut images = ImageMap::new();
+    insert(&mut images, id, solid(1200, 1200, [30, 20, 10, 255]));
+    let files = export_canvases(&frame, &images, ExportSettings { width, quality: 90 }).unwrap();
+    let encoded = image::load_from_memory(&files[0].bytes).unwrap().to_rgba8();
+    assert_eq!(encoded.dimensions(), (export_w, export_h));
+
+    let mut cropped = Document::new(AspectRatio::SQUARE);
+    let id = cropped.add_photo("crop", 2000, 2000);
+    cropped.set_crop(
+        id,
+        Crop {
+            x: 0.25,
+            y: 0.25,
+            w: 0.5,
+            h: 0.5,
+        },
+    );
+    assert_eq!(export_width(&cropped), 1000);
+
+    let mut samples = Document::new(AspectRatio::FOUR_FIVE);
+    samples.add_photo("night.jpg", 900, 900);
+    samples.add_photo("dune.png", 800, 1200);
+    samples.add_photo("harbor.png", 1200, 700);
+    assert_eq!(
+        samples.ratio.export_size(export_width(&samples)),
+        (900, 1125)
+    );
 }
 
 #[test]
@@ -211,9 +287,7 @@ fn ratio_change_keeps_strip_placement() {
     let new_center = photo.y + photo.height(doc.ratio.value()) * 0.5;
     assert!((old_center - new_center).abs() < 1e-4);
     assert!(
-        (placed_pixel_aspect(photo, doc.ratio.value())
-            - photo.crop.pixel_aspect(400, 200))
-        .abs()
+        (placed_pixel_aspect(photo, doc.ratio.value()) - photo.crop.pixel_aspect(400, 200)).abs()
             < 1e-3
     );
 }
@@ -319,16 +393,13 @@ fn byte_estimate_matches_encoded_carousel() {
     let mut images = ImageMap::new();
     insert(&mut images, id, noisy(96, 96));
 
-    let low = ExportSettings {
-        width: 64,
-        quality: 0,
-    };
-    let mid = ExportSettings {
-        width: 64,
-        quality: 70,
-    };
+    let width = export_width(&doc);
+    assert_eq!(width, 64);
+    assert_eq!(doc.ratio.export_size(width), (64, 64));
+    let low = ExportSettings { width, quality: 0 };
+    let mid = ExportSettings { width, quality: 70 };
     let native = ExportSettings {
-        width: 64,
+        width,
         quality: 100,
     };
     let low_files = export_canvases(&doc, &images, low).unwrap();
@@ -342,18 +413,35 @@ fn byte_estimate_matches_encoded_carousel() {
     assert_eq!(low_files[0].bytes[0], 0xff);
     assert_eq!(low_files[0].bytes[1], 0xd8);
     assert_eq!(&native_files[0].bytes[..8], b"\x89PNG\r\n\x1a\n");
+    for file in low_files
+        .iter()
+        .chain(mid_files.iter())
+        .chain(native_files.iter())
+    {
+        let encoded = image::load_from_memory(&file.bytes).unwrap().to_rgba8();
+        assert_eq!(encoded.dimensions(), doc.ratio.export_size(width));
+    }
 
     let low_bytes = estimate_total_bytes(&doc, &images, low).unwrap();
     let mid_bytes = estimate_total_bytes(&doc, &images, mid).unwrap();
     let native_bytes = estimate_total_bytes(&doc, &images, native).unwrap();
     let low_sum: u64 = low_files.iter().map(|file| file.bytes.len() as u64).sum();
-    let native_sum: u64 = native_files.iter().map(|file| file.bytes.len() as u64).sum();
+    let native_sum: u64 = native_files
+        .iter()
+        .map(|file| file.bytes.len() as u64)
+        .sum();
     assert_eq!(low_bytes, low_sum);
     assert_eq!(native_bytes, native_sum);
     assert!(low_bytes < mid_bytes);
-    assert!(mid_files.iter().map(|file| file.bytes.len()).sum::<usize>() as u64 == mid_bytes);
+    assert_eq!(
+        mid_files.iter().map(|file| file.bytes.len()).sum::<usize>() as u64,
+        mid_bytes
+    );
 
-    assert_eq!(quality_description(0), format!("JPEG quality {}", jpeg_quality_value(0)));
+    assert_eq!(
+        quality_description(0),
+        format!("JPEG quality {}", jpeg_quality_value(0))
+    );
     assert_eq!(quality_description(100), "PNG (native quality)");
     assert!(jpeg_quality_value(0) < jpeg_quality_value(70));
 
@@ -362,7 +450,7 @@ fn byte_estimate_matches_encoded_carousel() {
     write_canvases(&dir, &low_files).unwrap();
     assert!(dir.join("pudduscroll-01.jpg").is_file());
     assert!(dir.join("pudduscroll-02.jpg").is_file());
-    std::fs::remove_dir_all(&dir).ok();
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 fn assert_crop_inside(crop: Crop) {
@@ -412,9 +500,7 @@ fn crop_session_starts_centered_unless_the_aspect_already_matches() {
     assert!((kept.x - 0.05).abs() < 1e-4);
     assert!((kept.h - 0.4).abs() < 1e-4);
     let reset = begin_crop_rect(square, CropPreset::SixteenNine, 800, 400);
-    assert!(
-        (reset.pixel_aspect(800, 400) - CropPreset::SixteenNine.target_aspect()).abs() < 1e-3
-    );
+    assert!((reset.pixel_aspect(800, 400) - CropPreset::SixteenNine.target_aspect()).abs() < 1e-3);
     assert!(reset.w > 0.99 || reset.h > 0.99);
 
     let free = begin_crop_rect(square, CropPreset::Freehand, 800, 400);

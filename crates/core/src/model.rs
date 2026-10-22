@@ -28,14 +28,17 @@ impl AspectRatio {
         height: 16,
     };
 
+    #[must_use]
     pub fn value(self) -> f32 {
         self.width as f32 / self.height as f32
     }
 
+    #[must_use]
     pub fn label(self) -> String {
         format!("{}:{}", self.width, self.height)
     }
 
+    #[must_use]
     pub fn export_size(self, width: u32) -> (u32, u32) {
         let width = width.max(1);
         let height = ((width as u64 * self.height as u64) / self.width as u64) as u32;
@@ -59,6 +62,7 @@ pub struct Crop {
 }
 
 impl Crop {
+    #[must_use]
     pub fn full() -> Self {
         Self {
             x: 0.0,
@@ -68,6 +72,7 @@ impl Crop {
         }
     }
 
+    #[must_use]
     pub fn clamp(self) -> Self {
         let w = self.w.clamp(0.02, 1.0);
         let h = self.h.clamp(0.02, 1.0);
@@ -79,6 +84,7 @@ impl Crop {
         }
     }
 
+    #[must_use]
     pub fn pixel_aspect(self, image_w: u32, image_h: u32) -> f32 {
         let pw = (self.w * image_w as f32).max(1.0);
         let ph = (self.h * image_h as f32).max(1.0);
@@ -99,6 +105,7 @@ pub enum CropPreset {
 }
 
 impl CropPreset {
+    #[must_use]
     pub fn label(self) -> &'static str {
         match self {
             CropPreset::Original => "Original",
@@ -112,15 +119,15 @@ impl CropPreset {
         }
     }
 
+    #[must_use]
     pub fn target_aspect(self) -> f32 {
         match self {
-            CropPreset::Square => 1.0,
+            CropPreset::Square | CropPreset::Original | CropPreset::Freehand => 1.0,
             CropPreset::FourFive => 4.0 / 5.0,
             CropPreset::ThreeFour => 3.0 / 4.0,
             CropPreset::ThreeTwo => 3.0 / 2.0,
             CropPreset::SixteenNine => 16.0 / 9.0,
             CropPreset::NineSixteen => 9.0 / 16.0,
-            CropPreset::Original | CropPreset::Freehand => 1.0,
         }
     }
 }
@@ -136,6 +143,7 @@ pub const CROP_PRESETS: [CropPreset; 8] = [
     CropPreset::Freehand,
 ];
 
+#[must_use]
 pub fn crop_rect_for_aspect(image_w: u32, image_h: u32, target_aspect: f32) -> Crop {
     let image_aspect = image_w.max(1) as f32 / image_h.max(1) as f32;
     if image_aspect > target_aspect {
@@ -159,6 +167,7 @@ pub fn crop_rect_for_aspect(image_w: u32, image_h: u32, target_aspect: f32) -> C
 
 const MIN_CROP: f32 = 0.02;
 
+#[must_use]
 pub fn crop_lock_ratio(preset: CropPreset, image_w: u32, image_h: u32) -> Option<f32> {
     match preset {
         CropPreset::Freehand => None,
@@ -171,6 +180,7 @@ pub fn crop_lock_ratio(preset: CropPreset, image_w: u32, image_h: u32) -> Option
     }
 }
 
+#[must_use]
 pub fn begin_crop_rect(current: Crop, preset: CropPreset, image_w: u32, image_h: u32) -> Crop {
     let current = current.clamp();
     if preset == CropPreset::Freehand || crop_matches_preset(current, preset, image_w, image_h) {
@@ -192,6 +202,7 @@ fn crop_matches_preset(crop: Crop, preset: CropPreset, image_w: u32, image_h: u3
     (actual - target).abs() <= 0.02 * target.max(1.0)
 }
 
+#[must_use]
 pub fn move_crop_inside(crop: Crop, x: f32, y: f32) -> Crop {
     let crop = crop.clamp();
     Crop {
@@ -202,6 +213,7 @@ pub fn move_crop_inside(crop: Crop, x: f32, y: f32) -> Crop {
     }
 }
 
+#[must_use]
 pub fn resize_crop_inside(
     origin: Crop,
     handle: Handle,
@@ -319,7 +331,12 @@ fn resize_locked_edge(
             };
             let cy = origin.y + origin.h * 0.5;
             let (w, h) = clamp_locked_size(raw, ratio, max_w, axis_room(cy));
-            place_crop(if move_right { anchor } else { anchor - w }, cy - h * 0.5, w, h)
+            place_crop(
+                if move_right { anchor } else { anchor - w },
+                cy - h * 0.5,
+                w,
+                h,
+            )
         }
         Handle::S | Handle::N => {
             let move_down = handle == Handle::S;
@@ -336,12 +353,21 @@ fn resize_locked_edge(
             };
             let cx = origin.x + origin.w * 0.5;
             let (w, h) = clamp_locked_size(raw * ratio, ratio, axis_room(cx), max_h);
-            place_crop(cx - w * 0.5, if move_down { anchor } else { anchor - h }, w, h)
+            place_crop(
+                cx - w * 0.5,
+                if move_down { anchor } else { anchor - h },
+                w,
+                h,
+            )
         }
         Handle::Ne | Handle::Nw | Handle::Se | Handle::Sw => origin,
     }
 }
 
+#[expect(
+    clippy::many_single_char_names,
+    reason = "crop coordinates use x, y, w, and h"
+)]
 fn resize_locked_corner(
     origin: Crop,
     handle: Handle,
@@ -421,13 +447,13 @@ pub struct Photo {
 }
 
 impl Photo {
+    #[must_use]
     pub fn height(&self, ratio: f32) -> f32 {
-        let aspect = self
-            .crop
-            .pixel_aspect(self.image_width, self.image_height);
+        let aspect = self.crop.pixel_aspect(self.image_width, self.image_height);
         self.w * ratio / aspect
     }
 
+    #[must_use]
     pub fn placement(&self, ratio: f32) -> Placement {
         Placement {
             x: self.x,
@@ -438,11 +464,13 @@ impl Photo {
     }
 }
 
+#[must_use]
 pub fn placed_pixel_aspect(photo: &Photo, ratio: f32) -> f32 {
     let h = photo.height(ratio).max(1e-6);
     (photo.w / h) * ratio
 }
 
+#[must_use]
 pub fn resize_uniform(
     x: f32,
     y: f32,
@@ -490,7 +518,7 @@ pub fn resize_uniform(
             let sign_y = if anchor_top { 1.0 } else { -1.0 };
             let from_x = (pointer_x - ax) * sign_x;
             let from_y = (pointer_y - ay) * sign_y / aspect;
-            let new_w = ((from_x + from_y) * 0.5).max(MIN_WIDTH);
+            let new_w = f32::midpoint(from_x, from_y).max(MIN_WIDTH);
             let new_h = new_w * aspect;
             let nx = if anchor_left { ax } else { ax - new_w };
             let ny = if anchor_top { ay } else { ay - new_h };
@@ -517,10 +545,12 @@ fn snap_edge_pair(origin: f32, size: f32, step: f32) -> f32 {
     }
 }
 
+#[must_use]
 pub fn snap_move(x: f32, y: f32, w: f32, h: f32, step: f32) -> (f32, f32) {
     (snap_edge_pair(x, w, step), snap_edge_pair(y, h, step))
 }
 
+#[must_use]
 pub fn snap_resize(handle: Handle, x: f32, y: f32, w: f32, h: f32, step: f32) -> (f32, f32, f32) {
     let aspect = if w.abs() < 1e-4 { 1.0 } else { h / w };
     let aspect = if aspect.abs() < 1e-6 { 1.0 } else { aspect };
@@ -580,30 +610,30 @@ fn snap_resize_corner(
     let moving_y = if anchor_top { y + h } else { y };
     let snapped_x = snap_scalar(moving_x, step);
     let snapped_y = snap_scalar(moving_y, step);
-    let new_w_x = if anchor_left {
+    let width_from_x = if anchor_left {
         (snapped_x - ax).max(MIN_WIDTH)
     } else {
         (ax - snapped_x).max(MIN_WIDTH)
     };
-    let new_h_x = new_w_x * aspect;
-    let from_x = (new_w_x - w, new_h_x - h);
-    let new_h_y = if anchor_top {
+    let height_from_x = width_from_x * aspect;
+    let delta_x = (width_from_x - w, height_from_x - h);
+    let height_from_y = if anchor_top {
         (snapped_y - ay).max(MIN_WIDTH * aspect)
     } else {
         (ay - snapped_y).max(MIN_WIDTH * aspect)
     };
-    let new_w_y = new_h_y / aspect;
-    let from_y = (new_w_y - w, new_h_y - h);
-    let x_dist = from_x.0 * from_x.0 + from_x.1 * from_x.1;
-    let y_dist = from_y.0 * from_y.0 + from_y.1 * from_y.1;
+    let width_from_y = height_from_y / aspect;
+    let delta_y = (width_from_y - w, height_from_y - h);
+    let x_dist = delta_x.0 * delta_x.0 + delta_x.1 * delta_x.1;
+    let y_dist = delta_y.0 * delta_y.0 + delta_y.1 * delta_y.1;
     if x_dist <= y_dist {
-        let nx = if anchor_left { ax } else { ax - new_w_x };
-        let ny = if anchor_top { ay } else { ay - new_h_x };
-        (nx, ny, new_w_x)
+        let nx = if anchor_left { ax } else { ax - width_from_x };
+        let ny = if anchor_top { ay } else { ay - height_from_x };
+        (nx, ny, width_from_x)
     } else {
-        let nx = if anchor_left { ax } else { ax - new_w_y };
-        let ny = if anchor_top { ay } else { ay - new_h_y };
-        (nx, ny, new_w_y)
+        let nx = if anchor_left { ax } else { ax - width_from_y };
+        let ny = if anchor_top { ay } else { ay - height_from_y };
+        (nx, ny, width_from_y)
     }
 }
 
@@ -617,6 +647,7 @@ pub struct Document {
 }
 
 impl Document {
+    #[must_use]
     pub fn new(ratio: AspectRatio) -> Self {
         Self {
             ratio,
@@ -706,6 +737,7 @@ impl Document {
         self.photos.len() != before
     }
 
+    #[must_use]
     pub fn photo(&self, id: PhotoId) -> Option<&Photo> {
         self.photos.iter().find(|photo| photo.id == id)
     }
@@ -727,13 +759,7 @@ impl Document {
         origin: Placement,
     ) {
         let (x, y, w) = resize_uniform(
-            origin.x,
-            origin.y,
-            origin.w,
-            origin.h,
-            handle,
-            pointer_x,
-            pointer_y,
+            origin.x, origin.y, origin.w, origin.h, handle, pointer_x, pointer_y,
         );
         self.set_box(id, x, y, w);
     }
@@ -764,7 +790,11 @@ impl Document {
         let crop = if preset == CropPreset::Original {
             Crop::full()
         } else {
-            crop_rect_for_aspect(photo.image_width, photo.image_height, preset.target_aspect())
+            crop_rect_for_aspect(
+                photo.image_width,
+                photo.image_height,
+                preset.target_aspect(),
+            )
         };
         self.set_crop(id, crop);
         if let Some(photo) = self.photos.iter_mut().find(|photo| photo.id == id) {
@@ -773,7 +803,11 @@ impl Document {
     }
 
     pub fn move_layer(&mut self, id: PhotoId, movement: LayerMove) -> bool {
-        let mut order: Vec<(i32, PhotoId)> = self.photos.iter().map(|photo| (photo.z, photo.id)).collect();
+        let mut order: Vec<(i32, PhotoId)> = self
+            .photos
+            .iter()
+            .map(|photo| (photo.z, photo.id))
+            .collect();
         order.sort_by_key(|(z, photo_id)| (*z, photo_id.0));
         let mut ids: Vec<PhotoId> = order.into_iter().map(|(_, photo_id)| photo_id).collect();
         let Some(pos) = ids.iter().position(|photo_id| *photo_id == id) else {
@@ -815,12 +849,14 @@ impl Document {
         true
     }
 
+    #[must_use]
     pub fn photos_front_to_back(&self) -> Vec<&Photo> {
         let mut photos: Vec<&Photo> = self.photos.iter().collect();
         photos.sort_by(|a, b| b.z.cmp(&a.z).then(b.id.0.cmp(&a.id.0)));
         photos
     }
 
+    #[must_use]
     pub fn photo_at(&self, x: f32, y: f32) -> Option<PhotoId> {
         let ratio = self.ratio.value();
         self.photos

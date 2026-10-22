@@ -5,7 +5,7 @@ use image::codecs::jpeg::JpegEncoder;
 use image::codecs::png::PngEncoder;
 use image::{ExtendedColorType, ImageEncoder, RgbImage, RgbaImage};
 
-use crate::{render_canvas, Document, ImageMap, DEFAULT_EXPORT_WIDTH};
+use crate::{DEFAULT_EXPORT_WIDTH, Document, ImageMap, render_canvas};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ExportSettings {
@@ -57,10 +57,12 @@ impl From<std::io::Error> for ExportError {
     }
 }
 
+#[must_use]
 pub fn is_native(quality: u8) -> bool {
     quality >= 100
 }
 
+#[must_use]
 pub fn jpeg_quality_value(quality: u8) -> u8 {
     if quality >= 100 {
         return 100;
@@ -69,6 +71,7 @@ pub fn jpeg_quality_value(quality: u8) -> u8 {
     (8.0 + t * 87.0).round().clamp(1.0, 100.0) as u8
 }
 
+#[must_use]
 pub fn quality_description(quality: u8) -> String {
     if is_native(quality) {
         "PNG (native quality)".to_string()
@@ -77,9 +80,29 @@ pub fn quality_description(quality: u8) -> String {
     }
 }
 
+#[must_use]
 pub fn canvas_file_name(index: usize, quality: u8) -> String {
     let ext = if is_native(quality) { "png" } else { "jpg" };
     format!("pudduscroll-{:02}.{ext}", index + 1)
+}
+
+#[must_use]
+pub fn export_width(doc: &Document) -> u32 {
+    let ratio = doc.ratio.value();
+    let mut limit = f32::INFINITY;
+    for photo in &doc.photos {
+        let placed_h = photo.height(ratio);
+        if photo.w <= 1e-6 || placed_h <= 1e-6 {
+            continue;
+        }
+        let from_width = photo.image_width as f32 * photo.crop.w / photo.w;
+        let from_height = ratio * (photo.image_height as f32 * photo.crop.h) / placed_h;
+        limit = limit.min(from_width).min(from_height);
+    }
+    if !limit.is_finite() {
+        return DEFAULT_EXPORT_WIDTH;
+    }
+    limit.floor().max(1.0) as u32
 }
 
 pub fn export_canvases(
@@ -109,7 +132,10 @@ pub fn estimate_total_bytes(
     settings: ExportSettings,
 ) -> Result<u64, ExportError> {
     let canvases = export_canvases(doc, images, settings)?;
-    Ok(canvases.iter().map(|canvas| canvas.bytes.len() as u64).sum())
+    Ok(canvases
+        .iter()
+        .map(|canvas| canvas.bytes.len() as u64)
+        .sum())
 }
 
 pub fn write_canvases(dir: &Path, canvases: &[EncodedCanvas]) -> Result<(), ExportError> {

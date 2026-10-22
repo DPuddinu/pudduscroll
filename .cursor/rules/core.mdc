@@ -1,0 +1,6 @@
+---
+globs: crates/core/**/*.rs
+alwaysApply: false
+---
+
+Behavior changes land in this crate. Extend `crates/core/src/tests.rs` for the observable result. `cargo test -p pudduscroll-core` passes before the app shell is edited.

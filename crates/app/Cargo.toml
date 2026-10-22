@@ -1,14 +1,18 @@
 [package]
 name = "pudduscroll"
 version = "0.1.0"
-edition = "2021"
 description = "PudduScroll desktop Instagram carousel composer"
-license = "MIT"
-publish = false
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+rust-version.workspace = true
 authors = ["Dario Puddinu"]
 
 [dependencies]
-eframe = "0.37"
-image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp"] }
-pudduscroll-core = { path = "../core" }
-rfd = "0.17"
+eframe = { workspace = true }
+image = { workspace = true, features = ["png", "jpeg", "webp"] }
+pudduscroll-core = { workspace = true }
+rfd = { workspace = true }
+
+[lints]
+workspace = true

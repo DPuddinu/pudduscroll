@@ -1,0 +1,6 @@
+---
+globs: crates/app/**/*.rs
+alwaysApply: false
+---
+
+The shell calls `pudduscroll-core` for placement, crop, layering, clipping, and export. Resolve borrow-checker errors by changing ownership. Image bytes stay in the stores that already hold them.
