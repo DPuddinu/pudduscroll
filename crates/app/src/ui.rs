@@ -10,11 +10,11 @@ use eframe::egui;
 use image::RgbaImage;
 use image::imageops::{FilterType, resize};
 use pudduscroll_core::{
-    AspectRatio, CANVAS_PRESETS, CROP_PRESETS, Crop, CropPreset, Document, ExportError,
-    ExportSettings, Handle, ImageMap, LayerMove, MAX_CANVASES, Photo, PhotoId, Placement,
-    begin_crop_rect, canvas_file_name, crop_lock_ratio, estimate_total_bytes, export_canvases,
-    export_width, move_crop_inside, quality_description, render_canvas, resize_crop_inside,
-    write_canvases,
+    AspectRatio, CANVAS_GRID, CANVAS_GRID_STEP, CANVAS_PRESETS, CROP_PRESETS, Crop, CropPreset,
+    Document, ExportError, ExportSettings, Handle, ImageMap, LayerMove, MAX_CANVASES, Photo,
+    PhotoId, Placement, begin_crop_rect, canvas_file_name, crop_lock_ratio, estimate_total_bytes,
+    export_canvases, export_width, move_crop_inside, quality_description, render_canvas,
+    resize_crop_inside, snap_move, write_canvases,
 };
 
 const BG: egui::Color32 = egui::Color32::from_rgb(16, 16, 16);
@@ -100,6 +100,8 @@ pub struct PudduScrollApp {
     undo: Vec<Document>,
     crop_session: Option<CropSession>,
     crop_press: Option<egui::Pos2>,
+    show_grid: bool,
+    snap_to_grid: bool,
 }
 
 impl PudduScrollApp {
@@ -134,6 +136,8 @@ impl PudduScrollApp {
             undo: Vec::new(),
             crop_session: None,
             crop_press: None,
+            show_grid: false,
+            snap_to_grid: false,
         };
         for arg in std::env::args().skip(1) {
             let path = std::path::PathBuf::from(arg);
@@ -421,6 +425,9 @@ impl PudduScrollApp {
                 self.note_geometry();
             }
             ui.separator();
+            ui.checkbox(&mut self.show_grid, "Grid");
+            ui.checkbox(&mut self.snap_to_grid, "Snap");
+            ui.separator();
             if ui.button("Import photos").clicked() {
                 self.import_dialog(ui.ctx());
             }
@@ -446,7 +453,9 @@ impl PudduScrollApp {
         if !self.export_open {
             return;
         }
-        let response = egui::Modal::new(egui::Id::unique("export-options"))
+        let modal_id = egui::Id::unique("export-options");
+        let response = egui::Modal::new(modal_id)
+            .area(egui::Modal::default_area(modal_id).order(egui::Order::Debug))
             .frame(
                 egui::Frame::new()
                     .fill(PANEL)
@@ -514,6 +523,7 @@ impl PudduScrollApp {
                     }
                 });
             });
+        ctx.move_to_top(egui::LayerId::new(egui::Order::Debug, modal_id));
         if response.should_close() {
             self.export_open = false;
         }
@@ -767,7 +777,7 @@ impl PudduScrollApp {
         if !rail_rect.is_positive() {
             return;
         }
-        let layer = egui::LayerId::new(egui::Order::Foreground, egui::Id::unique("rail"));
+        let layer = egui::LayerId::debug();
         ui.ctx().memory_mut(|mem| {
             mem.areas_mut().set_state(
                 layer,
@@ -953,8 +963,8 @@ impl PudduScrollApp {
         let clip = bounds.intersect(ui.clip_rect());
         let painter = ui.painter().with_clip_rect(clip);
         self.draw_strip(&painter, rect, clip);
-        self.paint_crop_handles(&ctx, rect);
-        self.paint_photo_selection(&ctx, rect);
+        self.paint_crop_handles(&painter, rect, clip);
+        self.paint_photo_selection(&painter, rect, clip);
         self.strip_cursor(&response, rect);
     }
 
@@ -1069,10 +1079,28 @@ impl PudduScrollApp {
                 }
             }
         }
-        if released && self.drag.take().is_some() {
-            self.note_geometry();
-            ctx.stop_dragging();
+        if released {
+            if let Some(drag) = self.drag.take() {
+                if self.show_grid
+                    && self.snap_to_grid
+                    && let Drag::Move { id, .. } = drag
+                {
+                    self.snap_released_move(id);
+                }
+                self.note_geometry();
+                ctx.stop_dragging();
+            }
         }
+    }
+
+    fn snap_released_move(&mut self, id: PhotoId) {
+        let Some(photo) = self.doc.photo(id) else {
+            return;
+        };
+        let width = photo.w;
+        let height = photo.height(self.doc.ratio.value());
+        let (x, y) = snap_move(photo.x, photo.y, width, height, CANVAS_GRID_STEP);
+        self.doc.set_box(id, x, y, width);
     }
 
     fn begin_drag(&mut self, rect: egui::Rect, pos: egui::Pos2) {
@@ -1147,6 +1175,9 @@ impl PudduScrollApp {
             );
             paint_clipped_image(painter, screen, clip, uv, asset.texture.id());
         }
+        if self.show_grid {
+            paint_alignment_grid(painter, rect, count, clip);
+        }
         for index in 1..count {
             let x = rect.min.x + index as f32 * canvas_w;
             if x < clip.left() || x > clip.right() {
@@ -1164,7 +1195,7 @@ impl PudduScrollApp {
         }
     }
 
-    fn paint_photo_selection(&self, ctx: &egui::Context, strip: egui::Rect) {
+    fn paint_photo_selection(&self, painter: &egui::Painter, strip: egui::Rect, clip: egui::Rect) {
         if self.crop_session.is_some() {
             return;
         }
@@ -1175,28 +1206,13 @@ impl PudduScrollApp {
             return;
         };
         let screen = photo_screen(strip, self.doc.canvas_count, photo, self.doc.ratio.value());
-        if !screen.is_positive() {
+        if !screen.intersects(clip) {
             return;
         }
-        let layer =
-            egui::LayerId::new(egui::Order::Foreground, egui::Id::unique("photo-selection"));
-        let mut painter = ctx.layer_painter(layer);
-        painter.set_clip_rect(ctx.viewport_rect());
-        painter.rect_stroke(
-            screen,
-            0.0,
-            egui::Stroke::new(2.0, ACCENT),
-            egui::StrokeKind::Inside,
-        );
+        let painter = painter.with_clip_rect(clip);
+        paint_frame(&painter, screen, clip, 2.0, ACCENT);
         for (_, pos) in handle_points(screen) {
-            let handle = egui::Rect::from_center_size(pos, egui::vec2(9.0, 9.0));
-            painter.rect_filled(handle, 2.0, egui::Color32::WHITE);
-            painter.rect_stroke(
-                handle,
-                2.0,
-                egui::Stroke::new(1.5, ACCENT),
-                egui::StrokeKind::Inside,
-            );
+            paint_resize_handle(&painter, pos, 9.0, clip);
         }
     }
 
@@ -1338,7 +1354,9 @@ impl PudduScrollApp {
         if gesture.is_none() && pressed {
             let origin = press.or(interact).or(latest);
             if let Some(origin) = origin {
-                if let Some(handle) = crop_handle_at(crop_rect, origin) {
+                if editor.contains(origin)
+                    && let Some(handle) = crop_handle_at(crop_rect, origin)
+                {
                     gesture = Some(CropGesture::Resize {
                         handle,
                         origin: crop_now,
@@ -1354,7 +1372,9 @@ impl PudduScrollApp {
         }
         if gesture.is_none() && down {
             if let Some(origin) = press.or(interact).or(latest) {
-                if let Some(handle) = crop_handle_at(crop_rect, origin) {
+                if editor.contains(origin)
+                    && let Some(handle) = crop_handle_at(crop_rect, origin)
+                {
                     gesture = Some(CropGesture::Resize {
                         handle,
                         origin: crop_now,
@@ -1388,7 +1408,9 @@ impl PudduScrollApp {
                 }
                 None => {
                     if let Some(pos) = latest.or(interact) {
-                        if let Some(handle) = crop_handle_at(crop_rect, pos) {
+                        if editor.contains(pos)
+                            && let Some(handle) = crop_handle_at(crop_rect, pos)
+                        {
                             ctx.set_cursor_icon(cursor_for(handle));
                         }
                     }
@@ -1414,7 +1436,8 @@ impl PudduScrollApp {
             return;
         };
         let image = full_image_screen(strip, self.doc.canvas_count, photo, self.doc.ratio.value());
-        if !image.is_positive() {
+        let visible = image.intersect(clip);
+        if !visible.is_positive() {
             return;
         }
         let crop_rect = crop_to_screen(image, session.crop);
@@ -1424,7 +1447,7 @@ impl PudduScrollApp {
         }
         let full_uv = egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0));
         paint_clipped_image(painter, image, clip, full_uv, texture);
-        paint_crop_veil(painter, image, crop_rect);
+        paint_crop_veil(painter, visible, crop_rect);
         let inside_uv = egui::Rect::from_min_max(
             egui::pos2(session.crop.x, session.crop.y),
             egui::pos2(
@@ -1433,36 +1456,23 @@ impl PudduScrollApp {
             ),
         );
         paint_clipped_image(painter, crop_rect, clip, inside_uv, texture);
-        painter.rect_stroke(
+        paint_frame(
+            painter,
             image,
-            0.0,
-            egui::Stroke::new(1.0, egui::Color32::from_rgb(70, 70, 70)),
-            egui::StrokeKind::Outside,
+            clip,
+            1.0,
+            egui::Color32::from_rgb(70, 70, 70),
         );
-        painter.rect_stroke(
-            crop_rect,
-            0.0,
-            egui::Stroke::new(2.0, egui::Color32::WHITE),
-            egui::StrokeKind::Inside,
-        );
+        paint_frame(painter, crop_rect, clip, 2.0, egui::Color32::WHITE);
     }
 
-    fn paint_crop_handles(&self, ctx: &egui::Context, strip: egui::Rect) {
+    fn paint_crop_handles(&self, painter: &egui::Painter, strip: egui::Rect, clip: egui::Rect) {
         let Some(crop_rect) = self.session_crop_screen(strip) else {
             return;
         };
-        let layer = egui::LayerId::new(egui::Order::Foreground, egui::Id::unique("crop-handles"));
-        let mut painter = ctx.layer_painter(layer);
-        painter.set_clip_rect(ctx.viewport_rect());
+        let painter = painter.with_clip_rect(clip);
         for (_, pos) in handle_points(crop_rect) {
-            let handle = egui::Rect::from_center_size(pos, egui::vec2(11.0, 11.0));
-            painter.rect_filled(handle, 2.0, egui::Color32::WHITE);
-            painter.rect_stroke(
-                handle,
-                2.0,
-                egui::Stroke::new(1.5, ACCENT),
-                egui::StrokeKind::Inside,
-            );
+            paint_resize_handle(&painter, pos, 11.0, clip);
         }
     }
 
@@ -1801,6 +1811,52 @@ fn rail_section(
     add(&mut child);
 }
 
+fn paint_frame(
+    painter: &egui::Painter,
+    rect: egui::Rect,
+    clip: egui::Rect,
+    width: f32,
+    color: egui::Color32,
+) {
+    let rect = rect.intersect(clip.shrink(1.0));
+    if width <= 0.0 || rect.width() <= width * 2.0 || rect.height() <= width * 2.0 {
+        return;
+    }
+    let bands = [
+        egui::Rect::from_min_max(
+            rect.left_top(),
+            egui::pos2(rect.right(), rect.top() + width),
+        ),
+        egui::Rect::from_min_max(
+            egui::pos2(rect.left(), rect.bottom() - width),
+            rect.right_bottom(),
+        ),
+        egui::Rect::from_min_max(
+            egui::pos2(rect.left(), rect.top() + width),
+            egui::pos2(rect.left() + width, rect.bottom() - width),
+        ),
+        egui::Rect::from_min_max(
+            egui::pos2(rect.right() - width, rect.top() + width),
+            egui::pos2(rect.right(), rect.bottom() - width),
+        ),
+    ];
+    for band in bands {
+        if band.is_positive() {
+            painter.rect_filled(band, 0.0, color);
+        }
+    }
+}
+
+fn paint_resize_handle(painter: &egui::Painter, center: egui::Pos2, size: f32, clip: egui::Rect) {
+    let handle =
+        egui::Rect::from_center_size(center, egui::vec2(size, size)).intersect(clip.shrink(1.0));
+    if handle.width() < 2.0 || handle.height() < 2.0 {
+        return;
+    }
+    painter.rect_filled(handle, 2.0, egui::Color32::WHITE);
+    paint_frame(painter, handle, handle, 1.5, ACCENT);
+}
+
 fn paint_clipped_image(
     painter: &egui::Painter,
     screen: egui::Rect,
@@ -1865,6 +1921,42 @@ fn editor_preview(src: &RgbaImage) -> RgbaImage {
 
 fn next_editor_zoom(current: f32, scroll_y: f32) -> f32 {
     (current * (scroll_y * EDITOR_ZOOM_SPEED).exp()).clamp(MIN_EDITOR_ZOOM, MAX_EDITOR_ZOOM)
+}
+
+fn paint_alignment_grid(
+    painter: &egui::Painter,
+    strip: egui::Rect,
+    count: usize,
+    clip: egui::Rect,
+) {
+    let count = count.max(1);
+    let canvas_w = strip.width() / count as f32;
+    let cells = CANVAS_GRID as f32;
+    let dark = egui::Stroke::new(1.0, egui::Color32::from_black_alpha(150));
+    let light = egui::Stroke::new(1.0, egui::Color32::from_white_alpha(120));
+    for index in 0..count {
+        let canvas = egui::Rect::from_min_size(
+            egui::pos2(strip.min.x + index as f32 * canvas_w, strip.min.y),
+            egui::vec2(canvas_w, strip.height()),
+        );
+        let visible = canvas.intersect(clip);
+        if !visible.is_positive() {
+            continue;
+        }
+        let painter = painter.with_clip_rect(visible);
+        let step_x = canvas.width() / cells;
+        let step_y = canvas.height() / cells;
+        for line in 0..=CANVAS_GRID {
+            let x = canvas.min.x + line as f32 * step_x;
+            let y = canvas.min.y + line as f32 * step_y;
+            let vertical = [egui::pos2(x, canvas.top()), egui::pos2(x, canvas.bottom())];
+            let horizontal = [egui::pos2(canvas.left(), y), egui::pos2(canvas.right(), y)];
+            painter.line_segment(vertical, dark);
+            painter.line_segment(vertical, light);
+            painter.line_segment(horizontal, dark);
+            painter.line_segment(horizontal, light);
+        }
+    }
 }
 
 fn editor_strip_size(bounds: egui::Rect, zoom: f32, ratio: f32, count: usize) -> egui::Vec2 {
