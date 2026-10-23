@@ -1,0 +1,887 @@
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
+
+use image::RgbaImage;
+use pudduscroll_core::{
+    AspectRatio, CANVAS_PRESETS, Crop, CropPreset, Frame, FrameId, FramePhoto, Layout,
+};
+
+#[derive(Clone)]
+pub struct Blob {
+    pub name: String,
+    pub ext: String,
+    pub bytes: Vec<u8>,
+    pub image: Arc<RgbaImage>,
+}
+
+pub struct Template {
+    pub id: u64,
+    pub name: String,
+    pub cover: Blob,
+    pub layout: Layout,
+}
+
+pub struct Carousel {
+    pub id: u64,
+    pub name: String,
+    pub layout: Layout,
+    pub photos: HashMap<FrameId, Blob>,
+}
+
+pub struct Library {
+    pub templates: Vec<Template>,
+    pub carousels: Vec<Carousel>,
+    pub visuals: u64,
+    next_id: u64,
+    images_dirty: bool,
+}
+
+impl Library {
+    #[must_use]
+    pub fn empty() -> Self {
+        Self {
+            templates: Vec::new(),
+            carousels: Vec::new(),
+            visuals: 1,
+            next_id: 1,
+            images_dirty: false,
+        }
+    }
+
+    #[must_use]
+    pub fn load() -> Result<Self, String> {
+        let root = library_directory();
+        let path = root.join("library.txt");
+        if !path.exists() {
+            return Ok(Self::empty());
+        }
+        Self::load_from(&root)
+    }
+
+    pub fn store(&mut self) -> Result<(), String> {
+        self.store_to(&library_directory())
+    }
+
+    pub fn create_template(&mut self, name: String, ratio: AspectRatio, cover: Blob) -> u64 {
+        let id = self.alloc();
+        self.templates.push(Template {
+            id,
+            name,
+            cover,
+            layout: Layout::new(ratio),
+        });
+        self.images_dirty = true;
+        id
+    }
+
+    pub fn delete_template(&mut self, id: u64) -> bool {
+        let before = self.templates.len();
+        self.templates.retain(|template| template.id != id);
+        let removed = self.templates.len() != before;
+        if removed {
+            self.images_dirty = true;
+        }
+        removed
+    }
+
+    pub fn delete_carousel(&mut self, id: u64) -> bool {
+        let before = self.carousels.len();
+        self.carousels.retain(|carousel| carousel.id != id);
+        let removed = self.carousels.len() != before;
+        if removed {
+            self.images_dirty = true;
+        }
+        removed
+    }
+
+    pub fn instantiate(&mut self, template_id: u64) -> Option<u64> {
+        let template = self
+            .templates
+            .iter()
+            .find(|template| template.id == template_id)?;
+        let name = template.name.clone();
+        let layout = template.layout.clone();
+        let id = self.alloc();
+        self.carousels.push(Carousel {
+            id,
+            name,
+            layout,
+            photos: HashMap::new(),
+        });
+        Some(id)
+    }
+
+    pub fn set_photo(&mut self, carousel_id: u64, frame_id: FrameId, blob: Blob) {
+        let Some(carousel) = self
+            .carousels
+            .iter_mut()
+            .find(|carousel| carousel.id == carousel_id)
+        else {
+            return;
+        };
+        carousel.layout.fill_frame(
+            frame_id,
+            &blob.name,
+            blob.image.width(),
+            blob.image.height(),
+        );
+        carousel.photos.insert(frame_id, blob);
+        self.images_dirty = true;
+    }
+
+    pub fn clear_photo(&mut self, carousel_id: u64, frame_id: FrameId) -> bool {
+        let Some(carousel) = self
+            .carousels
+            .iter_mut()
+            .find(|carousel| carousel.id == carousel_id)
+        else {
+            return false;
+        };
+        let cleared = carousel.layout.clear_photo(frame_id);
+        carousel.photos.remove(&frame_id);
+        if cleared {
+            self.images_dirty = true;
+        }
+        cleared
+    }
+
+    fn alloc(&mut self) -> u64 {
+        let id = self.next_id;
+        self.next_id += 1;
+        id
+    }
+
+    fn load_from(root: &Path) -> Result<Self, String> {
+        let text =
+            std::fs::read_to_string(root.join("library.txt")).map_err(|error| error.to_string())?;
+        parse_library(&text, root)
+    }
+
+    fn store_to(&mut self, root: &Path) -> Result<(), String> {
+        std::fs::create_dir_all(root.join("images")).map_err(|error| error.to_string())?;
+        if self.images_dirty {
+            write_images(self, root)?;
+            self.images_dirty = false;
+        }
+        let text = serialize(self);
+        let destination = root.join("library.txt");
+        let temporary = root.join("library.txt.tmp");
+        std::fs::write(&temporary, text).map_err(|error| error.to_string())?;
+        let _ = std::fs::remove_file(&destination);
+        std::fs::rename(&temporary, &destination).map_err(|error| error.to_string())?;
+        Ok(())
+    }
+}
+
+#[must_use]
+pub fn library_directory() -> PathBuf {
+    if let Some(dir) = std::env::var_os("LOCALAPPDATA") {
+        return PathBuf::from(dir).join("pudduscroll");
+    }
+    if let Some(dir) = std::env::var_os("XDG_DATA_HOME") {
+        return PathBuf::from(dir).join("pudduscroll");
+    }
+    if let Some(home) = std::env::var_os("HOME") {
+        let home = PathBuf::from(home);
+        if cfg!(target_os = "macos") {
+            return home
+                .join("Library")
+                .join("Application Support")
+                .join("pudduscroll");
+        }
+        return home.join(".local").join("share").join("pudduscroll");
+    }
+    PathBuf::from("pudduscroll")
+}
+
+pub fn load_blob(path: &Path) -> Result<Blob, String> {
+    let bytes = std::fs::read(path)
+        .map_err(|error| format!("Could not read {}: {error}", path.display()))?;
+    decode_blob(path, bytes)
+}
+
+fn decode_blob(path: &Path, bytes: Vec<u8>) -> Result<Blob, String> {
+    let image = image::load_from_memory(&bytes)
+        .map_err(|error| format!("Could not decode {}: {error}", path.display()))?
+        .to_rgba8();
+    if image.width() == 0 || image.height() == 0 {
+        return Err(format!("{} has no pixels", path.display()));
+    }
+    let name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("photo")
+        .to_string();
+    Ok(Blob {
+        name,
+        ext: image_ext(path),
+        bytes,
+        image: Arc::new(image),
+    })
+}
+
+fn image_ext(path: &Path) -> String {
+    match path
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .map(|ext| ext.to_ascii_lowercase())
+        .as_deref()
+    {
+        Some("png") => "png".to_string(),
+        Some("webp") => "webp".to_string(),
+        Some("jpg" | "jpeg") => "jpg".to_string(),
+        _ => "png".to_string(),
+    }
+}
+
+fn cover_file(template: &Template) -> String {
+    format!("t{}.{}", template.id, template.cover.ext)
+}
+
+fn photo_file(carousel_id: u64, frame_id: FrameId, ext: &str) -> String {
+    format!("c{carousel_id}-f{}.{ext}", frame_id.0)
+}
+
+fn write_images(library: &Library, root: &Path) -> Result<(), String> {
+    let dir = root.join("images");
+    std::fs::create_dir_all(&dir).map_err(|error| error.to_string())?;
+    let mut keep = Vec::new();
+    for template in &library.templates {
+        let name = cover_file(template);
+        std::fs::write(dir.join(&name), &template.cover.bytes)
+            .map_err(|error| error.to_string())?;
+        keep.push(name);
+    }
+    for carousel in &library.carousels {
+        for (frame_id, blob) in &carousel.photos {
+            let name = photo_file(carousel.id, *frame_id, &blob.ext);
+            std::fs::write(dir.join(&name), &blob.bytes).map_err(|error| error.to_string())?;
+            keep.push(name);
+        }
+    }
+    if let Ok(entries) = std::fs::read_dir(&dir) {
+        for entry in entries.flatten() {
+            let name = entry.file_name().to_string_lossy().to_string();
+            if !keep.iter().any(|kept| kept == &name) {
+                let _ = std::fs::remove_file(entry.path());
+            }
+        }
+    }
+    Ok(())
+}
+
+fn serialize(library: &Library) -> String {
+    let mut out = String::new();
+    out.push_str("pudduscroll 1\n");
+    out.push_str(&format!("next {}\n", library.next_id));
+    for template in &library.templates {
+        out.push_str(&format!("template {}\n", template.id));
+        out.push_str("name ");
+        push_quoted(&mut out, &template.name);
+        out.push('\n');
+        out.push_str(&format!(
+            "ratio {} {}\n",
+            template.layout.ratio.width, template.layout.ratio.height
+        ));
+        out.push_str(&format!("canvases {}\n", template.layout.canvas_count));
+        out.push_str(&format!("cover {}\n", template.cover.ext));
+        push_frames(&mut out, &template.layout, None);
+    }
+    for carousel in &library.carousels {
+        out.push_str(&format!("carousel {}\n", carousel.id));
+        out.push_str("name ");
+        push_quoted(&mut out, &carousel.name);
+        out.push('\n');
+        out.push_str(&format!(
+            "ratio {} {}\n",
+            carousel.layout.ratio.width, carousel.layout.ratio.height
+        ));
+        out.push_str(&format!("canvases {}\n", carousel.layout.canvas_count));
+        push_frames(&mut out, &carousel.layout, Some(carousel));
+    }
+    out
+}
+
+fn push_frames(out: &mut String, layout: &Layout, carousel: Option<&Carousel>) {
+    for frame in &layout.frames {
+        out.push_str(&format!(
+            "frame {} {:.6} {:.6} {:.6} {:.6} {}\n",
+            frame.id.0, frame.x, frame.y, frame.w, frame.h, frame.z
+        ));
+        let Some(photo) = &frame.photo else {
+            continue;
+        };
+        let Some(carousel) = carousel else {
+            continue;
+        };
+        let Some(blob) = carousel.photos.get(&frame.id) else {
+            continue;
+        };
+        out.push_str("photo ");
+        push_quoted(out, &photo.name);
+        out.push_str(&format!(
+            " {} {} {:.6} {:.6} {:.6} {:.6} {:.6} {:.6} {} {}\n",
+            photo.image_width,
+            photo.image_height,
+            photo.pan_x,
+            photo.pan_y,
+            photo.crop.x,
+            photo.crop.y,
+            photo.crop.w,
+            photo.crop.h,
+            preset_token(photo.preset),
+            blob.ext
+        ));
+    }
+}
+
+fn push_quoted(out: &mut String, text: &str) {
+    out.push('"');
+    for ch in text.chars() {
+        match ch {
+            '\\' => out.push_str("\\\\"),
+            '"' => out.push_str("\\\""),
+            '\n' | '\r' => out.push(' '),
+            other => out.push(other),
+        }
+    }
+    out.push('"');
+}
+
+fn parse_library(text: &str, root: &Path) -> Result<Library, String> {
+    let mut library = Library::empty();
+    let mut kind: Option<ItemKind> = None;
+    let mut template: Option<TemplateBuild> = None;
+    let mut carousel: Option<CarouselBuild> = None;
+    let mut saw_header = false;
+    for (index, line) in text.lines().enumerate() {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        let (word, rest) = split_word(line);
+        let place = index + 1;
+        match word {
+            "pudduscroll" => {
+                if rest != "1" {
+                    return Err(format!("line {place}: unknown library version"));
+                }
+                saw_header = true;
+            }
+            "next" => {
+                library.next_id = parse_u64(rest, place)?;
+            }
+            "template" => {
+                finish(&mut library, &mut template, &mut carousel, root)?;
+                kind = Some(ItemKind::Template);
+                template = Some(TemplateBuild {
+                    id: parse_u64(rest, place)?,
+                    name: String::new(),
+                    ratio: AspectRatio::FOUR_FIVE,
+                    canvases: 1,
+                    cover_ext: String::new(),
+                    frames: Vec::new(),
+                });
+            }
+            "carousel" => {
+                finish(&mut library, &mut template, &mut carousel, root)?;
+                kind = Some(ItemKind::Carousel);
+                carousel = Some(CarouselBuild {
+                    id: parse_u64(rest, place)?,
+                    name: String::new(),
+                    ratio: AspectRatio::FOUR_FIVE,
+                    canvases: 1,
+                    frames: Vec::new(),
+                });
+            }
+            "name" => match kind {
+                Some(ItemKind::Template) => {
+                    template_mut(&mut template, place)?.name = parse_quoted(rest, place)?;
+                }
+                Some(ItemKind::Carousel) => {
+                    carousel_mut(&mut carousel, place)?.name = parse_quoted(rest, place)?;
+                }
+                None => return Err(format!("line {place}: name without an item")),
+            },
+            "ratio" => {
+                let ratio = parse_ratio(rest, place)?;
+                match kind {
+                    Some(ItemKind::Template) => template_mut(&mut template, place)?.ratio = ratio,
+                    Some(ItemKind::Carousel) => carousel_mut(&mut carousel, place)?.ratio = ratio,
+                    None => return Err(format!("line {place}: ratio without an item")),
+                }
+            }
+            "canvases" => {
+                let count = parse_u64(rest, place)? as usize;
+                match kind {
+                    Some(ItemKind::Template) => {
+                        template_mut(&mut template, place)?.canvases = count
+                    }
+                    Some(ItemKind::Carousel) => {
+                        carousel_mut(&mut carousel, place)?.canvases = count
+                    }
+                    None => return Err(format!("line {place}: canvases without an item")),
+                }
+            }
+            "cover" => {
+                template_mut(&mut template, place)?.cover_ext = rest.to_string();
+            }
+            "frame" => {
+                let frame = parse_frame(rest, place)?;
+                match kind {
+                    Some(ItemKind::Template) => {
+                        template_mut(&mut template, place)?.frames.push(frame)
+                    }
+                    Some(ItemKind::Carousel) => {
+                        carousel_mut(&mut carousel, place)?.frames.push(frame)
+                    }
+                    None => return Err(format!("line {place}: frame without an item")),
+                }
+            }
+            "photo" => {
+                let photo = parse_photo(rest, place)?;
+                let build = carousel_mut(&mut carousel, place)?;
+                let Some(frame) = build.frames.last_mut() else {
+                    return Err(format!("line {place}: photo without a frame"));
+                };
+                frame.photo = Some(photo);
+            }
+            _ => return Err(format!("line {place}: unknown {word}")),
+        }
+    }
+    if !saw_header {
+        return Err("library file is missing its header".to_string());
+    }
+    finish(&mut library, &mut template, &mut carousel, root)?;
+    let mut max_id = library.next_id.saturating_sub(1);
+    for template in &library.templates {
+        max_id = max_id.max(template.id);
+    }
+    for carousel in &library.carousels {
+        max_id = max_id.max(carousel.id);
+    }
+    library.next_id = library.next_id.max(max_id.saturating_add(1)).max(1);
+    Ok(library)
+}
+
+fn finish(
+    library: &mut Library,
+    template: &mut Option<TemplateBuild>,
+    carousel: &mut Option<CarouselBuild>,
+    root: &Path,
+) -> Result<(), String> {
+    if let Some(build) = template.take() {
+        library.templates.push(build.finish(root)?);
+    }
+    if let Some(build) = carousel.take() {
+        library.carousels.push(build.finish(root)?);
+    }
+    Ok(())
+}
+
+#[derive(Clone, Copy)]
+enum ItemKind {
+    Template,
+    Carousel,
+}
+
+struct FrameBuild {
+    id: FrameId,
+    x: f32,
+    y: f32,
+    w: f32,
+    h: f32,
+    z: i32,
+    photo: Option<PhotoBuild>,
+}
+
+struct PhotoBuild {
+    name: String,
+    image_width: u32,
+    image_height: u32,
+    pan_x: f32,
+    pan_y: f32,
+    crop: Crop,
+    preset: CropPreset,
+    ext: String,
+}
+
+struct TemplateBuild {
+    id: u64,
+    name: String,
+    ratio: AspectRatio,
+    canvases: usize,
+    cover_ext: String,
+    frames: Vec<FrameBuild>,
+}
+
+struct CarouselBuild {
+    id: u64,
+    name: String,
+    ratio: AspectRatio,
+    canvases: usize,
+    frames: Vec<FrameBuild>,
+}
+
+impl TemplateBuild {
+    fn finish(self, root: &Path) -> Result<Template, String> {
+        if self.name.trim().is_empty() {
+            return Err(format!("template {} has no name", self.id));
+        }
+        if self.cover_ext.is_empty() {
+            return Err(format!("template {} has no cover", self.id));
+        }
+        let path = root
+            .join("images")
+            .join(format!("t{}.{}", self.id, self.cover_ext));
+        let mut cover = load_blob(&path)?;
+        cover.name = self.name.clone();
+        let mut layout = Layout::new(self.ratio);
+        layout.set_canvas_count(self.canvases);
+        push_loaded_frames(&mut layout, &self.frames, None)?;
+        Ok(Template {
+            id: self.id,
+            name: self.name,
+            cover,
+            layout,
+        })
+    }
+}
+
+impl CarouselBuild {
+    fn finish(self, root: &Path) -> Result<Carousel, String> {
+        if self.name.trim().is_empty() {
+            return Err(format!("carousel {} has no name", self.id));
+        }
+        let mut photos = HashMap::new();
+        let mut layout = Layout::new(self.ratio);
+        layout.set_canvas_count(self.canvases);
+        push_loaded_frames(
+            &mut layout,
+            &self.frames,
+            Some((self.id, root, &mut photos)),
+        )?;
+        Ok(Carousel {
+            id: self.id,
+            name: self.name,
+            layout,
+            photos,
+        })
+    }
+}
+
+fn push_loaded_frames(
+    layout: &mut Layout,
+    frames: &[FrameBuild],
+    mut photos: Option<(u64, &Path, &mut HashMap<FrameId, Blob>)>,
+) -> Result<(), String> {
+    for source in frames {
+        let mut frame = Frame {
+            id: source.id,
+            x: source.x,
+            y: source.y,
+            w: source.w,
+            h: source.h,
+            z: source.z,
+            photo: None,
+        };
+        if let Some(photo) = &source.photo
+            && let Some((carousel_id, root, blobs)) = photos.as_mut()
+        {
+            let path = root
+                .join("images")
+                .join(photo_file(*carousel_id, source.id, &photo.ext));
+            let mut blob = load_blob(&path)?;
+            blob.name = photo.name.clone();
+            frame.photo = Some(FramePhoto {
+                name: photo.name.clone(),
+                image_width: blob.image.width().max(1),
+                image_height: blob.image.height().max(1),
+                pan_x: photo.pan_x.clamp(0.0, 1.0),
+                pan_y: photo.pan_y.clamp(0.0, 1.0),
+                crop: photo.crop.clamp(),
+                preset: photo.preset,
+            });
+            blobs.insert(source.id, blob);
+        }
+        layout.restore_frame(frame);
+    }
+    Ok(())
+}
+
+fn template_mut(
+    template: &mut Option<TemplateBuild>,
+    line: usize,
+) -> Result<&mut TemplateBuild, String> {
+    template
+        .as_mut()
+        .ok_or_else(|| format!("line {line}: missing template"))
+}
+
+fn carousel_mut(
+    carousel: &mut Option<CarouselBuild>,
+    line: usize,
+) -> Result<&mut CarouselBuild, String> {
+    carousel
+        .as_mut()
+        .ok_or_else(|| format!("line {line}: missing carousel"))
+}
+
+fn split_word(line: &str) -> (&str, &str) {
+    let line = line.trim();
+    line.split_once(char::is_whitespace)
+        .map_or((line, ""), |(word, rest)| (word, rest.trim()))
+}
+
+fn parse_u64(text: &str, line: usize) -> Result<u64, String> {
+    let token = split_word(text).0;
+    token
+        .parse::<u64>()
+        .map_err(|_| format!("line {line}: expected a number"))
+}
+
+fn parse_f32(text: &str) -> Result<f32, String> {
+    let value = text
+        .parse::<f32>()
+        .map_err(|_| format!("expected a number, got {text}"))?;
+    if value.is_finite() {
+        Ok(value)
+    } else {
+        Err(format!("invalid number {text}"))
+    }
+}
+
+fn parse_ratio(text: &str, line: usize) -> Result<AspectRatio, String> {
+    let (width, height) = split_word(text);
+    let width = parse_u64(width, line)? as u32;
+    let height = parse_u64(height, line)? as u32;
+    CANVAS_PRESETS
+        .into_iter()
+        .find(|preset| preset.width == width && preset.height == height)
+        .ok_or_else(|| format!("line {line}: unknown canvas aspect"))
+}
+
+fn parse_quoted(text: &str, line: usize) -> Result<String, String> {
+    let text = text.trim();
+    if !text.starts_with('"') {
+        return Err(format!("line {line}: expected a quoted name"));
+    }
+    let mut out = String::new();
+    let mut chars = text[1..].chars();
+    while let Some(ch) = chars.next() {
+        match ch {
+            '\\' => {
+                let Some(next) = chars.next() else {
+                    return Err(format!("line {line}: bad escape"));
+                };
+                out.push(next);
+            }
+            '"' => return Ok(out),
+            other => out.push(other),
+        }
+    }
+    Err(format!("line {line}: unterminated name"))
+}
+
+fn parse_frame(text: &str, line: usize) -> Result<FrameBuild, String> {
+    let mut parts = text.split_whitespace();
+    let id = parts
+        .next()
+        .ok_or_else(|| format!("line {line}: frame id"))?
+        .parse::<u64>()
+        .map_err(|_| format!("line {line}: frame id"))?;
+    let mut number = || -> Result<f32, String> {
+        parse_f32(
+            parts
+                .next()
+                .ok_or_else(|| format!("line {line}: frame value"))?,
+        )
+        .map_err(|error| format!("line {line}: {error}"))
+    };
+    let x = number()?;
+    let y = number()?;
+    let w = number()?;
+    let h = number()?;
+    let z = parts
+        .next()
+        .ok_or_else(|| format!("line {line}: frame layer"))?
+        .parse::<i32>()
+        .map_err(|_| format!("line {line}: frame layer"))?;
+    Ok(FrameBuild {
+        id: FrameId(id),
+        x,
+        y,
+        w,
+        h,
+        z,
+        photo: None,
+    })
+}
+
+fn parse_photo(text: &str, line: usize) -> Result<PhotoBuild, String> {
+    let name = parse_quoted(text, line)?;
+    let rest = after_quoted(text).ok_or_else(|| format!("line {line}: photo values"))?;
+    let mut parts = rest.split_whitespace();
+    let mut token = || {
+        parts
+            .next()
+            .ok_or_else(|| format!("line {line}: photo value"))
+    };
+    let image_width = token()?
+        .parse::<u32>()
+        .map_err(|_| format!("line {line}: photo size"))?;
+    let image_height = token()?
+        .parse::<u32>()
+        .map_err(|_| format!("line {line}: photo size"))?;
+    let mut number = || -> Result<f32, String> {
+        parse_f32(token()?).map_err(|error| format!("line {line}: {error}"))
+    };
+    let pan_x = number()?;
+    let pan_y = number()?;
+    let crop = Crop {
+        x: number()?,
+        y: number()?,
+        w: number()?,
+        h: number()?,
+    };
+    let preset = preset_from(token()?).ok_or_else(|| format!("line {line}: crop preset"))?;
+    let ext = token()?.to_string();
+    Ok(PhotoBuild {
+        name,
+        image_width,
+        image_height,
+        pan_x,
+        pan_y,
+        crop,
+        preset,
+        ext,
+    })
+}
+
+fn after_quoted(text: &str) -> Option<&str> {
+    let text = text.trim();
+    if !text.starts_with('"') {
+        return None;
+    }
+    let mut escaped = false;
+    for (index, ch) in text.char_indices().skip(1) {
+        if escaped {
+            escaped = false;
+            continue;
+        }
+        match ch {
+            '\\' => escaped = true,
+            '"' => return Some(text[index + ch.len_utf8()..].trim()),
+            _ => {}
+        }
+    }
+    None
+}
+
+fn preset_token(preset: CropPreset) -> &'static str {
+    match preset {
+        CropPreset::Original => "original",
+        CropPreset::Square => "square",
+        CropPreset::FourFive => "fourfive",
+        CropPreset::ThreeFour => "threefour",
+        CropPreset::ThreeTwo => "threetwo",
+        CropPreset::SixteenNine => "sixteenine",
+        CropPreset::NineSixteen => "ninesixteen",
+        CropPreset::Freehand => "freehand",
+    }
+}
+
+fn preset_from(token: &str) -> Option<CropPreset> {
+    Some(match token {
+        "original" => CropPreset::Original,
+        "square" => CropPreset::Square,
+        "fourfive" => CropPreset::FourFive,
+        "threefour" => CropPreset::ThreeFour,
+        "threetwo" => CropPreset::ThreeTwo,
+        "sixteenine" => CropPreset::SixteenNine,
+        "ninesixteen" => CropPreset::NineSixteen,
+        "freehand" => CropPreset::Freehand,
+        _ => return None,
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn library_roundtrip_keeps_template_and_carousel_apart() {
+        let root =
+            std::env::temp_dir().join(format!("pudduscroll-library-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let mut library = Library::empty();
+        let cover = sample_blob("dune.png");
+        let id = library.create_template("Sea \"m\"".to_string(), AspectRatio::FOUR_FIVE, cover);
+        {
+            let template = library
+                .templates
+                .iter_mut()
+                .find(|template| template.id == id)
+                .unwrap();
+            template.layout.add_canvas();
+            let frame = template.layout.add_frame();
+            template.layout.set_frame_rect(frame, 0.0, 0.0, 2.0, 1.0);
+        }
+        let carousel_id = library.instantiate(id).unwrap();
+        library.set_photo(carousel_id, FrameId(1), sample_blob("night.jpg"));
+        library
+            .carousels
+            .iter_mut()
+            .find(|carousel| carousel.id == carousel_id)
+            .unwrap()
+            .layout
+            .set_pan(FrameId(1), 0.2, 0.7);
+        library.store_to(&root).unwrap();
+        library
+            .templates
+            .iter_mut()
+            .find(|template| template.id == id)
+            .unwrap()
+            .layout
+            .set_frame_rect(FrameId(1), 0.25, 0.25, 0.5, 0.5);
+        library.store_to(&root).unwrap();
+        let loaded = Library::load_from(&root).unwrap();
+        assert_eq!(loaded.templates.len(), 1);
+        assert_eq!(loaded.carousels.len(), 1);
+        assert_eq!(loaded.templates[0].name, "Sea \"m\"");
+        assert_eq!(loaded.templates[0].layout.canvas_count, 2);
+        assert_eq!(loaded.templates[0].layout.frames.len(), 1);
+        let template_frame = &loaded.templates[0].layout.frames[0];
+        assert!(template_frame.photo.is_none());
+        assert!((template_frame.w - 0.5).abs() < 1e-4);
+        let carousel = &loaded.carousels[0];
+        assert_eq!(carousel.name, "Sea \"m\"");
+        assert_eq!(carousel.photos.len(), 1);
+        let frame = &carousel.layout.frames[0];
+        assert!((frame.w - 2.0).abs() < 1e-4);
+        let photo = frame.photo.as_ref().unwrap();
+        assert_eq!(photo.name, "night.jpg");
+        assert!((photo.pan_x - 0.2).abs() < 1e-4);
+        assert!((photo.pan_y - 0.7).abs() < 1e-4);
+        assert!(carousel.photos.contains_key(&frame.id));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    fn sample_blob(name: &str) -> Blob {
+        let image = RgbaImage::from_pixel(8, 6, image::Rgba([20, 30, 40, 255]));
+        let mut bytes = Vec::new();
+        image::DynamicImage::ImageRgba8(image.clone())
+            .write_to(
+                &mut std::io::Cursor::new(&mut bytes),
+                image::ImageFormat::Png,
+            )
+            .unwrap();
+        Blob {
+            name: name.to_string(),
+            ext: "png".to_string(),
+            bytes,
+            image: Arc::new(image),
+        }
+    }
+}

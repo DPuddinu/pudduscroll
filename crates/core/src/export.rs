@@ -5,7 +5,9 @@ use image::codecs::jpeg::JpegEncoder;
 use image::codecs::png::PngEncoder;
 use image::{ExtendedColorType, ImageEncoder, RgbImage, RgbaImage};
 
-use crate::{DEFAULT_EXPORT_WIDTH, Document, ImageMap, render_canvas};
+use crate::{
+    DEFAULT_EXPORT_WIDTH, Document, FrameImages, ImageMap, Layout, render_canvas, render_layout,
+};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ExportSettings {
@@ -132,6 +134,39 @@ pub fn estimate_total_bytes(
     settings: ExportSettings,
 ) -> Result<u64, ExportError> {
     let canvases = export_canvases(doc, images, settings)?;
+    Ok(canvases
+        .iter()
+        .map(|canvas| canvas.bytes.len() as u64)
+        .sum())
+}
+
+pub fn export_layout_canvases(
+    layout: &Layout,
+    images: &FrameImages,
+    settings: ExportSettings,
+) -> Result<Vec<EncodedCanvas>, ExportError> {
+    let mut canvases = Vec::with_capacity(layout.canvas_count);
+    for index in 0..layout.canvas_count {
+        let rendered = render_layout(layout, index, images, settings.width);
+        let bytes = if is_native(settings.quality) {
+            encode_png(&rendered)?
+        } else {
+            encode_jpeg(&rendered, jpeg_quality_value(settings.quality))?
+        };
+        canvases.push(EncodedCanvas {
+            file_name: canvas_file_name(index, settings.quality),
+            bytes,
+        });
+    }
+    Ok(canvases)
+}
+
+pub fn estimate_layout_bytes(
+    layout: &Layout,
+    images: &FrameImages,
+    settings: ExportSettings,
+) -> Result<u64, ExportError> {
+    let canvases = export_layout_canvases(layout, images, settings)?;
     Ok(canvases
         .iter()
         .map(|canvas| canvas.bytes.len() as u64)

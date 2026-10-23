@@ -653,6 +653,189 @@ fn crop_move_and_resize_stay_inside_and_honor_aspect_lock() {
 }
 
 #[test]
+fn frame_cover_stays_inside_while_panning_and_after_a_resize() {
+    let mut layout = Layout::new(AspectRatio::FOUR_FIVE);
+    assert!(layout.add_canvas());
+    let id = layout.add_frame();
+    layout.set_frame_rect(id, 0.4, 0.15, 1.35, 0.62);
+    layout.fill_frame(id, "night.jpg", 900, 900);
+    layout.set_pan(id, -4.0, 9.0);
+    let ratio = layout.ratio.value();
+    let frame = layout.frame(id).unwrap();
+    let photo = frame.photo.as_ref().unwrap();
+    assert!((0.0..=1.0).contains(&photo.pan_x));
+    assert!((0.0..=1.0).contains(&photo.pan_y));
+    assert!(cover_contains_frame(frame, ratio));
+    let before = frame.clone();
+    let (pan_x, pan_y) = pan_for_origin(frame, ratio, frame.x - 3.0, frame.y + 3.0);
+    layout.set_pan(id, pan_x, pan_y);
+    let frame = layout.frame(id).unwrap();
+    assert!((frame.x - before.x).abs() < 1e-6);
+    assert!((frame.y - before.y).abs() < 1e-6);
+    assert!((frame.w - before.w).abs() < 1e-6);
+    assert!((frame.h - before.h).abs() < 1e-6);
+    assert!(cover_contains_frame(frame, ratio));
+
+    layout.set_frame_rect(id, 0.2, 0.05, 1.7, 0.84);
+    let frame = layout.frame(id).unwrap();
+    assert!(cover_contains_frame(frame, ratio));
+    layout.set_frame_aspect(id, 1.0);
+    let frame = layout.frame(id).unwrap();
+    assert!(cover_contains_frame(frame, ratio));
+    assert!((frame_pixel_aspect(frame.w, frame.h, ratio) - 1.0).abs() < 1e-3);
+}
+
+#[test]
+fn snap_lines_the_frame_up_without_moving_the_pan() {
+    let mut layout = Layout::new(AspectRatio::FOUR_FIVE);
+    let id = layout.add_frame();
+    layout.set_frame_rect(id, 0.11, 0.07, 1.2, 0.63);
+    layout.fill_frame(id, "dune.png", 800, 1200);
+    layout.set_pan(id, 0.25, 0.8);
+    let frame = layout.frame(id).unwrap().clone();
+    let (x, y) = snap_frame_to_grid(&frame);
+    layout.set_frame_rect(id, x, y, frame.w, frame.h);
+    let moved = layout.frame(id).unwrap();
+    assert!((moved.w - frame.w).abs() < 1e-6);
+    assert!((moved.h - frame.h).abs() < 1e-6);
+    assert!((moved.photo.as_ref().unwrap().pan_x - 0.25).abs() < 1e-6);
+    assert!((moved.photo.as_ref().unwrap().pan_y - 0.8).abs() < 1e-6);
+    assert!(on_eighth(moved.x) || on_eighth(moved.x + moved.w));
+    assert!(on_eighth(moved.y) || on_eighth(moved.y + moved.h));
+    assert!(cover_contains_frame(moved, layout.ratio.value()));
+}
+
+#[test]
+fn resize_snaps_only_the_edges_that_moved() {
+    let (x, y, w, h) = snap_resized_frame_to_grid(Handle::E, 0.125, 0.11, 0.4, 0.5);
+    assert!((x - 0.125).abs() < 1e-6);
+    assert!((y - 0.11).abs() < 1e-6);
+    assert!((h - 0.5).abs() < 1e-6);
+    assert!((x + w - 0.5).abs() < 1e-4);
+    assert!(on_eighth(x + w));
+
+    let (x, y, w, h) = snap_resized_frame_to_grid(Handle::E, 0.0, 0.11, 0.5, 0.4);
+    assert!((x - 0.0).abs() < 1e-6);
+    assert!((y - 0.11).abs() < 1e-6);
+    assert!((w - 0.5).abs() < 1e-6);
+    assert!((h - 0.4).abs() < 1e-6);
+
+    let (x, y, w, h) = snap_resized_frame_to_grid(Handle::W, 0.18, 0.25, 0.5, 0.5);
+    assert!((x + w - 0.68).abs() < 1e-4);
+    assert!((y - 0.25).abs() < 1e-6);
+    assert!((h - 0.5).abs() < 1e-6);
+    assert!(on_eighth(x));
+
+    let (x, y, w, h) = snap_resized_frame_to_grid(Handle::N, 0.25, 0.18, 0.5, 0.5);
+    assert!((y + h - 0.68).abs() < 1e-4);
+    assert!((x - 0.25).abs() < 1e-6);
+    assert!((w - 0.5).abs() < 1e-6);
+    assert!(on_eighth(y));
+
+    let (x, y, w, h) = snap_resized_frame_to_grid(Handle::S, 0.25, 0.25, 0.5, 0.42);
+    assert!((y - 0.25).abs() < 1e-6);
+    assert!((x - 0.25).abs() < 1e-6);
+    assert!((w - 0.5).abs() < 1e-6);
+    assert!(on_eighth(y + h));
+
+    let (x, y, w, h) = snap_resized_frame_to_grid(Handle::Se, 0.125, 0.25, 0.4, 0.42);
+    assert!((x - 0.125).abs() < 1e-6);
+    assert!((y - 0.25).abs() < 1e-6);
+    assert!(on_eighth(x + w));
+    assert!(on_eighth(y + h));
+    assert!((x + w - 0.5).abs() < 1e-4);
+    assert!((y + h - 0.625).abs() < 1e-4);
+
+    let mut layout = Layout::new(AspectRatio::FOUR_FIVE);
+    let id = layout.add_frame();
+    layout.set_frame_rect(id, 0.125, 0.11, 0.4, 0.5);
+    layout.fill_frame(id, "night.jpg", 900, 900);
+    layout.set_pan(id, 0.2, 0.7);
+    let (x, y, w, h) = snap_resized_frame_to_grid(Handle::E, 0.125, 0.11, 0.4, 0.5);
+    layout.set_frame_rect(id, x, y, w, h);
+    let frame = layout.frame(id).unwrap();
+    let photo = frame.photo.as_ref().unwrap();
+    assert!((photo.pan_x - 0.2).abs() < 1e-6);
+    assert!((photo.pan_y - 0.7).abs() < 1e-6);
+    assert!(cover_contains_frame(frame, layout.ratio.value()));
+}
+
+#[test]
+fn frame_resize_keeps_aspect_on_corners_and_changes_it_on_edges() {
+    let (x, y, w, h) = resize_frame(0.0, 0.0, 1.0, 0.8, Handle::Se, 1.6, 2.2, true);
+    assert!((h / w - 0.8).abs() < 1e-3);
+    assert!(w > 1.2);
+    let (x2, y2, w2, h2) = resize_frame(0.0, 0.0, 1.0, 0.8, Handle::E, 1.55, 0.2, false);
+    assert!((y2 - 0.0).abs() < 1e-6);
+    assert!((h2 - 0.8).abs() < 1e-6);
+    assert!((w2 - 1.55).abs() < 1e-3);
+    assert!((h2 / w2 - 0.8).abs() > 0.05);
+    let _ = (x, y, x2);
+}
+
+#[test]
+fn spanning_frame_clips_the_photo_to_each_canvas() {
+    let mut layout = Layout::new(AspectRatio::SQUARE);
+    layout.set_canvas_count(2);
+    let id = layout.add_frame();
+    layout.set_frame_rect(id, 0.0, 0.25, 2.0, 0.5);
+    layout.fill_frame(id, "split", 40, 10);
+    let mut image = RgbaImage::new(40, 10);
+    for (x, _, pixel) in image.enumerate_pixels_mut() {
+        *pixel = if x < 20 {
+            Rgba([220, 20, 20, 255])
+        } else {
+            Rgba([20, 40, 220, 255])
+        };
+    }
+    let mut images = FrameImages::new();
+    images.insert(id, Arc::new(image));
+    let ratio = layout.ratio.value();
+    let frame = layout.frame(id).unwrap();
+    assert!(cover_contains_frame(frame, ratio));
+    let left = clip_frame_to_canvas(frame, 0, ratio).unwrap();
+    let right = clip_frame_to_canvas(frame, 1, ratio).unwrap();
+    assert!((left.dest[2] - 1.0).abs() < 1e-3);
+    assert!((right.dest[2] - 1.0).abs() < 1e-3);
+    assert!(clip_frame_to_canvas(frame, 0, ratio).is_some());
+    let first = render_layout(&layout, 0, &images, 40);
+    let second = render_layout(&layout, 1, &images, 40);
+    assert_eq!(pixel(&first, 4, 2), [255, 255, 255, 255]);
+    assert_eq!(pixel(&first, 8, 20), [220, 20, 20, 255]);
+    assert_eq!(pixel(&first, 30, 20), [220, 20, 20, 255]);
+    assert_eq!(pixel(&second, 8, 20), [20, 40, 220, 255]);
+    assert_eq!(pixel(&first, 30, 36), [255, 255, 255, 255]);
+}
+
+#[test]
+fn clearing_a_photo_leaves_the_frame() {
+    let mut layout = Layout::new(AspectRatio::SQUARE);
+    let id = layout.add_frame();
+    layout.fill_frame(id, "night.jpg", 32, 32);
+    assert!(layout.clear_photo(id));
+    let frame = layout.frame(id).unwrap();
+    assert!(frame.photo.is_none());
+    assert!((frame.w - 1.0).abs() < 1e-6);
+    assert_eq!(layout_export_width(&layout), DEFAULT_EXPORT_WIDTH);
+}
+
+#[test]
+fn carousel_copy_does_not_share_frame_photos() {
+    let mut template = Layout::new(AspectRatio::FOUR_FIVE);
+    template.set_canvas_count(2);
+    let id = template.add_frame();
+    template.set_frame_rect(id, 0.0, 0.0, 2.0, 1.0);
+    let mut carousel = template.clone();
+    carousel.fill_frame(id, "night.jpg", 900, 900);
+    assert!(template.frame(id).unwrap().photo.is_none());
+    assert!(carousel.frame(id).unwrap().photo.is_some());
+    assert!((carousel.frame(id).unwrap().w - 2.0).abs() < 1e-6);
+    let ratio = carousel.ratio.value();
+    assert!(cover_contains_frame(carousel.frame(id).unwrap(), ratio));
+    assert_eq!(layout_export_width(&carousel), 450);
+}
+
+#[test]
 fn moved_square_crop_keeps_placement_on_the_cropped_aspect() {
     let mut doc = Document::new(AspectRatio::FOUR_FIVE);
     let id = doc.add_photo("wide", 800, 400);

@@ -2,7 +2,7 @@ pub const MAX_CANVASES: usize = 20;
 pub const DEFAULT_EXPORT_WIDTH: u32 = 1080;
 pub const CANVAS_GRID: usize = 8;
 pub const CANVAS_GRID_STEP: f32 = 1.0 / 8.0;
-const MIN_WIDTH: f32 = 0.05;
+pub(crate) const MIN_WIDTH: f32 = 0.05;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct AspectRatio {
@@ -591,6 +591,41 @@ pub fn snap_resize(handle: Handle, x: f32, y: f32, w: f32, h: f32, step: f32) ->
             snap_resize_corner(handle, x, y, w, h, aspect, step)
         }
     }
+}
+
+fn snap_open_edge(moving: f32, fixed: f32, step: f32) -> f32 {
+    let snapped = snap_scalar(moving, step);
+    if (snapped - fixed).abs() >= MIN_WIDTH {
+        snapped
+    } else {
+        moving
+    }
+}
+
+#[must_use]
+pub fn snap_frame_resize(
+    handle: Handle,
+    x: f32,
+    y: f32,
+    w: f32,
+    h: f32,
+    step: f32,
+) -> (f32, f32, f32, f32) {
+    let left = x;
+    let right = x + w;
+    let top = y;
+    let bottom = y + h;
+    let (left, right) = match handle {
+        Handle::N | Handle::S => (left, right),
+        Handle::E | Handle::Ne | Handle::Se => (left, snap_open_edge(right, left, step)),
+        Handle::W | Handle::Nw | Handle::Sw => (snap_open_edge(left, right, step), right),
+    };
+    let (top, bottom) = match handle {
+        Handle::E | Handle::W => (top, bottom),
+        Handle::S | Handle::Se | Handle::Sw => (top, snap_open_edge(bottom, top, step)),
+        Handle::N | Handle::Ne | Handle::Nw => (snap_open_edge(top, bottom, step), bottom),
+    };
+    (left, top, right - left, bottom - top)
 }
 
 fn snap_resize_corner(

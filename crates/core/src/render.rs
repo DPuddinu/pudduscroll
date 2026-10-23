@@ -4,9 +4,10 @@ use std::sync::Arc;
 use image::imageops::{FilterType, crop_imm, overlay, resize};
 use image::{Rgba, RgbaImage};
 
-use crate::{Document, Photo, PhotoId};
+use crate::{Document, Frame, FrameId, Layout, Photo, PhotoId, cover_fit};
 
 pub type ImageMap = HashMap<PhotoId, Arc<RgbaImage>>;
+pub type FrameImages = HashMap<FrameId, Arc<RgbaImage>>;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ClippedRegion {
@@ -69,6 +70,67 @@ pub fn render_canvas(
             continue;
         };
         let Some(region) = clip_photo_to_canvas(photo, canvas, ratio) else {
+            continue;
+        };
+        blit(&mut output, image, &region);
+    }
+    output
+}
+
+#[must_use]
+pub fn clip_frame_to_canvas(frame: &Frame, canvas: usize, ratio: f32) -> Option<ClippedRegion> {
+    let photo = frame.photo.as_ref()?;
+    let fit = cover_fit(frame, ratio)?;
+    if fit.w <= 1.0e-6 || fit.h <= 1.0e-6 || frame.w <= 1.0e-6 || frame.h <= 1.0e-6 {
+        return None;
+    }
+    let canvas_x0 = canvas as f32;
+    let canvas_x1 = canvas_x0 + 1.0;
+    let ix0 = fit.x.max(frame.x).max(canvas_x0);
+    let iy0 = fit.y.max(frame.y).max(0.0);
+    let ix1 = (fit.x + fit.w).min(frame.x + frame.w).min(canvas_x1);
+    let iy1 = (fit.y + fit.h).min(frame.y + frame.h).min(1.0);
+    if ix1 - ix0 <= 1.0e-5 || iy1 - iy0 <= 1.0e-5 {
+        return None;
+    }
+    let u0 = (ix0 - fit.x) / fit.w;
+    let u1 = (ix1 - fit.x) / fit.w;
+    let v0 = (iy0 - fit.y) / fit.h;
+    let v1 = (iy1 - fit.y) / fit.h;
+    let crop = photo.crop;
+    let image_w = photo.image_width as f32;
+    let image_h = photo.image_height as f32;
+    Some(ClippedRegion {
+        dest: [ix0 - canvas_x0, iy0, ix1 - ix0, iy1 - iy0],
+        src: [
+            (crop.x + u0 * crop.w) * image_w,
+            (crop.y + v0 * crop.h) * image_h,
+            (u1 - u0) * crop.w * image_w,
+            (v1 - v0) * crop.h * image_h,
+        ],
+    })
+}
+
+#[must_use]
+pub fn render_layout(
+    layout: &Layout,
+    canvas: usize,
+    images: &FrameImages,
+    dest_width: u32,
+) -> RgbaImage {
+    let (width, height) = layout.ratio.export_size(dest_width);
+    let mut output = RgbaImage::from_pixel(width, height, Rgba([255, 255, 255, 255]));
+    if canvas >= layout.canvas_count {
+        return output;
+    }
+    let ratio = layout.ratio.value();
+    let mut frames: Vec<&Frame> = layout.frames.iter().collect();
+    frames.sort_by_key(|frame| frame.z);
+    for frame in frames {
+        let Some(image) = images.get(&frame.id) else {
+            continue;
+        };
+        let Some(region) = clip_frame_to_canvas(frame, canvas, ratio) else {
             continue;
         };
         blit(&mut output, image, &region);
