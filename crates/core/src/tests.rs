@@ -762,10 +762,21 @@ fn resize_snaps_only_the_edges_that_moved() {
 
 #[test]
 fn frame_resize_keeps_aspect_on_corners_and_changes_it_on_edges() {
-    let (x, y, w, h) = resize_frame(0.0, 0.0, 1.0, 0.8, Handle::Se, 1.6, 2.2, true);
+    let origin = FrameRect {
+        x: 0.0,
+        y: 0.0,
+        w: 1.0,
+        h: 0.8,
+    };
+    let FrameRect { x, y, w, h } = resize_frame(origin, Handle::Se, 1.6, 2.2, true);
     assert!((h / w - 0.8).abs() < 1e-3);
     assert!(w > 1.2);
-    let (x2, y2, w2, h2) = resize_frame(0.0, 0.0, 1.0, 0.8, Handle::E, 1.55, 0.2, false);
+    let FrameRect {
+        x: x2,
+        y: y2,
+        w: w2,
+        h: h2,
+    } = resize_frame(origin, Handle::E, 1.55, 0.2, false);
     assert!((y2 - 0.0).abs() < 1e-6);
     assert!((h2 - 0.8).abs() < 1e-6);
     assert!((w2 - 1.55).abs() < 1e-3);

@@ -36,6 +36,14 @@ pub struct CoverFit {
     pub h: f32,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct FrameRect {
+    pub x: f32,
+    pub y: f32,
+    pub w: f32,
+    pub h: f32,
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct Layout {
     pub ratio: crate::AspectRatio,
@@ -341,22 +349,26 @@ pub fn snap_resized_frame_to_grid(
 
 #[must_use]
 pub fn resize_frame(
-    x: f32,
-    y: f32,
-    w: f32,
-    h: f32,
+    rect: FrameRect,
     handle: Handle,
     pointer_x: f32,
     pointer_y: f32,
     lock_aspect: bool,
-) -> (f32, f32, f32, f32) {
+) -> FrameRect {
+    let FrameRect { x, y, w, h } = rect;
     if lock_aspect {
         let (nx, ny, nw) = resize_uniform(x, y, w, h, handle, pointer_x, pointer_y);
         let aspect = if w.abs() < 1.0e-4 { 1.0 } else { h / w };
         let nh = (nw * aspect).max(MIN_WIDTH);
-        return (nx, ny, nw.max(MIN_WIDTH), nh);
+        return FrameRect {
+            x: nx,
+            y: ny,
+            w: nw.max(MIN_WIDTH),
+            h: nh,
+        };
     }
-    resize_frame_free(x, y, w, h, handle, pointer_x, pointer_y)
+    let (x, y, w, h) = resize_frame_free(x, y, w, h, handle, pointer_x, pointer_y);
+    FrameRect { x, y, w, h }
 }
 
 fn resize_frame_free(
