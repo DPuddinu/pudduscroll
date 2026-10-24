@@ -1,0 +1,12 @@
+---
+alwaysApply: true
+---
+
+Before `git commit`, review the staged diff. In the reply, report bugs, KISS violations, file splits, and edge cases.
+
+- Read `git diff --cached`.
+- No extra types, parameters, or files for a need this change does not have. Split a file only when it has two unrelated reasons to change. Do not split to satisfy a line count. `too_many_lines` stays allowed.
+- Core behavior changes extend `crates/core/src/tests.rs`.
+- Run `cargo fmt --all`, then `cargo clippy --workspace --all-targets -- -D warnings`, and fix what they report.
+- Stage fixes, run `powershell -NoProfile -File .cursor/hooks/mark-reviewed.ps1`, then commit. Do not use `--no-verify`.
+- The pre-commit hook runs `cargo fmt --all -- --check`, `cargo clippy --workspace --all-targets -- -D warnings`, and `cargo test --workspace`.

@@ -1,51 +1,55 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::sync::mpsc::{self};
+use std::sync::mpsc::{self, Sender};
 use std::thread;
 use std::time::{Duration, Instant};
 
 use eframe::egui;
-use image::RgbaImage;
 use pudduscroll_core::{
-    AspectRatio, ExportSettings, FrameId, FrameImages, Layout, estimate_layout_bytes,
-    layout_export_width,
+    AspectRatio, ExportFormat, ExportSettings, FrameId, FrameImages, Layout, estimate_layout_bytes,
+    image_from_bytes, layout_export_width,
 };
 
-use crate::library::{Library, load_blob};
+use crate::library::{Library, SaveRequest, library_directory, load_blob, write_snapshot};
 
-use super::draw::{
-    apply_style, editor_preview, export_folder, pick_image_path, texture_from_preview,
-};
+use super::draw::{apply_style, export_folder, pick_image_path, texture_from_preview};
 use super::{
-    DEFAULT_EDITOR_ZOOM, DecodeTarget, DecodedPhoto, EstimateMsg, IncomingPhoto, PREVIEW_MAX,
-    PhotoAsset, PudduScrollApp, Route, UNDO_LIMIT,
+    DEFAULT_EDITOR_ZOOM, DEFAULT_RAIL_WEIGHTS, DecodeTarget, EstimateMsg, IncomingPhoto,
+    PendingUpload, PhotoAsset, PudduScrollApp, Route, UNDO_LIMIT,
 };
 
 impl PudduScrollApp {
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
         apply_style(&cc.egui_ctx);
-        let (library, status) = match Library::load() {
-            Ok(library) => (library, String::new()),
-            Err(error) => (Library::empty(), error),
-        };
         let (photo_tx, photo_rx) = mpsc::channel();
+        let save_tx = spawn_saver(photo_tx.clone());
+        let load_tx = photo_tx.clone();
+        thread::spawn(move || {
+            let _ = load_tx.send(IncomingPhoto::Library(Library::load()));
+        });
         Self {
-            library,
+            library: Library::empty(),
+            library_ready: false,
+            can_store: false,
             route: Route::Home,
             assets: HashMap::new(),
             cover_textures: HashMap::new(),
             card_previews: HashMap::new(),
             selected: None,
             edit_frame: false,
+            free_rotate: false,
             quality: 90,
+            format: ExportFormat::Jpeg,
             preview_index: 0,
             preview_texture: None,
             preview_key: None,
+            preview_job: None,
+            card_jobs: HashMap::new(),
             geometry_revision: 0,
             drag: None,
             gesture: "none".to_string(),
-            status,
+            status: "Opening library…".to_string(),
             estimate_mb: None,
             estimate_for: None,
             estimate_after: None,
@@ -53,6 +57,8 @@ impl PudduScrollApp {
             export_rx: None,
             photo_tx,
             photo_rx,
+            save_tx,
+            pending_uploads: VecDeque::new(),
             loading: HashMap::new(),
             cover_load: None,
             cover_pending: HashMap::new(),
@@ -73,6 +79,7 @@ impl PudduScrollApp {
             crop_press: None,
             show_grid: true,
             snap_to_grid: true,
+            rail_weights: DEFAULT_RAIL_WEIGHTS,
             create_open: false,
             create_name: "Template".to_string(),
             create_ratio: AspectRatio::FOUR_FIVE,
@@ -155,7 +162,31 @@ impl PudduScrollApp {
     }
 
     pub(super) fn persist(&mut self) {
-        if let Err(error) = self.library.store() {
+        if !self.can_store {
+            return;
+        }
+        let snapshot = self.library.snapshot();
+        let _ = self.save_tx.send(SaveRequest {
+            snapshot,
+            ack: None,
+        });
+    }
+
+    pub(super) fn flush_store(&mut self) {
+        if !self.can_store {
+            return;
+        }
+        let (tx, rx) = mpsc::channel();
+        let snapshot = self.library.snapshot();
+        if self
+            .save_tx
+            .send(SaveRequest {
+                snapshot,
+                ack: Some(tx),
+            })
+            .is_ok()
+            && let Ok(Err(error)) = rx.recv()
+        {
             self.status = error;
         }
     }
@@ -181,7 +212,7 @@ impl PudduScrollApp {
         self.estimate_after = Some(Instant::now() + Duration::from_millis(280));
     }
 
-    pub(super) fn image_map(&self) -> FrameImages {
+    pub(super) fn proxy_map(&self) -> FrameImages {
         let Route::Carousel(id) = self.route else {
             return FrameImages::new();
         };
@@ -196,13 +227,32 @@ impl PudduScrollApp {
         carousel
             .photos
             .iter()
-            .map(|(frame_id, blob)| (*frame_id, Arc::clone(&blob.image)))
+            .map(|(frame_id, blob)| (*frame_id, Arc::clone(&blob.proxy)))
+            .collect()
+    }
+
+    fn original_bytes(&self) -> HashMap<FrameId, Arc<[u8]>> {
+        let Route::Carousel(id) = self.route else {
+            return HashMap::new();
+        };
+        let Some(carousel) = self
+            .library
+            .carousels
+            .iter()
+            .find(|carousel| carousel.id == id)
+        else {
+            return HashMap::new();
+        };
+        carousel
+            .photos
+            .iter()
+            .map(|(frame_id, blob)| (*frame_id, Arc::clone(&blob.bytes)))
             .collect()
     }
 
     pub(super) fn poll_jobs(&mut self, ctx: &egui::Context) {
         while let Ok(message) = self.photo_rx.try_recv() {
-            self.apply_incoming(ctx, message);
+            self.apply_incoming(message);
         }
         let estimate_msg = match self
             .estimate_rx
@@ -220,11 +270,14 @@ impl PudduScrollApp {
             self.estimate_rx = None;
         }
         if let Some(msg) = estimate_msg {
-            if msg.geometry == self.geometry_revision && msg.quality == self.quality {
+            if msg.geometry == self.geometry_revision
+                && msg.quality == self.quality
+                && msg.format == self.format
+            {
                 match msg.result {
                     Ok(bytes) => {
                         self.estimate_mb = Some(bytes as f64 / 1_048_576.0);
-                        self.estimate_for = Some((msg.geometry, msg.quality));
+                        self.estimate_for = Some((msg.geometry, msg.quality, msg.format));
                     }
                     Err(error) => {
                         self.status = error;
@@ -233,7 +286,8 @@ impl PudduScrollApp {
                 }
             }
         }
-        let estimate_current = self.estimate_for == Some((self.geometry_revision, self.quality));
+        let estimate_current =
+            self.estimate_for == Some((self.geometry_revision, self.quality, self.format));
         if self.export_open && self.estimate_rx.is_none() && !estimate_current {
             match self.estimate_after {
                 Some(at) if Instant::now() >= at => self.spawn_estimate(),
@@ -267,6 +321,7 @@ impl PudduScrollApp {
                 Err(error) => error,
             };
         }
+        self.upload_one(ctx);
         if self.photos_busy() {
             ctx.request_repaint_after(Duration::from_millis(16));
         } else if self.estimate_rx.is_some() || self.export_rx.is_some() {
@@ -275,7 +330,13 @@ impl PudduScrollApp {
     }
 
     pub(super) fn photos_busy(&self) -> bool {
-        !self.loading.is_empty() || self.cover_load.is_some() || !self.cover_pending.is_empty()
+        !self.library_ready
+            || !self.loading.is_empty()
+            || self.cover_load.is_some()
+            || !self.cover_pending.is_empty()
+            || self.preview_job.is_some()
+            || !self.card_jobs.is_empty()
+            || !self.pending_uploads.is_empty()
     }
 
     pub(super) fn next_token(&mut self) -> u64 {
@@ -289,33 +350,70 @@ impl PudduScrollApp {
         }
     }
 
-    pub(super) fn apply_incoming(&mut self, ctx: &egui::Context, message: IncomingPhoto) {
+    pub(super) fn apply_incoming(&mut self, message: IncomingPhoto) {
         match message {
+            IncomingPhoto::Library(result) => self.apply_library(result),
             IncomingPhoto::Decoded {
                 token,
                 target,
                 result,
-            } => self.apply_decoded(ctx, token, target, result),
-            IncomingPhoto::Preview {
-                token,
+            } => self.apply_decoded(token, target, result),
+            IncomingPhoto::PhonePreview {
+                revision,
+                index,
+                image,
+            } => {
+                if self.preview_job == Some((revision, index)) {
+                    self.pending_uploads.push_back(PendingUpload::Phone {
+                        revision,
+                        index,
+                        image,
+                    });
+                }
+            }
+            IncomingPhoto::CardPreview {
                 carousel_id,
-                frame_id,
-                preview,
-            } => self.apply_preview(ctx, token, carousel_id, frame_id, &preview),
-            IncomingPhoto::CoverPreview {
-                token,
-                template_id,
-                preview,
-            } => self.apply_cover_preview(ctx, token, template_id, &preview),
+                visuals,
+                image,
+            } => {
+                if self.card_jobs.get(&carousel_id) == Some(&visuals) {
+                    self.pending_uploads.push_back(PendingUpload::Card {
+                        carousel_id,
+                        visuals,
+                        image,
+                    });
+                }
+            }
+            IncomingPhoto::Saved { generation, result } => match result {
+                Ok(()) => self.library.stored_generation(generation),
+                Err(error) => self.status = error,
+            },
         }
+    }
+
+    fn apply_library(&mut self, result: Result<Library, String>) {
+        if self.library_ready {
+            return;
+        }
+        match result {
+            Ok(library) => {
+                self.library = library;
+                self.can_store = true;
+                self.status.clear();
+            }
+            Err(error) => {
+                self.can_store = false;
+                self.status = error;
+            }
+        }
+        self.library_ready = true;
     }
 
     pub(super) fn apply_decoded(
         &mut self,
-        ctx: &egui::Context,
         token: u64,
         target: DecodeTarget,
-        result: Result<DecodedPhoto, String>,
+        result: Result<crate::library::Blob, String>,
     ) {
         match target {
             DecodeTarget::Frame {
@@ -325,26 +423,35 @@ impl PudduScrollApp {
                 if self.loading.get(&(carousel_id, frame_id)) != Some(&token) {
                     return;
                 }
-                self.loading.remove(&(carousel_id, frame_id));
                 match result {
-                    Ok(decoded) => self.finish_frame_photo(ctx, carousel_id, frame_id, decoded),
-                    Err(error) => self.status = error,
+                    Ok(blob) => {
+                        if !self.finish_frame_photo(carousel_id, frame_id, token, blob) {
+                            self.loading.remove(&(carousel_id, frame_id));
+                        }
+                    }
+                    Err(error) => {
+                        self.loading.remove(&(carousel_id, frame_id));
+                        self.status = error;
+                    }
                 }
             }
             DecodeTarget::Cover => {
                 if self.cover_load != Some(token) {
                     return;
                 }
-                self.cover_load = None;
                 match result {
-                    Ok(decoded) => {
-                        let name = decoded.blob.name.clone();
-                        self.create_cover_texture =
-                            Some(texture_from_preview(ctx, "create-cover", &decoded.preview));
-                        self.create_cover = Some(decoded.blob);
+                    Ok(blob) => {
+                        let name = blob.name.clone();
+                        let proxy = Arc::clone(&blob.proxy);
+                        self.create_cover = Some(blob);
+                        self.pending_uploads
+                            .push_back(PendingUpload::CreateCover { token, proxy });
                         self.status = format!("{name} ready");
                     }
-                    Err(error) => self.status = error,
+                    Err(error) => {
+                        self.cover_load = None;
+                        self.status = error;
+                    }
                 }
             }
         }
@@ -352,79 +459,44 @@ impl PudduScrollApp {
 
     pub(super) fn finish_frame_photo(
         &mut self,
-        ctx: &egui::Context,
         carousel_id: u64,
         frame_id: FrameId,
-        decoded: DecodedPhoto,
-    ) {
+        token: u64,
+        blob: crate::library::Blob,
+    ) -> bool {
         let exists = self.library.carousels.iter().any(|carousel| {
             carousel.id == carousel_id && carousel.layout.frame(frame_id).is_some()
         });
         if !exists {
-            return;
+            return false;
         }
-        let name = decoded.blob.name.clone();
-        let image = Arc::clone(&decoded.blob.image);
-        self.library.set_photo(carousel_id, frame_id, decoded.blob);
-        if self.route == Route::Carousel(carousel_id) {
-            self.upload_asset(ctx, frame_id, &name, image, &decoded.preview);
+        let name = blob.name.clone();
+        let proxy = Arc::clone(&blob.proxy);
+        self.library.set_photo(carousel_id, frame_id, blob);
+        let queued = self.route == Route::Carousel(carousel_id);
+        if queued {
+            self.pending_uploads.push_back(PendingUpload::Frame {
+                carousel_id,
+                frame_id,
+                token,
+                name: name.clone(),
+                proxy,
+            });
             self.selected = Some(frame_id);
         }
         self.status = format!("{name} added");
         self.note_geometry();
+        queued
     }
 
-    pub(super) fn apply_preview(
-        &mut self,
-        ctx: &egui::Context,
-        token: u64,
-        carousel_id: u64,
-        frame_id: FrameId,
-        preview: &RgbaImage,
-    ) {
-        if self.loading.get(&(carousel_id, frame_id)) != Some(&token) {
-            return;
-        }
-        self.loading.remove(&(carousel_id, frame_id));
-        if self.route != Route::Carousel(carousel_id) {
-            return;
-        }
-        let prepared = self
-            .library
-            .carousels
-            .iter()
-            .find(|carousel| carousel.id == carousel_id)
-            .and_then(|carousel| carousel.photos.get(&frame_id))
-            .map(|blob| (blob.name.clone(), Arc::clone(&blob.image)));
-        let Some((name, image)) = prepared else {
-            return;
-        };
-        self.upload_asset(ctx, frame_id, &name, image, preview);
-    }
-
-    pub(super) fn apply_cover_preview(
-        &mut self,
-        ctx: &egui::Context,
-        token: u64,
-        template_id: u64,
-        preview: &RgbaImage,
-    ) {
-        if self.cover_pending.get(&template_id) != Some(&token) {
-            return;
-        }
-        self.cover_pending.remove(&template_id);
-        if self
-            .library
-            .templates
-            .iter()
-            .all(|template| template.id != template_id)
-        {
-            return;
-        }
-        self.cover_textures.insert(
+    pub(super) fn queue_cover(&mut self, template_id: u64, proxy: Arc<image::RgbaImage>) {
+        let token = self.next_token();
+        self.cover_pending.insert(template_id, token);
+        self.pending_uploads.push_back(PendingUpload::Cover {
             template_id,
-            texture_from_preview(ctx, format!("cover-{template_id}"), preview),
-        );
+            token,
+            proxy,
+        });
     }
 
     pub(super) fn spawn_estimate(&mut self) {
@@ -432,23 +504,28 @@ impl PudduScrollApp {
         let Some(layout) = self.layout().cloned() else {
             return;
         };
-        let images = self.image_map();
+        let encoded = self.original_bytes();
         let quality = self.quality;
+        let format = self.format;
         let geometry = self.geometry_revision;
         let (tx, rx) = mpsc::channel();
         thread::spawn(move || {
-            let result = estimate_layout_bytes(
-                &layout,
-                &images,
-                ExportSettings {
-                    width: layout_export_width(&layout),
-                    quality,
-                },
-            )
-            .map_err(|error| error.to_string());
+            let result = images_from_encoded(&encoded).and_then(|images| {
+                estimate_layout_bytes(
+                    &layout,
+                    &images,
+                    ExportSettings {
+                        width: layout_export_width(&layout),
+                        quality,
+                        format,
+                    },
+                )
+                .map_err(|error| error.to_string())
+            });
             let _ = tx.send(EstimateMsg {
                 geometry,
                 quality,
+                format,
                 result,
             });
         });
@@ -476,8 +553,16 @@ impl PudduScrollApp {
         if ctx.egui_wants_keyboard_input() {
             return;
         }
+        if !matches!(self.route, Route::Home) {
+            ctx.input_mut(|input| {
+                input.consume_key(egui::Modifiers::NONE, egui::Key::Space);
+            });
+        }
         if ctx.input(|input| input.key_pressed(egui::Key::Delete)) {
             self.delete_selection();
+        }
+        if !self.export_open {
+            return;
         }
         let Some((_, count)) = self.metrics() else {
             return;
@@ -507,20 +592,126 @@ impl PudduScrollApp {
         }
     }
 
-    pub(super) fn upload_asset(
-        &mut self,
-        ctx: &egui::Context,
-        id: FrameId,
-        name: &str,
-        image: Arc<RgbaImage>,
-        preview: &RgbaImage,
-    ) {
-        let texture = texture_from_preview(ctx, name, preview);
-        self.assets.insert(id, PhotoAsset { image, texture });
+    fn upload_one(&mut self, ctx: &egui::Context) {
+        while let Some(pending) = self.pending_uploads.pop_front() {
+            if self.apply_upload(ctx, pending) {
+                return;
+            }
+        }
+    }
+
+    fn apply_upload(&mut self, ctx: &egui::Context, pending: PendingUpload) -> bool {
+        match pending {
+            PendingUpload::Frame {
+                carousel_id,
+                frame_id,
+                token,
+                name,
+                proxy,
+            } => {
+                if self.loading.get(&(carousel_id, frame_id)) != Some(&token) {
+                    return false;
+                }
+                if self.route != Route::Carousel(carousel_id) {
+                    self.loading.remove(&(carousel_id, frame_id));
+                    return false;
+                }
+                let texture = texture_from_preview(ctx, &name, &proxy);
+                self.assets.insert(frame_id, PhotoAsset { texture });
+                self.loading.remove(&(carousel_id, frame_id));
+                true
+            }
+            PendingUpload::Cover {
+                template_id,
+                token,
+                proxy,
+            } => {
+                if self.cover_pending.get(&template_id) != Some(&token) {
+                    return false;
+                }
+                let present = self
+                    .library
+                    .templates
+                    .iter()
+                    .any(|template| template.id == template_id);
+                if present {
+                    self.cover_textures.insert(
+                        template_id,
+                        texture_from_preview(ctx, format!("cover-{template_id}"), &proxy),
+                    );
+                }
+                self.cover_pending.remove(&template_id);
+                present
+            }
+            PendingUpload::CreateCover { token, proxy } => {
+                if self.cover_load != Some(token) {
+                    return false;
+                }
+                self.create_cover_texture = Some(texture_from_preview(ctx, "create-cover", &proxy));
+                self.cover_load = None;
+                true
+            }
+            PendingUpload::Phone {
+                revision,
+                index,
+                image,
+            } => {
+                let current = self.preview_job == Some((revision, index));
+                if !self.export_open
+                    || self.geometry_revision != revision
+                    || self.preview_index != index
+                {
+                    if current {
+                        self.preview_job = None;
+                    }
+                    return false;
+                }
+                self.preview_texture = Some(texture_from_preview(
+                    ctx,
+                    format!("preview-{revision}-{index}"),
+                    &image,
+                ));
+                self.preview_key = Some((revision, index));
+                self.preview_job = None;
+                true
+            }
+            PendingUpload::Card {
+                carousel_id,
+                visuals,
+                image,
+            } => {
+                if self.card_jobs.get(&carousel_id) == Some(&visuals) {
+                    self.card_jobs.remove(&carousel_id);
+                }
+                if self.library.visuals != visuals
+                    || self
+                        .library
+                        .carousels
+                        .iter()
+                        .all(|carousel| carousel.id != carousel_id)
+                {
+                    return false;
+                }
+                self.card_previews.insert(
+                    carousel_id,
+                    (
+                        visuals,
+                        texture_from_preview(
+                            ctx,
+                            format!("carousel-{carousel_id}-{visuals}"),
+                            &image,
+                        ),
+                    ),
+                );
+                true
+            }
+        }
     }
 
     pub(super) fn reload_assets(&mut self, ctx: &egui::Context) {
         self.assets.clear();
+        self.pending_uploads
+            .retain(|pending| !matches!(pending, PendingUpload::Frame { .. }));
         let Route::Carousel(carousel_id) = self.route else {
             return;
         };
@@ -532,22 +723,26 @@ impl PudduScrollApp {
         else {
             return;
         };
-        let loaded: Vec<(FrameId, String, Arc<RgbaImage>)> = carousel
+        let loaded: Vec<(FrameId, String, Arc<image::RgbaImage>)> = carousel
             .photos
             .iter()
-            .map(|(frame_id, blob)| (*frame_id, blob.name.clone(), Arc::clone(&blob.image)))
+            .map(|(frame_id, blob)| (*frame_id, blob.name.clone(), Arc::clone(&blob.proxy)))
             .collect();
-        for (frame_id, name, image) in loaded {
+        for (frame_id, name, proxy) in loaded {
             if self.loading.contains_key(&(carousel_id, frame_id)) {
                 continue;
             }
-            if image.width().max(image.height()) > PREVIEW_MAX {
-                self.spawn_preview(ctx, carousel_id, frame_id, image);
-            } else {
-                let preview = editor_preview(&image);
-                self.upload_asset(ctx, frame_id, &name, image, &preview);
-            }
+            let token = self.next_token();
+            self.loading.insert((carousel_id, frame_id), token);
+            self.pending_uploads.push_back(PendingUpload::Frame {
+                carousel_id,
+                frame_id,
+                token,
+                name,
+                proxy,
+            });
         }
+        ctx.request_repaint();
     }
 
     pub(super) fn fill_frame(&mut self, ctx: &egui::Context, id: FrameId) {
@@ -592,36 +787,11 @@ impl PudduScrollApp {
         }
         let tx = self.photo_tx.clone();
         thread::spawn(move || {
-            let result = load_blob(&path).map(|blob| {
-                let preview = editor_preview(&blob.image);
-                DecodedPhoto { blob, preview }
-            });
+            let result = load_blob(&path);
             let _ = tx.send(IncomingPhoto::Decoded {
                 token,
                 target,
                 result,
-            });
-        });
-        ctx.request_repaint();
-    }
-
-    pub(super) fn spawn_preview(
-        &mut self,
-        ctx: &egui::Context,
-        carousel_id: u64,
-        frame_id: FrameId,
-        image: Arc<RgbaImage>,
-    ) {
-        let token = self.next_token();
-        self.loading.insert((carousel_id, frame_id), token);
-        let tx = self.photo_tx.clone();
-        thread::spawn(move || {
-            let preview = editor_preview(&image);
-            let _ = tx.send(IncomingPhoto::Preview {
-                token,
-                carousel_id,
-                frame_id,
-                preview,
             });
         });
         ctx.request_repaint();
@@ -641,6 +811,7 @@ impl PudduScrollApp {
             self.crop_session = None;
         }
         self.drag = None;
+        self.free_rotate = false;
         self.status = "Photo removed".to_string();
         self.note_geometry();
     }
@@ -674,6 +845,7 @@ impl PudduScrollApp {
         self.route = route;
         self.selected = None;
         self.edit_frame = false;
+        self.free_rotate = false;
         self.drag = None;
         self.gesture = "none".to_string();
         self.crop_session = None;
@@ -681,6 +853,7 @@ impl PudduScrollApp {
         self.preview_index = 0;
         self.preview_texture = None;
         self.preview_key = None;
+        self.preview_job = None;
         self.editor_zoom = DEFAULT_EDITOR_ZOOM;
         self.strip_lead = egui::Vec2::ZERO;
         self.pending_scroll = Some(egui::Vec2::ZERO);
@@ -709,8 +882,16 @@ impl PudduScrollApp {
         self.crop_press = None;
         self.selected = None;
         self.edit_frame = false;
+        self.free_rotate = false;
         self.export_open = false;
         self.assets.clear();
+        self.preview_job = None;
+        self.pending_uploads.retain(|pending| {
+            !matches!(
+                pending,
+                PendingUpload::Frame { .. } | PendingUpload::Phone { .. }
+            )
+        });
         self.plus_rects.clear();
     }
 
@@ -721,15 +902,48 @@ impl PudduScrollApp {
         let Some(layout) = self.layout().cloned() else {
             return;
         };
-        let images = self.image_map();
+        let encoded = self.original_bytes();
         let quality = self.quality;
+        let format = self.format;
         let (tx, rx) = mpsc::channel();
         self.exporting = true;
         self.status = "Exporting…".to_string();
         thread::spawn(move || {
-            let outcome = export_folder(&layout, &images, quality, &dir);
+            let outcome = images_from_encoded(&encoded)
+                .and_then(|images| export_folder(&layout, &images, quality, format, &dir));
             let _ = tx.send(outcome);
         });
         self.export_rx = Some(rx);
     }
+}
+
+fn images_from_encoded(encoded: &HashMap<FrameId, Arc<[u8]>>) -> Result<FrameImages, String> {
+    let mut images = FrameImages::new();
+    for (id, bytes) in encoded {
+        let image = image_from_bytes(bytes).map_err(|error| error.to_string())?;
+        images.insert(*id, Arc::new(image));
+    }
+    Ok(images)
+}
+
+fn spawn_saver(photo_tx: Sender<IncomingPhoto>) -> Sender<SaveRequest> {
+    let (tx, rx) = mpsc::channel::<SaveRequest>();
+    thread::spawn(move || {
+        let root = library_directory();
+        while let Ok(request) = rx.recv() {
+            let generation = request.snapshot.generation;
+            let had_images = request.snapshot.images.is_some();
+            let result = write_snapshot(&root, &request.snapshot);
+            if had_images {
+                let _ = photo_tx.send(IncomingPhoto::Saved {
+                    generation,
+                    result: result.clone(),
+                });
+            }
+            if let Some(ack) = request.ack {
+                let _ = ack.send(result);
+            }
+        }
+    });
+    tx
 }

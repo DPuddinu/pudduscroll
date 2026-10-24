@@ -1,0 +1,12 @@
+---
+alwaysApply: true
+---
+
+Before the first edit of a request, check the design. In the reply, report:
+
+- Simpler: the smallest change that does this, and what you will not add.
+- Reusable: the existing type or function to extend, or why new code is needed.
+- Maintainable: the one place a later change to this behavior should land.
+- Pattern: use one from https://refactoring.guru/design-patterns/rust only when it makes this change simpler or keeps a future change in one place. Name it, or say none fits. A direct function beats a pattern with one caller.
+
+Core behavior stays in `pudduscroll-core`. Then run `powershell -NoProfile -File .cursor/hooks/mark-design.ps1 -Note "<one-line summary>"`. If the edit is denied, pass `-GenerationId` from that denial and edit again. Do not write source from the shell to skip this gate.

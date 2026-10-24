@@ -8,16 +8,16 @@ mod shell;
 mod strip;
 mod toolbar;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
 use std::sync::mpsc::{Receiver, Sender};
 use std::time::Instant;
 
 use eframe::egui;
 use image::RgbaImage;
-use pudduscroll_core::{AspectRatio, Crop, CropPreset, FrameId, Handle, Layout};
+use pudduscroll_core::{AspectRatio, Crop, CropPreset, ExportFormat, FrameId, Handle, Layout};
 
-use crate::library::{Blob, Library};
+use crate::library::{Blob, Library, SaveRequest};
 
 const BG: egui::Color32 = egui::Color32::from_rgb(16, 16, 16);
 const PANEL: egui::Color32 = egui::Color32::from_rgb(24, 24, 24);
@@ -26,15 +26,18 @@ const ACCENT: egui::Color32 = egui::Color32::from_rgb(232, 160, 96);
 const TEXT: egui::Color32 = egui::Color32::from_rgb(240, 236, 230);
 const MUTED: egui::Color32 = egui::Color32::from_rgb(164, 158, 148);
 const SELECT_BG: egui::Color32 = egui::Color32::from_rgb(48, 38, 30);
-const PREVIEW_MAX: u32 = 1800;
 const DEFAULT_EDITOR_ZOOM: f32 = 0.7;
 const MIN_EDITOR_ZOOM: f32 = 0.25;
 const MAX_EDITOR_ZOOM: f32 = 4.0;
 const EDITOR_ZOOM_SPEED: f32 = 1.0 / 200.0;
 const UNDO_LIMIT: usize = 50;
 const CROP_HANDLE_HIT: f32 = 12.0;
-const TOOLBAR_H: f32 = 112.0;
+const TOOLBAR_H: f32 = 48.0;
 const RAIL_W: f32 = 320.0;
+const RAIL_SECTIONS: usize = 5;
+const RAIL_SECTION_MIN: f32 = 72.0;
+const RAIL_SPLIT: f32 = 8.0;
+const DEFAULT_RAIL_WEIGHTS: [f32; RAIL_SECTIONS] = [0.16, 0.18, 0.16, 0.22, 0.28];
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Route {
@@ -72,12 +75,18 @@ enum Drag {
         grab_x: f32,
         grab_y: f32,
     },
+    Rotate {
+        id: FrameId,
+    },
 }
 
 impl Drag {
     fn id(self) -> FrameId {
         match self {
-            Drag::MoveFrame { id, .. } | Drag::ResizeFrame { id, .. } | Drag::Pan { id, .. } => id,
+            Drag::MoveFrame { id, .. }
+            | Drag::ResizeFrame { id, .. }
+            | Drag::Pan { id, .. }
+            | Drag::Rotate { id } => id,
         }
     }
 }
@@ -98,12 +107,11 @@ enum CropGesture {
 struct EstimateMsg {
     geometry: u64,
     quality: u8,
+    format: ExportFormat,
     result: Result<u64, String>,
 }
 
 struct PhotoAsset {
-    #[expect(dead_code, reason = "retains the decoded image for the texture")]
-    image: Arc<RgbaImage>,
     texture: egui::TextureHandle,
 }
 
@@ -113,27 +121,55 @@ enum DecodeTarget {
     Cover,
 }
 
-struct DecodedPhoto {
-    blob: Blob,
-    preview: RgbaImage,
-}
-
 enum IncomingPhoto {
+    Library(Result<Library, String>),
     Decoded {
         token: u64,
         target: DecodeTarget,
-        result: Result<DecodedPhoto, String>,
+        result: Result<Blob, String>,
     },
-    Preview {
-        token: u64,
+    PhonePreview {
+        revision: u64,
+        index: usize,
+        image: RgbaImage,
+    },
+    CardPreview {
+        carousel_id: u64,
+        visuals: u64,
+        image: RgbaImage,
+    },
+    Saved {
+        generation: u64,
+        result: Result<(), String>,
+    },
+}
+
+enum PendingUpload {
+    Frame {
         carousel_id: u64,
         frame_id: FrameId,
-        preview: RgbaImage,
-    },
-    CoverPreview {
         token: u64,
+        name: String,
+        proxy: Arc<RgbaImage>,
+    },
+    Cover {
         template_id: u64,
-        preview: RgbaImage,
+        token: u64,
+        proxy: Arc<RgbaImage>,
+    },
+    CreateCover {
+        token: u64,
+        proxy: Arc<RgbaImage>,
+    },
+    Phone {
+        revision: u64,
+        index: usize,
+        image: RgbaImage,
+    },
+    Card {
+        carousel_id: u64,
+        visuals: u64,
+        image: RgbaImage,
     },
 }
 
@@ -143,27 +179,35 @@ enum IncomingPhoto {
 )]
 pub struct PudduScrollApp {
     library: Library,
+    library_ready: bool,
+    can_store: bool,
     route: Route,
     assets: HashMap<FrameId, PhotoAsset>,
     cover_textures: HashMap<u64, egui::TextureHandle>,
     card_previews: HashMap<u64, (u64, egui::TextureHandle)>,
     selected: Option<FrameId>,
     edit_frame: bool,
+    free_rotate: bool,
     quality: u8,
+    format: ExportFormat,
     preview_index: usize,
     preview_texture: Option<egui::TextureHandle>,
     preview_key: Option<(u64, usize)>,
+    preview_job: Option<(u64, usize)>,
+    card_jobs: HashMap<u64, u64>,
     geometry_revision: u64,
     drag: Option<Drag>,
     gesture: String,
     status: String,
     estimate_mb: Option<f64>,
-    estimate_for: Option<(u64, u8)>,
+    estimate_for: Option<(u64, u8, ExportFormat)>,
     estimate_after: Option<Instant>,
     estimate_rx: Option<Receiver<EstimateMsg>>,
     export_rx: Option<Receiver<Result<String, String>>>,
     photo_tx: Sender<IncomingPhoto>,
     photo_rx: Receiver<IncomingPhoto>,
+    save_tx: Sender<SaveRequest>,
+    pending_uploads: VecDeque<PendingUpload>,
     loading: HashMap<(u64, FrameId), u64>,
     cover_load: Option<u64>,
     cover_pending: HashMap<u64, u64>,
@@ -184,6 +228,7 @@ pub struct PudduScrollApp {
     crop_press: Option<egui::Pos2>,
     show_grid: bool,
     snap_to_grid: bool,
+    rail_weights: [f32; RAIL_SECTIONS],
     create_open: bool,
     create_name: String,
     create_ratio: AspectRatio,

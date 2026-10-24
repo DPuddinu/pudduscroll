@@ -6,12 +6,10 @@ use pudduscroll_core::{AspectRatio, CANVAS_PRESETS, FrameImages};
 
 use super::card::{self, CARD_INNER_W, Card};
 use super::draw::{
-    carousel_preview_image, counted, dialog_frame, editor_preview, fitted_rect, pick_image_path,
-    short_name, texture_from_preview,
+    carousel_preview_image, counted, dialog_frame, fitted_rect, pick_image_path, short_name,
 };
 use super::{
-    ACCENT, BG, CANVAS_BG, DecodeTarget, HomeAction, IncomingPhoto, MUTED, PREVIEW_MAX,
-    PudduScrollApp, Route,
+    ACCENT, BG, CANVAS_BG, DecodeTarget, HomeAction, IncomingPhoto, MUTED, PudduScrollApp, Route,
 };
 
 impl PudduScrollApp {
@@ -94,27 +92,9 @@ impl PudduScrollApp {
         if self.cover_textures.contains_key(&id) || self.cover_pending.contains_key(&id) {
             return;
         }
-        let image = Arc::clone(&self.library.templates[index].cover.image);
-        if image.width().max(image.height()) > PREVIEW_MAX {
-            let token = self.next_token();
-            self.cover_pending.insert(id, token);
-            let tx = self.photo_tx.clone();
-            thread::spawn(move || {
-                let preview = editor_preview(&image);
-                let _ = tx.send(IncomingPhoto::CoverPreview {
-                    token,
-                    template_id: id,
-                    preview,
-                });
-            });
-            ctx.request_repaint();
-            return;
-        }
-        let preview = editor_preview(&image);
-        self.cover_textures.insert(
-            id,
-            texture_from_preview(ctx, format!("cover-{id}"), &preview),
-        );
+        let proxy = Arc::clone(&self.library.templates[index].cover.proxy);
+        self.queue_cover(id, proxy);
+        ctx.request_repaint();
     }
 
     pub(super) fn template_card(&mut self, ui: &mut egui::Ui, index: usize) -> Option<HomeAction> {
@@ -173,13 +153,14 @@ impl PudduScrollApp {
             .card_previews
             .get(&id)
             .map(|(_, texture)| card::image_stamp(texture));
+        let loading = image.is_none() && self.card_jobs.contains_key(&id);
         let mut action = None;
         let shown = Card {
             kind: "carousel",
             id,
             image,
             fill: CANVAS_BG,
-            loading: false,
+            loading,
         }
         .show(ui, |content, buttons| {
             let (changed, name_rect) = {
@@ -226,26 +207,28 @@ impl PudduScrollApp {
             .card_previews
             .get(&id)
             .is_some_and(|(stamp, _)| *stamp == visuals)
+            || self.card_jobs.get(&id) == Some(&visuals)
         {
             return;
         }
         let carousel = &self.library.carousels[index];
+        let layout = carousel.layout.clone();
         let images: FrameImages = carousel
             .photos
             .iter()
-            .map(|(frame_id, blob)| (*frame_id, Arc::clone(&blob.image)))
+            .map(|(frame_id, blob)| (*frame_id, Arc::clone(&blob.proxy)))
             .collect();
-        let rendered = carousel_preview_image(&carousel.layout, &images);
-        let color = egui::ColorImage::from_rgba_unmultiplied(
-            [rendered.width() as usize, rendered.height() as usize],
-            rendered.as_raw(),
-        );
-        let texture = ctx.load_texture(
-            format!("carousel-{id}-{visuals}"),
-            color,
-            egui::TextureOptions::LINEAR,
-        );
-        self.card_previews.insert(id, (visuals, texture));
+        self.card_jobs.insert(id, visuals);
+        let tx = self.photo_tx.clone();
+        thread::spawn(move || {
+            let image = carousel_preview_image(&layout, &images);
+            let _ = tx.send(IncomingPhoto::CardPreview {
+                carousel_id: id,
+                visuals,
+                image,
+            });
+        });
+        ctx.request_repaint();
     }
 
     pub(super) fn apply_home(&mut self, action: &HomeAction, ctx: &egui::Context) {
@@ -267,6 +250,7 @@ impl PudduScrollApp {
             HomeAction::DeleteCarousel(id) => {
                 self.library.delete_carousel(id);
                 self.card_previews.remove(&id);
+                self.card_jobs.remove(&id);
                 self.note_geometry();
             }
         }

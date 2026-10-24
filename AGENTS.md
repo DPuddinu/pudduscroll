@@ -16,6 +16,8 @@ Desktop Instagram carousel composer. Photos sit on a horizontal strip of canvase
 - `cargo clippy --workspace --all-targets -- -D warnings`
 - `cargo test --workspace`
 - `cargo audit` when `Cargo.lock` changes
+- `git config core.hooksPath .githooks` once per clone so the pre-commit hook runs fmt, Clippy, and tests
+- Before the first edit of a request, check simplicity, reuse, maintainability, and https://refactoring.guru/design-patterns/rust, then run `powershell -NoProfile -File .cursor/hooks/mark-design.ps1 -Note "<one-line summary>"`
 
 ## Boundary
 

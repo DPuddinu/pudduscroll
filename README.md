@@ -10,6 +10,19 @@ Install the stable Rust toolchain from [rustup](https://rustup.rs). From this di
 
 ```bash
 cargo test
+```
+
+### Dev
+
+```bash
+cargo run
+```
+
+The debug binary is `target/debug/pudduscroll` (`pudduscroll.exe` on Windows).
+
+### Prod
+
+```bash
 cargo run --release
 ```
 
@@ -18,7 +31,17 @@ The release binary is `target/release/pudduscroll` (`pudduscroll.exe` on Windows
 Passing image paths on the command line imports them at startup:
 
 ```bash
+cargo run -- photo-a.jpg photo-b.png
 cargo run --release -- photo-a.jpg photo-b.png
+```
+
+### Watch
+
+`cargo watch` rebuilds and relaunches the debug app when a source file changes. Each save quits the window and starts a new process, so photos and layout start over.
+
+```bash
+cargo install cargo-watch
+cargo watch -x run
 ```
 
 ### Windows
@@ -53,5 +76,5 @@ cargo run --release
 - Crop the selected photo: Original, 1:1, 4:5, 3:4, 3:2, 16:9, 9:16, or freehand. The photo is not stretched.
 - The layer list selects a photo and moves it up, down, to the top, or to the bottom. Higher layers draw on top.
 - The phone frame previews one exported slide at a time.
-- Export writes one image per canvas into a folder you pick. The default width is 1080px. The quality slider runs from a small JPEG to PNG at native quality, and the size shown next to it is the encoded carousel in megabytes. Files are named `pudduscroll-01.jpg`, or `.png` at native quality.
+- Export writes one image per canvas into a folder you pick. The default width is 1080px. Choose JPEG or PNG. The JPEG slider runs from a small file to quality 100, and PNG is native quality. The size shown is the encoded carousel in megabytes. Files are named `pudduscroll-01.jpg` or `pudduscroll-01.png`.
 - Click a photo to select it. Delete removes it. Canvas dividers are only shown while editing.

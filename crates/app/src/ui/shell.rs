@@ -4,7 +4,7 @@ use eframe::egui;
 use pudduscroll_core::cover_contains_frame;
 
 use super::draw::{frame_screen, handle_name, handle_points};
-use super::{BG, Drag, PANEL, PudduScrollApp, RAIL_W, Route, TOOLBAR_H};
+use super::{BG, Drag, PANEL, PudduScrollApp, RAIL_W, Route, TEXT, TOOLBAR_H};
 
 impl PudduScrollApp {
     pub(super) fn editor_screen(&mut self, ui: &mut egui::Ui, full: egui::Rect) {
@@ -72,15 +72,17 @@ impl PudduScrollApp {
         }
         let _ = writeln!(
             text,
-            "grid {} snap {} edit_frame {}",
+            "grid {} snap {} edit_frame {} free {}",
             u8::from(self.show_grid),
             u8::from(self.snap_to_grid),
-            u8::from(self.edit_frame)
+            u8::from(self.edit_frame),
+            u8::from(self.free_rotate)
         );
         let drag = match self.drag {
             Some(Drag::MoveFrame { .. }) => "move",
             Some(Drag::ResizeFrame { .. }) => "resize",
             Some(Drag::Pan { .. }) => "pan",
+            Some(Drag::Rotate { .. }) => "rotate",
             None => "none",
         };
         let _ = writeln!(text, "drag {drag}");
@@ -131,7 +133,7 @@ impl PudduScrollApp {
                 let photo = frame.photo.as_ref();
                 let _ = writeln!(
                     text,
-                    "frame {} {:.6} {:.6} {:.6} {:.6} {:.6} {:.6} {} {}",
+                    "frame {} {:.6} {:.6} {:.6} {:.6} {:.6} {:.6} {} {} {:.6}",
                     frame.id.0,
                     frame.x,
                     frame.y,
@@ -140,7 +142,8 @@ impl PudduScrollApp {
                     photo.map_or(0.5, |photo| photo.pan_x),
                     photo.map_or(0.5, |photo| photo.pan_y),
                     u8::from(photo.is_some()),
-                    covers
+                    covers,
+                    photo.map_or(0.0, |photo| photo.rotation)
                 );
                 if let Some(strip) = strip {
                     let screen = frame_screen(strip, layout.canvas_count, frame);
@@ -190,9 +193,21 @@ impl eframe::App for PudduScrollApp {
         self.painted = self.painted.wrapping_add(1);
         let ctx = ui.ctx().clone();
         self.poll_jobs(&ctx);
+        let full = ui.max_rect();
+        if !self.library_ready {
+            ui.painter().rect_filled(full, 0.0, BG);
+            ui.painter().text(
+                full.center(),
+                egui::Align2::CENTER_CENTER,
+                &self.status,
+                egui::FontId::proportional(18.0),
+                TEXT,
+            );
+            self.write_probe(&ctx);
+            return;
+        }
         self.handle_keys(&ctx);
         self.widgets.clear();
-        let full = ui.max_rect();
         if full.width() < 900.0 || full.height() < 640.0 {
             self.write_probe(&ctx);
             return;
@@ -212,6 +227,6 @@ impl eframe::App for PudduScrollApp {
     }
 
     fn on_exit(&mut self) {
-        let _ = self.library.store();
+        self.flush_store();
     }
 }

@@ -2,15 +2,16 @@ use std::path::{Path, PathBuf};
 
 use eframe::egui;
 use image::RgbaImage;
-use image::imageops::{FilterType, overlay, resize};
+use image::imageops::overlay;
 use pudduscroll_core::{
-    CANVAS_GRID, Crop, ExportError, ExportSettings, Frame, FrameImages, Handle, Layout,
-    canvas_file_name, export_layout_canvases, layout_export_width, render_layout, write_canvases,
+    CANVAS_GRID, CoverFit, Crop, ExportError, ExportFormat, ExportSettings, Frame, FrameImages,
+    Handle, Layout, border_thickness, canvas_file_name, cover_fit, export_layout_canvases,
+    layout_export_width, photo_local, photo_on_canvases, render_layout, write_canvases,
 };
 
 use super::{
     ACCENT, BG, CROP_HANDLE_HIT, EDITOR_ZOOM_SPEED, MAX_EDITOR_ZOOM, MIN_EDITOR_ZOOM, PANEL,
-    PREVIEW_MAX, TEXT,
+    RAIL_SECTION_MIN, RAIL_SECTIONS, RAIL_SPLIT, TEXT,
 };
 
 pub(super) fn counted(count: usize, one: &str, many: &str) -> String {
@@ -145,18 +146,94 @@ pub(super) fn paint_crop_veil(painter: &egui::Painter, image: egui::Rect, crop: 
     }
 }
 
-pub(super) fn section_heights(total: f32) -> (f32, f32, f32) {
-    let mut preview_h = (total * 0.36).clamp(180.0, 300.0);
-    let mut crop_h = (total * 0.32).clamp(160.0, 270.0);
-    let min_layers = 120.0;
-    if preview_h + crop_h + min_layers > total {
-        let room = (total - min_layers).max(0.0);
-        let sum = (preview_h + crop_h).max(1.0);
-        preview_h = room * (preview_h / sum);
-        crop_h = room - preview_h;
+const fn rail_room(total: f32) -> f32 {
+    (total - RAIL_SPLIT * (RAIL_SECTIONS - 1) as f32).max(0.0)
+}
+
+const fn rail_min(room: f32) -> f32 {
+    if room <= 0.0 {
+        0.0
+    } else {
+        RAIL_SECTION_MIN.min(room / RAIL_SECTIONS as f32)
     }
-    let layers_h = (total - preview_h - crop_h).max(0.0);
-    (preview_h, crop_h, layers_h)
+}
+
+pub(super) fn rail_heights(total: f32, weights: [f32; RAIL_SECTIONS]) -> [f32; RAIL_SECTIONS] {
+    let room = rail_room(total);
+    let min = rail_min(room);
+    let sum = weights.into_iter().sum::<f32>().max(f32::EPSILON);
+    let mut heights = weights.map(|weight| room * (weight / sum));
+    for _ in 0..RAIL_SECTIONS {
+        let mut deficit = 0.0;
+        let mut spare = 0.0;
+        for height in &heights {
+            if *height < min {
+                deficit += min - *height;
+            } else {
+                spare += *height - min;
+            }
+        }
+        if deficit <= 0.01 || spare <= 0.01 {
+            break;
+        }
+        for height in &mut heights {
+            if *height < min {
+                *height = min;
+            } else {
+                let extra = *height - min;
+                *height -= deficit * (extra / spare);
+            }
+        }
+    }
+    for height in &mut heights {
+        if *height < min {
+            *height = min;
+        }
+    }
+    heights
+}
+
+pub(super) fn apply_rail_drag(
+    mut heights: [f32; RAIL_SECTIONS],
+    index: usize,
+    delta: f32,
+    total: f32,
+) -> [f32; RAIL_SECTIONS] {
+    if index + 1 >= RAIL_SECTIONS {
+        return heights;
+    }
+    let pair = heights[index] + heights[index + 1];
+    let min = rail_min(rail_room(total)).min(pair * 0.5);
+    if pair <= min * 2.0 + 0.01 {
+        return heights;
+    }
+    let grown = (heights[index] + delta).clamp(min, pair - min);
+    heights[index] = grown;
+    heights[index + 1] = pair - grown;
+    heights
+}
+
+pub(super) fn rail_splitter(ui: &mut egui::Ui) -> Option<f32> {
+    let (rect, response) = ui.allocate_exact_size(
+        egui::vec2(ui.available_width(), RAIL_SPLIT),
+        egui::Sense::drag(),
+    );
+    let hot = response.hovered() || response.dragged();
+    if hot {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeVertical);
+    }
+    let color = if hot {
+        egui::Color32::from_rgb(120, 110, 98)
+    } else {
+        egui::Color32::from_rgb(48, 48, 48)
+    };
+    ui.painter().hline(
+        rect.x_range(),
+        rect.center().y,
+        egui::Stroke::new(1.0, color),
+    );
+    let delta = response.drag_delta().y;
+    response.dragged().then_some(delta)
 }
 
 pub(super) fn rail_section(
@@ -237,6 +314,217 @@ pub(super) fn paint_resize_handle(
     paint_frame(painter, handle, handle, 1.5, ACCENT);
 }
 
+pub(super) fn photo_screen(strip: egui::Rect, count: usize, frame: &Frame) -> egui::Rect {
+    let Some(bounds) = photo_on_canvases(frame, count) else {
+        return egui::Rect::NOTHING;
+    };
+    norm_rect(strip, count, bounds.x, bounds.y, bounds.w, bounds.h)
+}
+
+pub(super) fn paint_photo_border(
+    painter: &egui::Painter,
+    screen: egui::Rect,
+    clip: egui::Rect,
+    frame: &Frame,
+    canvas_size: egui::Vec2,
+) {
+    let thickness = border_thickness(frame.border, canvas_size.x, canvas_size.y);
+    if thickness <= 0.5 {
+        return;
+    }
+    let color = frame.border_color;
+    let painter = painter.with_clip_rect(clip);
+    painter.rect_stroke(
+        screen,
+        0.0,
+        egui::Stroke::new(
+            thickness,
+            egui::Color32::from_rgba_unmultiplied(color[0], color[1], color[2], color[3]),
+        ),
+        egui::StrokeKind::Inside,
+    );
+}
+
+pub(super) fn paint_rotated_photo(
+    painter: &egui::Painter,
+    strip: egui::Rect,
+    count: usize,
+    frame: &Frame,
+    ratio: f32,
+    clip: egui::Rect,
+    texture: egui::TextureId,
+) {
+    let Some(photo) = frame.photo.as_ref() else {
+        return;
+    };
+    let Some(fit) = cover_fit(frame, ratio) else {
+        return;
+    };
+    let screen = frame_screen(strip, count, frame);
+    let visible = clip.intersect(photo_screen(strip, count, frame));
+    if visible.is_positive() {
+        let outline = [
+            screen.left_top(),
+            screen.right_top(),
+            screen.right_bottom(),
+            screen.left_bottom(),
+        ];
+        let stamps: Vec<Stamp> = outline
+            .into_iter()
+            .map(|pos| Stamp {
+                pos,
+                uv: photo_uv(strip, count, frame, ratio, fit, photo.crop, pos),
+            })
+            .collect();
+        let stamps = clip_stamps(&stamps, visible);
+        if stamps.len() >= 3 {
+            let mut mesh = egui::Mesh::with_texture(texture);
+            for stamp in &stamps {
+                mesh.vertices.push(egui::epaint::Vertex {
+                    pos: stamp.pos,
+                    uv: stamp.uv,
+                    color: egui::Color32::WHITE,
+                });
+            }
+            let last = stamps.len() as u32;
+            for index in 1..last - 1 {
+                mesh.add_triangle(0, index, index + 1);
+            }
+            painter.add(egui::Shape::mesh(mesh));
+        }
+    }
+    let canvas_w = strip.width() / count.max(1) as f32;
+    paint_photo_border(
+        painter,
+        screen,
+        clip,
+        frame,
+        egui::vec2(canvas_w, strip.height()),
+    );
+}
+
+fn photo_uv(
+    strip: egui::Rect,
+    count: usize,
+    frame: &Frame,
+    ratio: f32,
+    fit: CoverFit,
+    crop: Crop,
+    pos: egui::Pos2,
+) -> egui::Pos2 {
+    let (x, y) = screen_to_norm(strip, count, pos);
+    let (local_x, local_y) = photo_local(frame, ratio, x, y);
+    let u = if fit.w.abs() <= 1.0e-6 {
+        0.0
+    } else {
+        (local_x - fit.x) / fit.w
+    };
+    let v = if fit.h.abs() <= 1.0e-6 {
+        0.0
+    } else {
+        (local_y - fit.y) / fit.h
+    };
+    egui::pos2(crop.x + u * crop.w, crop.y + v * crop.h)
+}
+
+#[derive(Clone, Copy)]
+struct Stamp {
+    pos: egui::Pos2,
+    uv: egui::Pos2,
+}
+
+fn clip_stamps(poly: &[Stamp], clip: egui::Rect) -> Vec<Stamp> {
+    let poly = clip_stamp_edge(poly, clip.left(), true, true);
+    let poly = clip_stamp_edge(&poly, clip.right(), true, false);
+    let poly = clip_stamp_edge(&poly, clip.top(), false, true);
+    clip_stamp_edge(&poly, clip.bottom(), false, false)
+}
+
+fn clip_stamp_edge(input: &[Stamp], edge: f32, vertical: bool, keep_greater: bool) -> Vec<Stamp> {
+    let inside = |stamp: &Stamp| {
+        let value = if vertical { stamp.pos.x } else { stamp.pos.y };
+        if keep_greater {
+            value >= edge - 0.01
+        } else {
+            value <= edge + 0.01
+        }
+    };
+    let mut output = Vec::new();
+    if input.is_empty() {
+        return output;
+    }
+    let mut previous_index = input.len() - 1;
+    for index in 0..input.len() {
+        let previous = input[previous_index];
+        let current = input[index];
+        let previous_in = inside(&previous);
+        let current_in = inside(&current);
+        if current_in {
+            if !previous_in {
+                output.push(stamp_cross(previous, current, edge, vertical));
+            }
+            output.push(current);
+        } else if previous_in {
+            output.push(stamp_cross(previous, current, edge, vertical));
+        }
+        previous_index = index;
+    }
+    output
+}
+
+fn stamp_cross(from: Stamp, to: Stamp, edge: f32, vertical: bool) -> Stamp {
+    let (start, end) = if vertical {
+        (from.pos.x, to.pos.x)
+    } else {
+        (from.pos.y, to.pos.y)
+    };
+    let delta = end - start;
+    let t = if delta.abs() < 1.0e-6 {
+        0.0
+    } else {
+        ((edge - start) / delta).clamp(0.0, 1.0)
+    };
+    Stamp {
+        pos: from.pos + (to.pos - from.pos) * t,
+        uv: egui::pos2(
+            from.uv.x + (to.uv.x - from.uv.x) * t,
+            from.uv.y + (to.uv.y - from.uv.y) * t,
+        ),
+    }
+}
+
+pub(super) fn rotate_handle_geometry(screen: egui::Rect, angle: f32) -> (egui::Pos2, egui::Pos2) {
+    let center = screen.center();
+    let (sin, cos) = angle.sin_cos();
+    let dir = egui::vec2(sin, -cos);
+    let half_w = screen.width() * 0.5;
+    let half_h = screen.height() * 0.5;
+    let along_x = if dir.x.abs() < 1.0e-4 {
+        f32::INFINITY
+    } else {
+        half_w / dir.x.abs()
+    };
+    let along_y = if dir.y.abs() < 1.0e-4 {
+        f32::INFINITY
+    } else {
+        half_h / dir.y.abs()
+    };
+    let edge = center + dir * along_x.min(along_y);
+    (edge, edge + dir * 28.0)
+}
+
+pub(super) fn rotate_handle_hit(screen: egui::Rect, angle: f32, pos: egui::Pos2) -> bool {
+    let (_, handle) = rotate_handle_geometry(screen, angle);
+    handle.distance(pos) <= 16.0
+}
+
+pub(super) fn paint_rotate_handle(painter: &egui::Painter, screen: egui::Rect, angle: f32) {
+    let (edge, handle) = rotate_handle_geometry(screen, angle);
+    painter.line_segment([edge, handle], egui::Stroke::new(2.0, ACCENT));
+    painter.circle_filled(handle, 7.0, egui::Color32::WHITE);
+    painter.circle_stroke(handle, 7.0, egui::Stroke::new(2.0, ACCENT));
+}
+
 pub(super) fn paint_clipped_image(
     painter: &egui::Painter,
     screen: egui::Rect,
@@ -267,6 +555,7 @@ pub(super) fn export_folder(
     layout: &Layout,
     images: &FrameImages,
     quality: u8,
+    format: ExportFormat,
     dir: &Path,
 ) -> Result<String, String> {
     let encoded = export_layout_canvases(
@@ -275,12 +564,13 @@ pub(super) fn export_folder(
         ExportSettings {
             width: layout_export_width(layout),
             quality,
+            format,
         },
     )
     .map_err(|error| error.to_string())?;
     let count = encoded.len();
     write_canvases(dir, &encoded).map_err(|error: ExportError| error.to_string())?;
-    let sample = canvas_file_name(0, quality);
+    let sample = canvas_file_name(0, format);
     Ok(format!(
         "Exported {count} images to {} ({sample})",
         dir.display()
@@ -335,17 +625,6 @@ pub(super) fn paint_loading(
         egui::FontId::proportional(14.0),
         TEXT,
     );
-}
-
-pub(super) fn editor_preview(src: &RgbaImage) -> RgbaImage {
-    let long = src.width().max(src.height());
-    if long <= PREVIEW_MAX {
-        return src.clone();
-    }
-    let scale = PREVIEW_MAX as f32 / long as f32;
-    let width = ((src.width() as f32 * scale).round() as u32).max(1);
-    let height = ((src.height() as f32 * scale).round() as u32).max(1);
-    resize(src, width, height, FilterType::Triangle)
 }
 
 pub(super) fn next_editor_zoom(current: f32, scroll_y: f32) -> f32 {
@@ -519,38 +798,10 @@ pub(super) enum Glyph {
     Down,
     Top,
     Bottom,
-}
-
-pub(super) struct PreviewSlots {
-    pub(super) left: egui::Rect,
-    pub(super) phone: egui::Rect,
-    pub(super) right: egui::Rect,
-}
-
-pub(super) fn preview_slots(area: egui::Rect, ratio: f32) -> PreviewSlots {
-    let button = 34.0;
-    let gap = 10.0;
-    let ratio = ratio.max(0.05);
-    let max_bezel_h = area.height().max(48.0);
-    let max_bezel_w = (area.width() - (button + gap) * 2.0).max(48.0);
-    let mut screen_h = (max_bezel_h - 40.0).clamp(36.0, 168.0);
-    let mut screen_w = screen_h * ratio;
-    let max_screen_w = (max_bezel_w - 28.0).max(36.0);
-    if screen_w > max_screen_w {
-        screen_w = max_screen_w;
-        screen_h = screen_w / ratio;
-    }
-    let phone =
-        egui::Rect::from_center_size(area.center(), egui::vec2(screen_w + 28.0, screen_h + 40.0));
-    let left = egui::Rect::from_center_size(
-        egui::pos2(phone.left() - gap - button * 0.5, phone.center().y),
-        egui::vec2(button, button),
-    );
-    let right = egui::Rect::from_center_size(
-        egui::pos2(phone.right() + gap + button * 0.5, phone.center().y),
-        egui::vec2(button, button),
-    );
-    PreviewSlots { left, phone, right }
+    RotateCcw,
+    RotateCw,
+    RotateFree,
+    Bin,
 }
 
 pub(super) fn icon_button(
@@ -558,6 +809,7 @@ pub(super) fn icon_button(
     rect: egui::Rect,
     salt: impl std::hash::Hash + std::fmt::Debug,
     enabled: bool,
+    selected: bool,
     glyph: Glyph,
 ) -> egui::Response {
     let mut child = ui.new_child(egui::UiBuilder::new().id_salt(salt).max_rect(rect).layout(
@@ -576,6 +828,7 @@ pub(super) fn icon_button(
     child.add_enabled(
         enabled,
         egui::Button::new(icon)
+            .selected(selected)
             .min_size(rect.size())
             .corner_radius(egui::CornerRadius::same(6)),
     )
@@ -609,7 +862,106 @@ pub(super) fn paint_glyph(
         Glyph::Down => chevron(painter, rect, std::f32::consts::FRAC_PI_2, stroke),
         Glyph::Top => capped(painter, rect, -std::f32::consts::FRAC_PI_2, stroke),
         Glyph::Bottom => capped(painter, rect, std::f32::consts::FRAC_PI_2, stroke),
+        Glyph::RotateCcw => circular_arrow(painter, rect, false, stroke),
+        Glyph::RotateCw => circular_arrow(painter, rect, true, stroke),
+        Glyph::RotateFree => free_rotate(painter, rect, stroke),
+        Glyph::Bin => paint_bin(painter, rect, stroke),
     }
+}
+
+fn paint_bin(painter: &egui::Painter, rect: egui::Rect, stroke: egui::Stroke) {
+    let center = rect.center();
+    let span = rect.width().min(rect.height());
+    let lid = center.y - span * 0.22;
+    painter.line_segment(
+        [
+            egui::pos2(center.x - span * 0.36, lid),
+            egui::pos2(center.x + span * 0.36, lid),
+        ],
+        stroke,
+    );
+    let handle = lid - span * 0.14;
+    painter.line(
+        vec![
+            egui::pos2(center.x - span * 0.12, lid),
+            egui::pos2(center.x - span * 0.12, handle),
+            egui::pos2(center.x + span * 0.12, handle),
+            egui::pos2(center.x + span * 0.12, lid),
+        ],
+        stroke,
+    );
+    let top = lid + span * 0.08;
+    let bottom = center.y + span * 0.38;
+    painter.line(
+        vec![
+            egui::pos2(center.x - span * 0.28, top),
+            egui::pos2(center.x + span * 0.28, top),
+            egui::pos2(center.x + span * 0.2, bottom),
+            egui::pos2(center.x - span * 0.2, bottom),
+            egui::pos2(center.x - span * 0.28, top),
+        ],
+        stroke,
+    );
+}
+
+pub(super) fn section_scroll(ui: &mut egui::Ui, salt: &str) -> egui::ScrollArea {
+    let mut scroll = egui::style::ScrollStyle::solid();
+    scroll.bar_width = 8.0;
+    scroll.bar_inner_margin = 0.0;
+    scroll.bar_outer_margin = 0.0;
+    ui.spacing_mut().scroll = scroll;
+    egui::ScrollArea::vertical()
+        .id_salt(salt)
+        .auto_shrink([false, false])
+        .content_margin(0.0)
+        .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::VisibleWhenNeeded)
+}
+
+fn circular_arrow(
+    painter: &egui::Painter,
+    rect: egui::Rect,
+    clockwise: bool,
+    stroke: egui::Stroke,
+) {
+    let center = rect.center();
+    let radius = rect.width().min(rect.height()) * 0.3;
+    let end = -std::f32::consts::FRAC_PI_2;
+    let sweep = if clockwise {
+        std::f32::consts::PI * 1.45
+    } else {
+        -std::f32::consts::PI * 1.45
+    };
+    let arc_end = end - sweep.signum() * 0.42;
+    let start = end - sweep;
+    let steps = 16;
+    let points: Vec<egui::Pos2> = (0..=steps)
+        .map(|step| {
+            let t = start + (arc_end - start) * (step as f32 / steps as f32);
+            center + egui::vec2(t.cos(), t.sin()) * radius
+        })
+        .collect();
+    painter.line(points, stroke);
+    let tangent = if clockwise {
+        end + std::f32::consts::FRAC_PI_2
+    } else {
+        end - std::f32::consts::FRAC_PI_2
+    };
+    let reach = radius * 0.62;
+    let (sin, cos) = tangent.sin_cos();
+    let forward = egui::vec2(cos, sin);
+    let tip = center + egui::vec2(end.cos(), end.sin()) * radius + forward * reach * 0.15;
+    chevron_at(painter, tip - forward * reach, tangent, reach, stroke);
+}
+
+fn free_rotate(painter: &egui::Painter, rect: egui::Rect, stroke: egui::Stroke) {
+    let span = rect.width().min(rect.height());
+    let radius = span * 0.24;
+    let center = rect.center() + egui::vec2(0.0, radius * 0.28);
+    painter.circle_stroke(center, radius, stroke);
+    let edge = center - egui::vec2(0.0, radius);
+    let knob = edge - egui::vec2(0.0, radius * 0.7);
+    painter.line_segment([edge, knob], stroke);
+    painter.circle_filled(knob, stroke.width * 1.05, stroke.color);
 }
 
 pub(super) fn chevron(painter: &egui::Painter, rect: egui::Rect, angle: f32, stroke: egui::Stroke) {

@@ -1,6 +1,8 @@
 use std::sync::Arc;
 
-use image::{Rgba, RgbaImage};
+use std::io::Cursor;
+
+use image::{ImageFormat, Rgba, RgbaImage};
 
 use super::*;
 
@@ -42,7 +44,16 @@ fn instagram_export_sizes() {
     assert_eq!(width, 1200);
     let mut images = ImageMap::new();
     insert(&mut images, id, solid(600, 600, [20, 40, 60, 255]));
-    let files = export_canvases(&wide, &images, ExportSettings { width, quality: 90 }).unwrap();
+    let files = export_canvases(
+        &wide,
+        &images,
+        ExportSettings {
+            width,
+            quality: 90,
+            format: ExportFormat::Jpeg,
+        },
+    )
+    .unwrap();
     assert_eq!(files.len(), 2);
     for file in &files {
         let encoded = image::load_from_memory(&file.bytes).unwrap().to_rgba8();
@@ -62,6 +73,7 @@ fn instagram_export_sizes() {
         ExportSettings {
             width: export_width(&low),
             quality: 100,
+            format: ExportFormat::Png,
         },
     )
     .unwrap();
@@ -84,7 +96,16 @@ fn instagram_export_sizes() {
     assert_eq!(export_h, export_w * 5 / 4);
     let mut images = ImageMap::new();
     insert(&mut images, id, solid(1200, 1200, [30, 20, 10, 255]));
-    let files = export_canvases(&frame, &images, ExportSettings { width, quality: 90 }).unwrap();
+    let files = export_canvases(
+        &frame,
+        &images,
+        ExportSettings {
+            width,
+            quality: 90,
+            format: ExportFormat::Jpeg,
+        },
+    )
+    .unwrap();
     let encoded = image::load_from_memory(&files[0].bytes).unwrap().to_rgba8();
     assert_eq!(encoded.dimensions(), (export_w, export_h));
 
@@ -396,26 +417,45 @@ fn byte_estimate_matches_encoded_carousel() {
     let width = export_width(&doc);
     assert_eq!(width, 64);
     assert_eq!(doc.ratio.export_size(width), (64, 64));
-    let low = ExportSettings { width, quality: 0 };
-    let mid = ExportSettings { width, quality: 70 };
+    let low = ExportSettings {
+        width,
+        quality: 0,
+        format: ExportFormat::Jpeg,
+    };
+    let mid = ExportSettings {
+        width,
+        quality: 70,
+        format: ExportFormat::Jpeg,
+    };
+    let full_jpeg = ExportSettings {
+        width,
+        quality: 100,
+        format: ExportFormat::Jpeg,
+    };
     let native = ExportSettings {
         width,
         quality: 100,
+        format: ExportFormat::Png,
     };
     let low_files = export_canvases(&doc, &images, low).unwrap();
     let mid_files = export_canvases(&doc, &images, mid).unwrap();
+    let full_jpeg_files = export_canvases(&doc, &images, full_jpeg).unwrap();
     let native_files = export_canvases(&doc, &images, native).unwrap();
 
     assert_eq!(low_files.len(), 2);
     assert_eq!(low_files[0].file_name, "pudduscroll-01.jpg");
     assert_eq!(low_files[1].file_name, "pudduscroll-02.jpg");
+    assert_eq!(full_jpeg_files[0].file_name, "pudduscroll-01.jpg");
     assert_eq!(native_files[0].file_name, "pudduscroll-01.png");
     assert_eq!(low_files[0].bytes[0], 0xff);
     assert_eq!(low_files[0].bytes[1], 0xd8);
+    assert_eq!(full_jpeg_files[0].bytes[0], 0xff);
+    assert_eq!(full_jpeg_files[0].bytes[1], 0xd8);
     assert_eq!(&native_files[0].bytes[..8], b"\x89PNG\r\n\x1a\n");
     for file in low_files
         .iter()
         .chain(mid_files.iter())
+        .chain(full_jpeg_files.iter())
         .chain(native_files.iter())
     {
         let encoded = image::load_from_memory(&file.bytes).unwrap().to_rgba8();
@@ -424,26 +464,42 @@ fn byte_estimate_matches_encoded_carousel() {
 
     let low_bytes = estimate_total_bytes(&doc, &images, low).unwrap();
     let mid_bytes = estimate_total_bytes(&doc, &images, mid).unwrap();
+    let full_jpeg_bytes = estimate_total_bytes(&doc, &images, full_jpeg).unwrap();
     let native_bytes = estimate_total_bytes(&doc, &images, native).unwrap();
     let low_sum: u64 = low_files.iter().map(|file| file.bytes.len() as u64).sum();
+    let full_jpeg_sum: u64 = full_jpeg_files
+        .iter()
+        .map(|file| file.bytes.len() as u64)
+        .sum();
     let native_sum: u64 = native_files
         .iter()
         .map(|file| file.bytes.len() as u64)
         .sum();
     assert_eq!(low_bytes, low_sum);
+    assert_eq!(full_jpeg_bytes, full_jpeg_sum);
     assert_eq!(native_bytes, native_sum);
     assert!(low_bytes < mid_bytes);
+    assert!(mid_bytes < full_jpeg_bytes);
     assert_eq!(
         mid_files.iter().map(|file| file.bytes.len()).sum::<usize>() as u64,
         mid_bytes
     );
 
+    assert_eq!(jpeg_quality_value(100), 100);
     assert_eq!(
-        quality_description(0),
+        quality_description(0, ExportFormat::Jpeg),
         format!("JPEG quality {}", jpeg_quality_value(0))
     );
-    assert_eq!(quality_description(100), "PNG (native quality)");
+    assert_eq!(
+        quality_description(100, ExportFormat::Jpeg),
+        "JPEG quality 100"
+    );
+    assert_eq!(
+        quality_description(100, ExportFormat::Png),
+        "PNG (native quality)"
+    );
     assert!(jpeg_quality_value(0) < jpeg_quality_value(70));
+    assert!(jpeg_quality_value(70) < jpeg_quality_value(100));
 
     let dir = std::env::temp_dir().join(format!("pudduscroll-export-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
@@ -785,6 +841,29 @@ fn frame_resize_keeps_aspect_on_corners_and_changes_it_on_edges() {
 }
 
 #[test]
+fn photo_stops_at_the_last_canvas_while_the_frame_continues() {
+    let mut layout = Layout::new(AspectRatio::SQUARE);
+    layout.set_canvas_count(2);
+    let id = layout.add_frame();
+    layout.set_frame_rect(id, 1.25, -0.2, 1.4, 1.3);
+    layout.fill_frame(id, "edge", 16, 16);
+    let frame = layout.frame(id).unwrap();
+    assert!((frame.x + frame.w - 2.65).abs() < 1e-4);
+    assert!(frame.y < 0.0);
+    let visible = photo_on_canvases(frame, layout.canvas_count).unwrap();
+    assert!((visible.x - 1.25).abs() < 1e-4);
+    assert!(visible.y.abs() < 1e-4);
+    assert!((visible.x + visible.w - 2.0).abs() < 1e-4);
+    assert!((visible.y + visible.h - 1.0).abs() < 1e-4);
+    let mut images = FrameImages::new();
+    images.insert(id, Arc::new(solid(16, 16, [200, 30, 30, 255])));
+    let canvas = render_layout(&layout, 1, &images, 40);
+    assert_eq!(pixel(&canvas, 12, 20), [200, 30, 30, 255]);
+    assert_eq!(pixel(&canvas, 4, 20), [255, 255, 255, 255]);
+    assert_eq!(canvas.dimensions(), (40, 40));
+}
+
+#[test]
 fn spanning_frame_clips_the_photo_to_each_canvas() {
     let mut layout = Layout::new(AspectRatio::SQUARE);
     layout.set_canvas_count(2);
@@ -816,6 +895,56 @@ fn spanning_frame_clips_the_photo_to_each_canvas() {
     assert_eq!(pixel(&first, 30, 20), [220, 20, 20, 255]);
     assert_eq!(pixel(&second, 8, 20), [20, 40, 220, 255]);
     assert_eq!(pixel(&first, 30, 36), [255, 255, 255, 255]);
+}
+
+#[test]
+fn same_border_has_the_same_thickness_on_every_frame() {
+    let small = bordered_frame(0.25, 0.25, 12);
+    let wide = bordered_frame(1.0, 0.25, 12);
+    let large = bordered_frame(1.0, 1.0, 50);
+    assert_eq!(small, 10);
+    assert_eq!(wide, small);
+    assert_eq!(large, small);
+}
+
+fn bordered_frame(w: f32, h: f32, y: u32) -> u32 {
+    let mut layout = Layout::new(AspectRatio::SQUARE);
+    let id = layout.add_frame();
+    layout.set_frame_rect(id, 0.0, 0.0, w, h);
+    layout.fill_frame(id, "solid", 16, 16);
+    layout.set_border(id, 0.5);
+    layout.set_border_color(id, [9, 18, 27, 255]);
+    let mut images = FrameImages::new();
+    images.insert(id, Arc::new(solid(16, 16, [200, 30, 30, 255])));
+    let image = render_layout(&layout, 0, &images, 100);
+    let mut depth = 0;
+    for x in 0..image.width() {
+        if pixel(&image, x, y) == [9, 18, 27, 255] {
+            depth += 1;
+        } else {
+            break;
+        }
+    }
+    depth
+}
+
+#[test]
+fn frame_border_paints_the_edge_and_keeps_the_photo() {
+    let mut layout = Layout::new(AspectRatio::SQUARE);
+    let id = layout.add_frame();
+    layout.fill_frame(id, "solid", 16, 16);
+    layout.set_border_color(id, [9, 18, 27, 255]);
+    let mut images = FrameImages::new();
+    images.insert(id, Arc::new(solid(16, 16, [200, 30, 30, 255])));
+    let plain = render_layout(&layout, 0, &images, 32);
+    assert_eq!(pixel(&plain, 0, 0), [200, 30, 30, 255]);
+    assert_eq!(pixel(&plain, 16, 16), [200, 30, 30, 255]);
+    layout.set_border(id, 4.0);
+    assert!((layout.frame(id).unwrap().border - 1.0).abs() < 1e-6);
+    let framed = render_layout(&layout, 0, &images, 32);
+    assert_eq!(pixel(&framed, 0, 0), [9, 18, 27, 255]);
+    assert_eq!(pixel(&framed, 2, 16), [9, 18, 27, 255]);
+    assert_eq!(pixel(&framed, 16, 16), [200, 30, 30, 255]);
 }
 
 #[test]
@@ -864,4 +993,271 @@ fn moved_square_crop_keeps_placement_on_the_cropped_aspect() {
     assert_eq!(photo.preset, CropPreset::Square);
     assert!((photo.w - before_w).abs() < 1e-5);
     assert!((placed_pixel_aspect(photo, doc.ratio.value()) - 1.0).abs() < 1e-3);
+}
+
+#[test]
+fn quarter_turns_spin_the_photo_and_keep_the_frame_covered() {
+    let mut layout = Layout::new(AspectRatio::SQUARE);
+    let id = layout.add_frame();
+    layout.fill_frame(id, "night.jpg", 80, 40);
+    let ratio = layout.ratio.value();
+    let upright = photo_local(layout.frame(id).unwrap(), ratio, 0.2, 0.4);
+    assert!((upright.0 - 0.2).abs() < 1.0e-5);
+    assert!((upright.1 - 0.4).abs() < 1.0e-5);
+    for _ in 0..4 {
+        layout.turn_photo(id, Turn::Clockwise);
+        assert!(cover_contains_frame(layout.frame(id).unwrap(), ratio));
+    }
+    let angle = layout.frame(id).unwrap().photo.as_ref().unwrap().rotation;
+    assert!(angle.abs() < 1.0e-4, "{angle}");
+    layout.turn_photo(id, Turn::Counterclockwise);
+    let ccw = layout.frame(id).unwrap().photo.as_ref().unwrap().rotation;
+    assert!((ccw + std::f32::consts::FRAC_PI_2).abs() < 1.0e-4, "{ccw}");
+    layout.set_rotation(id, f32::NAN);
+    assert!((layout.frame(id).unwrap().photo.as_ref().unwrap().rotation - ccw).abs() < 1.0e-4);
+
+    layout.set_rotation(id, std::f32::consts::FRAC_PI_4);
+    let frame = layout.frame(id).unwrap();
+    let (width, height) = displayed_cover(frame, ratio).unwrap();
+    assert!(width > frame.w * 1.2 && height > frame.h * 1.2);
+    assert!(cover_contains_frame(frame, ratio));
+    let above = rotation_from_pointer(frame, ratio, 0.5, -1.0);
+    assert!(above.abs() < 1.0e-4, "{above}");
+    let right = rotation_from_pointer(frame, ratio, 2.0, 0.5);
+    assert!(
+        (right - std::f32::consts::FRAC_PI_2).abs() < 1.0e-4,
+        "{right}"
+    );
+
+    let mut tall = Layout::new(AspectRatio::FOUR_FIVE);
+    let tall_id = tall.add_frame();
+    tall.fill_frame(tall_id, "night.jpg", 40, 40);
+    let tall_ratio = tall.ratio.value();
+    let tall_frame = tall.frame(tall_id).unwrap();
+    let cx = tall_frame.x + tall_frame.w * 0.5;
+    let cy = tall_frame.y + tall_frame.h * 0.5;
+    let pixel_right = rotation_from_pointer(tall_frame, tall_ratio, cx + 1.0 / tall_ratio, cy);
+    assert!(
+        (pixel_right - std::f32::consts::FRAC_PI_2).abs() < 1.0e-4,
+        "{pixel_right}"
+    );
+}
+
+#[test]
+fn clockwise_turn_moves_the_bottom_of_the_photo_to_the_left() {
+    let mut layout = Layout::new(AspectRatio::SQUARE);
+    let id = layout.add_frame();
+    layout.fill_frame(id, "split", 64, 64);
+    let mut image = RgbaImage::new(64, 64);
+    for (_, y, pixel) in image.enumerate_pixels_mut() {
+        *pixel = if y < 32 {
+            Rgba([220, 20, 20, 255])
+        } else {
+            Rgba([20, 160, 40, 255])
+        };
+    }
+    let mut images = FrameImages::new();
+    images.insert(id, Arc::new(image));
+    let upright = render_layout(&layout, 0, &images, 64);
+    assert!(pixel(&upright, 32, 12)[0] > 180);
+    assert!(pixel(&upright, 32, 52)[1] > 120);
+
+    layout.turn_photo(id, Turn::Clockwise);
+    let turned = render_layout(&layout, 0, &images, 64);
+    let left = pixel(&turned, 12, 32);
+    let right = pixel(&turned, 52, 32);
+    assert!(left[1] > 120 && left[0] < 80, "{left:?}");
+    assert!(right[0] > 180 && right[1] < 80, "{right:?}");
+
+    layout.turn_photo(id, Turn::Counterclockwise);
+    layout.turn_photo(id, Turn::Counterclockwise);
+    let other = render_layout(&layout, 0, &images, 64);
+    let left = pixel(&other, 12, 32);
+    let right = pixel(&other, 52, 32);
+    assert!(left[0] > 180 && left[1] < 80, "{left:?}");
+    assert!(right[1] > 120 && right[0] < 80, "{right:?}");
+}
+
+#[test]
+fn free_rotation_still_fills_the_frame() {
+    let mut layout = Layout::new(AspectRatio::SQUARE);
+    let id = layout.add_frame();
+    layout.set_frame_rect(id, 0.15, 0.2, 0.7, 0.55);
+    layout.fill_frame(id, "red", 48, 32);
+    layout.set_rotation(id, std::f32::consts::FRAC_PI_4);
+    layout.set_pan(id, 0.15, 0.85);
+    let ratio = layout.ratio.value();
+    assert!(cover_contains_frame(layout.frame(id).unwrap(), ratio));
+    let mut images = FrameImages::new();
+    images.insert(id, Arc::new(solid(48, 32, [240, 30, 30, 255])));
+    let rendered = render_layout(&layout, 0, &images, 80);
+    assert_eq!(pixel(&rendered, 2, 2), [255, 255, 255, 255]);
+    let (width, height) = layout.ratio.export_size(80);
+    let x0 = (0.15 * width as f32).ceil() as u32 + 2;
+    let x1 = (0.85 * width as f32).floor() as u32 - 2;
+    let y0 = (0.2 * height as f32).ceil() as u32 + 2;
+    let y1 = (0.75 * height as f32).floor() as u32 - 2;
+    for y in y0..y1 {
+        for x in x0..x1 {
+            let sample = pixel(&rendered, x, y);
+            assert!(sample[0] > 200, "{x},{y} {sample:?}");
+        }
+    }
+}
+
+#[test]
+fn proxy_shrink_keeps_original_dimensions() {
+    let shrunk = shrink_long_edge(solid(4096, 1024, [9, 8, 7, 255]), PROXY_LONG_EDGE);
+    assert_eq!((shrunk.width(), shrunk.height()), (2048, 512));
+    let kept = shrink_long_edge(solid(32, 16, [1, 2, 3, 255]), PROXY_LONG_EDGE);
+    assert_eq!((kept.width(), kept.height()), (32, 16));
+
+    let raster = raster_from_bytes(&png_bytes(&solid(4096, 1024, [9, 8, 7, 255]))).unwrap();
+    assert_eq!((raster.width, raster.height), (4096, 1024));
+    assert_eq!((raster.proxy.width(), raster.proxy.height()), (2048, 512));
+    assert_eq!(pixel(&raster.proxy, 10, 10), [9, 8, 7, 255]);
+}
+
+#[test]
+fn proxy_buffer_samples_the_original_split() {
+    let mut layout = Layout::new(AspectRatio::SQUARE);
+    layout.set_canvas_count(2);
+    let id = layout.add_frame();
+    layout.set_frame_rect(id, 0.0, 0.25, 2.0, 0.5);
+    layout.fill_frame(id, "split", 40, 10);
+    let mut proxy = RgbaImage::new(20, 5);
+    for (x, _, pixel) in proxy.enumerate_pixels_mut() {
+        *pixel = if x < 10 {
+            Rgba([220, 20, 20, 255])
+        } else {
+            Rgba([20, 40, 220, 255])
+        };
+    }
+    let mut images = FrameImages::new();
+    images.insert(id, Arc::new(proxy));
+    let first = render_layout(&layout, 0, &images, 40);
+    let second = render_layout(&layout, 1, &images, 40);
+    assert_eq!(pixel(&first, 8, 20), [220, 20, 20, 255]);
+    assert_eq!(pixel(&first, 30, 20), [220, 20, 20, 255]);
+    assert_eq!(pixel(&second, 8, 20), [20, 40, 220, 255]);
+}
+
+#[test]
+fn encoded_bytes_export_matches_the_decoded_image() {
+    let image = solid(8, 8, [12, 34, 56, 255]);
+    let bytes = png_bytes(&image);
+    let decoded = image_from_bytes(&bytes).unwrap();
+    assert_eq!(decoded.dimensions(), (8, 8));
+    assert_eq!(pixel(&decoded, 3, 3), [12, 34, 56, 255]);
+
+    let mut layout = Layout::new(AspectRatio::SQUARE);
+    let id = layout.add_frame();
+    layout.fill_frame(id, "solid", 8, 8);
+    let mut from_image = FrameImages::new();
+    from_image.insert(id, Arc::new(image));
+    let mut from_bytes = FrameImages::new();
+    from_bytes.insert(id, Arc::new(decoded));
+    let settings = ExportSettings {
+        width: 16,
+        quality: 100,
+        format: ExportFormat::Png,
+    };
+    let exported = export_layout_canvases(&layout, &from_image, settings).unwrap();
+    let decoded_export = export_layout_canvases(&layout, &from_bytes, settings).unwrap();
+    assert_eq!(exported.len(), decoded_export.len());
+    assert_eq!(exported[0].bytes, decoded_export[0].bytes);
+}
+
+#[test]
+fn wheel_zoom_scales_the_photo_around_the_pointer() {
+    let mut layout = Layout::new(AspectRatio::SQUARE);
+    let id = layout.add_frame();
+    layout.fill_frame(id, "square.png", 40, 40);
+    let ratio = layout.ratio.value();
+    let frame = layout.frame(id).unwrap();
+    assert!((frame.photo.as_ref().unwrap().zoom - 1.0).abs() < 1e-6);
+    let before = cover_fit(frame, ratio).unwrap();
+    let (local_x, local_y) = photo_local(frame, ratio, 0.25, 0.3);
+    let u = (local_x - before.x) / before.w;
+    let v = (local_y - before.y) / before.h;
+
+    layout.zoom_photo(id, 0.25, 0.3, 2.0);
+    let frame = layout.frame(id).unwrap();
+    let photo = frame.photo.as_ref().unwrap();
+    assert!((photo.zoom - 2.0).abs() < 1e-4);
+    assert!((photo.pan_x - 0.25).abs() < 1e-3);
+    assert!((photo.pan_y - 0.3).abs() < 1e-3);
+    let after = cover_fit(frame, ratio).unwrap();
+    assert!((after.w - before.w * 2.0).abs() < 1e-3);
+    assert!((after.h - before.h * 2.0).abs() < 1e-3);
+    assert!(((local_x - after.x) / after.w - u).abs() < 1e-3);
+    assert!(((local_y - after.y) / after.h - v).abs() < 1e-3);
+    assert!(cover_contains_frame(frame, ratio));
+
+    let src_before = clip_frame_to_canvas(frame, 0, ratio).unwrap().src[2];
+    layout.zoom_photo(id, 0.5, 0.5, 2.0);
+    let frame = layout.frame(id).unwrap();
+    assert!((frame.photo.as_ref().unwrap().zoom - 4.0).abs() < 1e-3);
+    let src_after = clip_frame_to_canvas(frame, 0, ratio).unwrap().src[2];
+    assert!((src_after * 2.0 - src_before).abs() < 1.0);
+    assert!(cover_contains_frame(frame, ratio));
+
+    layout.zoom_photo(id, 0.5, 0.5, 0.01);
+    let frame = layout.frame(id).unwrap();
+    assert!((frame.photo.as_ref().unwrap().zoom - 1.0).abs() < 1e-4);
+    assert!(cover_contains_frame(frame, ratio));
+
+    layout.zoom_photo(id, 0.5, 0.5, 10_000.0);
+    let held = layout.frame(id).unwrap().photo.as_ref().unwrap().zoom;
+    assert!((held - MAX_PHOTO_ZOOM).abs() < 1e-4);
+    layout.zoom_photo(id, 0.5, 0.5, f32::NAN);
+    assert!((layout.frame(id).unwrap().photo.as_ref().unwrap().zoom - held).abs() < 1e-4);
+    layout.set_rotation(id, 0.4);
+    layout.zoom_photo(id, 0.4, 0.6, 0.5);
+    let frame = layout.frame(id).unwrap();
+    let zoom = frame.photo.as_ref().unwrap().zoom;
+    assert!((1.0..=MAX_PHOTO_ZOOM).contains(&zoom));
+    assert!(cover_contains_frame(frame, ratio));
+}
+
+#[test]
+fn zoom_in_shows_the_middle_of_the_photo_and_zoom_out_restores_it() {
+    let mut layout = Layout::new(AspectRatio::SQUARE);
+    let id = layout.add_frame();
+    layout.fill_frame(id, "target", 40, 40);
+    let mut image = RgbaImage::from_pixel(40, 40, Rgba([20, 160, 40, 255]));
+    for y in 10..30 {
+        for x in 10..30 {
+            image.put_pixel(x, y, Rgba([220, 20, 20, 255]));
+        }
+    }
+    let mut images = FrameImages::new();
+    images.insert(id, Arc::new(image));
+    let covered = render_layout(&layout, 0, &images, 40);
+    assert!(pixel(&covered, 2, 2)[1] > 120);
+    assert!(pixel(&covered, 20, 20)[0] > 180);
+
+    layout.zoom_photo(id, 0.5, 0.5, 4.0);
+    let zoomed = render_layout(&layout, 0, &images, 40);
+    let corner = pixel(&zoomed, 2, 2);
+    assert!(corner[0] > 180 && corner[1] < 80, "{corner:?}");
+    assert!(cover_contains_frame(
+        layout.frame(id).unwrap(),
+        layout.ratio.value()
+    ));
+
+    layout.zoom_photo(id, 0.5, 0.5, 0.1);
+    let frame = layout.frame(id).unwrap();
+    assert!((frame.photo.as_ref().unwrap().zoom - 1.0).abs() < 1e-4);
+    let restored = render_layout(&layout, 0, &images, 40);
+    assert!(pixel(&restored, 2, 2)[1] > 120);
+    assert!(pixel(&restored, 20, 20)[0] > 180);
+}
+
+fn png_bytes(image: &RgbaImage) -> Vec<u8> {
+    let mut bytes = Vec::new();
+    image::DynamicImage::ImageRgba8(image.clone())
+        .write_to(&mut Cursor::new(&mut bytes), ImageFormat::Png)
+        .unwrap();
+    bytes
 }

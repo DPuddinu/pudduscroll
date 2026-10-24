@@ -1,0 +1,34 @@
+---
+description: Visual craft for the egui shell
+globs: crates/app/**/*.rs
+alwaysApply: false
+---
+
+Colors, type, and chrome sizes live in `crates/app/src/ui/mod.rs`. Motion uses `ctx.animate_bool_with_time`, as `hover_scale` does at `0.18`.
+
+## Color and type
+
+- Paint with `BG`, `PANEL`, `CANVAS_BG`, `ACCENT`, `TEXT`, `MUTED`, and `SELECT_BG`. A new color joins that warm set in `mod.rs`. `ACCENT` is the only highlight.
+- Names use `RichText::strong` and `TEXT`. Secondary lines use `MUTED`. Text on an accent fill is black, as Create and Choose folder are.
+- Reuse the sizes already on screen: title 22, name 16, body 14, meta 13.
+
+## Layout
+
+- New chrome joins the toolbar, the editor, or the rail.
+- A home card uses `card_frame`. Editor chrome sits flat on `BG` and `PANEL`.
+- Related controls share the current `Margin` and `ui.spacing`. A gap between groups is larger than the gap inside a group.
+- Icon buttons stay at the existing 30–34px side. Crop handles stay at `CROP_HANDLE_HIT`.
+- Long names go through `short_name`. A row still reads with a one-letter name, a very long filename, an empty list, and a large count.
+
+## Motion
+
+- A hover, an open, or an occasional state change may animate. Drag, zoom, nudge, and undo update on the same frame.
+- An entrance or press finishes in 0.1–0.25s and starts fast. A move that stays on screen eases through the middle. A spinner stays linear.
+- Something appearing starts near full size and fades. `hover_scale` (`1.0 + 0.06 * t`) is the size of a scale change.
+- A clickable row sets `CursorIcon::PointingHand`.
+
+## Copy and states
+
+- A button names the action ("Create template", "Choose folder").
+- An empty screen names what is missing ("No templates yet.").
+- Loading and failure stay visible in `status` or an inline label ("Estimating size…") until the work ends.

@@ -6,13 +6,21 @@ use image::codecs::png::PngEncoder;
 use image::{ExtendedColorType, ImageEncoder, RgbImage, RgbaImage};
 
 use crate::{
-    DEFAULT_EXPORT_WIDTH, Document, FrameImages, ImageMap, Layout, render_canvas, render_layout,
+    DEFAULT_EXPORT_WIDTH, Document, FrameImages, ImageMap, Layout, PROXY_LONG_EDGE, render_canvas,
+    render_layout, shrink_long_edge,
 };
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ExportFormat {
+    Jpeg,
+    Png,
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ExportSettings {
     pub width: u32,
     pub quality: u8,
+    pub format: ExportFormat,
 }
 
 impl Default for ExportSettings {
@@ -20,6 +28,7 @@ impl Default for ExportSettings {
         Self {
             width: DEFAULT_EXPORT_WIDTH,
             quality: 90,
+            format: ExportFormat::Jpeg,
         }
     }
 }
@@ -28,6 +37,13 @@ impl Default for ExportSettings {
 pub struct EncodedCanvas {
     pub file_name: String,
     pub bytes: Vec<u8>,
+}
+
+#[derive(Debug)]
+pub struct Raster {
+    pub width: u32,
+    pub height: u32,
+    pub proxy: RgbaImage,
 }
 
 #[derive(Debug)]
@@ -60,11 +76,6 @@ impl From<std::io::Error> for ExportError {
 }
 
 #[must_use]
-pub fn is_native(quality: u8) -> bool {
-    quality >= 100
-}
-
-#[must_use]
 pub fn jpeg_quality_value(quality: u8) -> u8 {
     if quality >= 100 {
         return 100;
@@ -74,17 +85,19 @@ pub fn jpeg_quality_value(quality: u8) -> u8 {
 }
 
 #[must_use]
-pub fn quality_description(quality: u8) -> String {
-    if is_native(quality) {
-        "PNG (native quality)".to_string()
-    } else {
-        format!("JPEG quality {}", jpeg_quality_value(quality))
+pub fn quality_description(quality: u8, format: ExportFormat) -> String {
+    match format {
+        ExportFormat::Png => "PNG (native quality)".to_string(),
+        ExportFormat::Jpeg => format!("JPEG quality {}", jpeg_quality_value(quality)),
     }
 }
 
 #[must_use]
-pub fn canvas_file_name(index: usize, quality: u8) -> String {
-    let ext = if is_native(quality) { "png" } else { "jpg" };
+pub fn canvas_file_name(index: usize, format: ExportFormat) -> String {
+    let ext = match format {
+        ExportFormat::Png => "png",
+        ExportFormat::Jpeg => "jpg",
+    };
     format!("pudduscroll-{:02}.{ext}", index + 1)
 }
 
@@ -115,14 +128,9 @@ pub fn export_canvases(
     let mut canvases = Vec::with_capacity(doc.canvas_count);
     for index in 0..doc.canvas_count {
         let rendered = render_canvas(doc, index, images, settings.width);
-        let bytes = if is_native(settings.quality) {
-            encode_png(&rendered)?
-        } else {
-            encode_jpeg(&rendered, jpeg_quality_value(settings.quality))?
-        };
         canvases.push(EncodedCanvas {
-            file_name: canvas_file_name(index, settings.quality),
-            bytes,
+            file_name: canvas_file_name(index, settings.format),
+            bytes: encode_rendered(&rendered, settings)?,
         });
     }
     Ok(canvases)
@@ -140,25 +148,111 @@ pub fn estimate_total_bytes(
         .sum())
 }
 
+pub fn image_from_bytes(bytes: &[u8]) -> Result<RgbaImage, ExportError> {
+    let image = image::load_from_memory(bytes)?.into_rgba8();
+    if image.width() == 0 || image.height() == 0 {
+        return Err(ExportError::Encode("image has no pixels".to_string()));
+    }
+    Ok(image)
+}
+
+pub fn raster_from_bytes(bytes: &[u8]) -> Result<Raster, ExportError> {
+    let image = image_from_bytes(bytes)?;
+    let width = image.width();
+    let height = image.height();
+    let proxy = shrink_long_edge(image, PROXY_LONG_EDGE);
+    Ok(Raster {
+        width,
+        height,
+        proxy,
+    })
+}
+
 pub fn export_layout_canvases(
     layout: &Layout,
     images: &FrameImages,
     settings: ExportSettings,
 ) -> Result<Vec<EncodedCanvas>, ExportError> {
-    let mut canvases = Vec::with_capacity(layout.canvas_count);
-    for index in 0..layout.canvas_count {
-        let rendered = render_layout(layout, index, images, settings.width);
-        let bytes = if is_native(settings.quality) {
-            encode_png(&rendered)?
-        } else {
-            encode_jpeg(&rendered, jpeg_quality_value(settings.quality))?
+    let count = layout.canvas_count;
+    let workers = export_workers(count);
+    if workers == 1 {
+        let mut canvases = Vec::with_capacity(count);
+        for index in 0..count {
+            canvases.push(encode_layout_canvas(layout, images, settings, index)?);
+        }
+        return Ok(canvases);
+    }
+    let mut encoded = Vec::new();
+    encoded.resize_with(count, || None);
+    let chunk = count.div_ceil(workers);
+    std::thread::scope(|scope| -> Result<(), ExportError> {
+        let mut joins = Vec::new();
+        for worker in 0..workers {
+            let start = worker * chunk;
+            if start >= count {
+                break;
+            }
+            let end = (start + chunk).min(count);
+            joins.push(scope.spawn(
+                move || -> Result<Vec<(usize, EncodedCanvas)>, ExportError> {
+                    let mut part = Vec::with_capacity(end - start);
+                    for index in start..end {
+                        part.push((
+                            index,
+                            encode_layout_canvas(layout, images, settings, index)?,
+                        ));
+                    }
+                    Ok(part)
+                },
+            ));
+        }
+        for join in joins {
+            let part = join
+                .join()
+                .map_err(|_panic| ExportError::Encode("export worker stopped".to_string()))??;
+            for (index, canvas) in part {
+                encoded[index] = Some(canvas);
+            }
+        }
+        Ok(())
+    })?;
+    let mut canvases = Vec::with_capacity(count);
+    for slot in encoded {
+        let Some(canvas) = slot else {
+            return Err(ExportError::Encode("missing canvas".to_string()));
         };
-        canvases.push(EncodedCanvas {
-            file_name: canvas_file_name(index, settings.quality),
-            bytes,
-        });
+        canvases.push(canvas);
     }
     Ok(canvases)
+}
+
+fn export_workers(canvas_count: usize) -> usize {
+    if canvas_count <= 1 {
+        return 1;
+    }
+    std::thread::available_parallelism()
+        .map_or(1, std::num::NonZero::get)
+        .clamp(1, canvas_count)
+}
+
+fn encode_layout_canvas(
+    layout: &Layout,
+    images: &FrameImages,
+    settings: ExportSettings,
+    index: usize,
+) -> Result<EncodedCanvas, ExportError> {
+    let rendered = render_layout(layout, index, images, settings.width);
+    Ok(EncodedCanvas {
+        file_name: canvas_file_name(index, settings.format),
+        bytes: encode_rendered(&rendered, settings)?,
+    })
+}
+
+fn encode_rendered(img: &RgbaImage, settings: ExportSettings) -> Result<Vec<u8>, ExportError> {
+    match settings.format {
+        ExportFormat::Png => encode_png(img),
+        ExportFormat::Jpeg => encode_jpeg(img, jpeg_quality_value(settings.quality)),
+    }
 }
 
 pub fn estimate_layout_bytes(

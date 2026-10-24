@@ -1,0 +1,25 @@
+{
+  "version": 1,
+  "hooks": {
+    "beforeSubmitPrompt": [
+      {
+        "command": "powershell -NoProfile -ExecutionPolicy Bypass -File .cursor/hooks/reset-design.ps1",
+        "failClosed": true
+      }
+    ],
+    "preToolUse": [
+      {
+        "command": "powershell -NoProfile -ExecutionPolicy Bypass -File .cursor/hooks/review-design.ps1",
+        "matcher": "Write|StrReplace|SearchReplace|search_replace|EditNotebook|ApplyPatch|^Edit$",
+        "failClosed": true
+      }
+    ],
+    "beforeShellExecution": [
+      {
+        "command": "powershell -NoProfile -ExecutionPolicy Bypass -File .cursor/hooks/review-commit.ps1",
+        "matcher": "git(\\s+\\S+)*\\s+commit",
+        "failClosed": true
+      }
+    ]
+  }
+}

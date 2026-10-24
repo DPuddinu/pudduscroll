@@ -1,10 +1,15 @@
+use std::thread;
+
 use eframe::egui;
 use pudduscroll_core::{CROP_PRESETS, Crop, CropPreset, FrameId, LayerMove, render_layout};
 
+const EXPORT_PREVIEW_WIDTH: u32 = 1280;
+
 use super::draw::{
-    Glyph, counted, icon_button, preview_slots, rail_section, section_heights, short_name,
+    Glyph, apply_rail_drag, counted, icon_button, rail_heights, rail_section, rail_splitter,
+    section_scroll, short_name,
 };
-use super::{ACCENT, MUTED, PANEL, PudduScrollApp, Route, SELECT_BG, TEXT};
+use super::{ACCENT, IncomingPhoto, MUTED, PANEL, PudduScrollApp, Route, SELECT_BG, TEXT};
 
 impl PudduScrollApp {
     pub(super) fn layer_panel(&mut self, ui: &mut egui::Ui) {
@@ -32,7 +37,7 @@ impl PudduScrollApp {
         if rows.is_empty() {
             ui.label("No frames yet.");
         }
-        egui::ScrollArea::vertical().show(ui, |ui| {
+        section_scroll(ui, "layers-list").show(ui, |ui| {
             let count = rows.len();
             for (index, (id, name, crop)) in rows.iter().enumerate() {
                 let id = *id;
@@ -108,7 +113,7 @@ impl PudduScrollApp {
                             egui::pos2(origin_x + (button + gap) * slot as f32, y),
                             egui::vec2(button, button),
                         );
-                        if icon_button(ui, rect, ("layer-move", id.0, slot), enabled, glyph)
+                        if icon_button(ui, rect, ("layer-move", id.0, slot), enabled, false, glyph)
                             .clicked()
                             && enabled
                             && self
@@ -152,19 +157,9 @@ impl PudduScrollApp {
         let ratio = shown.pixel_aspect(photo.image_width, photo.image_height);
         ui.label(egui::RichText::new(format!("Visible {ratio:.2}")).color(MUTED));
         ui.add_space(4.0);
-        {
-            let mut scroll = egui::style::ScrollStyle::solid();
-            scroll.bar_width = 8.0;
-            scroll.bar_inner_margin = 0.0;
-            scroll.bar_outer_margin = 0.0;
-            ui.spacing_mut().scroll = scroll;
-        };
-        egui::ScrollArea::vertical()
-            .id_salt("crop-list")
-            .auto_shrink([false, false])
-            .content_margin(0.0)
-            .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysVisible)
-            .show(ui, |ui| {
+        section_scroll(ui, "crop-list").show(ui, |ui| {
+            ui.horizontal_wrapped(|ui| {
+                ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Extend);
                 for preset in CROP_PRESETS {
                     let armed = self
                         .crop_session
@@ -185,66 +180,14 @@ impl PudduScrollApp {
                     }
                 }
             });
+        });
         ui.add_space(8.0);
     }
 
-    pub(super) fn preview_panel(&mut self, ui: &mut egui::Ui) {
-        let count = self.metrics().map_or(1, |(_, count)| count);
-        ui.horizontal(|ui| {
-            ui.heading("Preview");
-            ui.label(
-                egui::RichText::new(format!("{}/{}", self.preview_index + 1, count)).size(16.0),
-            );
-        });
-        let area = ui.available_rect_before_wrap();
-        if !area.is_positive() {
+    pub(super) fn ensure_preview(&mut self, ctx: &egui::Context) {
+        if !self.export_open {
             return;
         }
-        ui.allocate_rect(area, egui::Sense::hover());
-        let ratio = self.metrics().map_or(0.8, |(ratio, _)| ratio);
-        let slots = preview_slots(area, ratio);
-        let can_prev = self.preview_index > 0;
-        if icon_button(ui, slots.left, "preview-prev", can_prev, Glyph::Left).clicked()
-            && self.preview_index > 0
-        {
-            self.preview_index -= 1;
-        }
-        self.draw_phone(ui, slots.phone);
-        let can_next = self.preview_index + 1 < count;
-        if icon_button(ui, slots.right, "preview-next", can_next, Glyph::Right).clicked()
-            && self.preview_index + 1 < count
-        {
-            self.preview_index += 1;
-        }
-    }
-
-    pub(super) fn draw_phone(&mut self, ui: &mut egui::Ui, bezel: egui::Rect) {
-        self.ensure_preview(ui.ctx());
-        let screen_w = (bezel.width() - 28.0).max(1.0);
-        let screen_h = (bezel.height() - 40.0).max(1.0);
-        let painter = ui.painter();
-        painter.rect_filled(bezel, 24.0, egui::Color32::from_rgb(10, 10, 10));
-        painter.circle_filled(
-            egui::pos2(bezel.center().x, bezel.top() + 14.0),
-            4.0,
-            egui::Color32::from_rgb(48, 48, 48),
-        );
-        let screen = egui::Rect::from_center_size(
-            bezel.center() + egui::vec2(0.0, 6.0),
-            egui::vec2(screen_w, screen_h),
-        );
-        painter.rect_filled(screen, 3.0, egui::Color32::WHITE);
-        if let Some(texture) = &self.preview_texture {
-            painter.image(
-                texture.id(),
-                screen,
-                egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
-                egui::Color32::WHITE,
-            );
-        }
-    }
-
-    pub(super) fn ensure_preview(&mut self, ctx: &egui::Context) {
         let Some(layout) = self.layout().cloned() else {
             return;
         };
@@ -255,25 +198,22 @@ impl PudduScrollApp {
             self.preview_index = layout.canvas_count - 1;
         }
         let key = (self.geometry_revision, self.preview_index);
-        if self.preview_key == Some(key) {
+        if self.preview_key == Some(key) || self.preview_job == Some(key) {
             return;
         }
-        if ctx.input(|input| input.pointer.any_down()) && self.preview_texture.is_some() {
-            ctx.request_repaint();
-            return;
-        }
-        let images = self.image_map();
-        let rendered = render_layout(&layout, self.preview_index, &images, 640);
-        let color = egui::ColorImage::from_rgba_unmultiplied(
-            [rendered.width() as usize, rendered.height() as usize],
-            rendered.as_raw(),
-        );
-        self.preview_texture = Some(ctx.load_texture(
-            format!("preview-{}-{}", key.0, key.1),
-            color,
-            egui::TextureOptions::LINEAR,
-        ));
-        self.preview_key = Some(key);
+        let index = self.preview_index;
+        let images = self.proxy_map();
+        self.preview_job = Some(key);
+        let tx = self.photo_tx.clone();
+        thread::spawn(move || {
+            let image = render_layout(&layout, index, &images, EXPORT_PREVIEW_WIDTH);
+            let _ = tx.send(IncomingPhoto::PhonePreview {
+                revision: key.0,
+                index,
+                image,
+            });
+        });
+        ctx.request_repaint();
     }
 
     pub(super) fn paint_rail(&mut self, ui: &mut egui::Ui, rail_rect: egui::Rect) {
@@ -304,7 +244,7 @@ impl PudduScrollApp {
         rail_ui.painter().rect_filled(rail_rect, 0.0, PANEL);
         let inner = egui::Rect::from_min_max(
             egui::pos2(rail_rect.left() + 12.0, rail_rect.top() + 8.0),
-            egui::pos2(rail_rect.right(), rail_rect.bottom() - 8.0),
+            egui::pos2(rail_rect.right() - 12.0, rail_rect.bottom() - 8.0),
         );
         let mut content = rail_ui.new_child(
             egui::UiBuilder::new()
@@ -313,13 +253,46 @@ impl PudduScrollApp {
                 .layout(egui::Layout::top_down(egui::Align::Min)),
         );
         content.set_clip_rect(inner);
-        let (preview_h, crop_h, layers_h) = section_heights(content.available_height());
-        rail_section(&mut content, preview_h, "preview", false, |ui| {
-            self.preview_panel(ui);
+        let total = content.available_height();
+        let heights = rail_heights(total, self.rail_weights);
+        let mut drag = None;
+        rail_section(&mut content, heights[0], "canvas", false, |ui| {
+            self.canvas_panel(ui);
         });
-        rail_section(&mut content, crop_h, "crop", true, |ui| self.crop_panel(ui));
-        rail_section(&mut content, layers_h, "layers", true, |ui| {
+        if let Some(delta) = rail_splitter(&mut content)
+            && drag.is_none()
+        {
+            drag = Some((0, delta));
+        }
+        rail_section(&mut content, heights[1], "frame", false, |ui| {
+            self.frame_panel(ui);
+        });
+        if let Some(delta) = rail_splitter(&mut content)
+            && drag.is_none()
+        {
+            drag = Some((1, delta));
+        }
+        rail_section(&mut content, heights[2], "photo", false, |ui| {
+            self.photo_panel(ui);
+        });
+        if let Some(delta) = rail_splitter(&mut content)
+            && drag.is_none()
+        {
+            drag = Some((2, delta));
+        }
+        rail_section(&mut content, heights[3], "crop", false, |ui| {
+            self.crop_panel(ui);
+        });
+        if let Some(delta) = rail_splitter(&mut content)
+            && drag.is_none()
+        {
+            drag = Some((3, delta));
+        }
+        rail_section(&mut content, heights[4], "layers", false, |ui| {
             self.layer_panel(ui);
         });
+        if let Some((index, delta)) = drag {
+            self.rail_weights = apply_rail_drag(heights, index, delta, total);
+        }
     }
 }

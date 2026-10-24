@@ -2,18 +2,22 @@ use std::collections::HashMap;
 use std::fmt::Write;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::sync::mpsc::Sender;
 
 use image::RgbaImage;
 use pudduscroll_core::{
     AspectRatio, CANVAS_PRESETS, Crop, CropPreset, Frame, FrameId, FramePhoto, Layout,
+    clamp_photo_zoom, normalize_rotation, raster_from_bytes,
 };
 
 #[derive(Clone)]
 pub struct Blob {
     pub name: String,
     pub ext: String,
-    pub bytes: Vec<u8>,
-    pub image: Arc<RgbaImage>,
+    pub bytes: Arc<[u8]>,
+    pub width: u32,
+    pub height: u32,
+    pub proxy: Arc<RgbaImage>,
 }
 
 pub struct Template {
@@ -36,6 +40,19 @@ pub struct Library {
     pub visuals: u64,
     next_id: u64,
     images_dirty: bool,
+    image_generation: u64,
+}
+
+#[derive(Clone, Debug)]
+pub struct LibrarySnapshot {
+    pub generation: u64,
+    pub text: String,
+    pub images: Option<Vec<(String, Arc<[u8]>)>>,
+}
+
+pub struct SaveRequest {
+    pub snapshot: LibrarySnapshot,
+    pub ack: Option<Sender<Result<(), String>>>,
 }
 
 impl Library {
@@ -47,6 +64,7 @@ impl Library {
             visuals: 1,
             next_id: 1,
             images_dirty: false,
+            image_generation: 0,
         }
     }
 
@@ -59,10 +77,6 @@ impl Library {
         Self::load_from(&root)
     }
 
-    pub fn store(&mut self) -> Result<(), String> {
-        self.store_to(&library_directory())
-    }
-
     pub fn create_template(&mut self, name: String, ratio: AspectRatio, cover: Blob) -> u64 {
         let id = self.alloc();
         self.templates.push(Template {
@@ -71,7 +85,7 @@ impl Library {
             cover,
             layout: Layout::new(ratio),
         });
-        self.images_dirty = true;
+        self.touch_images();
         id
     }
 
@@ -80,7 +94,7 @@ impl Library {
         self.templates.retain(|template| template.id != id);
         let removed = self.templates.len() != before;
         if removed {
-            self.images_dirty = true;
+            self.touch_images();
         }
         removed
     }
@@ -90,7 +104,7 @@ impl Library {
         self.carousels.retain(|carousel| carousel.id != id);
         let removed = self.carousels.len() != before;
         if removed {
-            self.images_dirty = true;
+            self.touch_images();
         }
         removed
     }
@@ -120,14 +134,11 @@ impl Library {
         else {
             return;
         };
-        carousel.layout.fill_frame(
-            frame_id,
-            &blob.name,
-            blob.image.width(),
-            blob.image.height(),
-        );
+        carousel
+            .layout
+            .fill_frame(frame_id, &blob.name, blob.width, blob.height);
         carousel.photos.insert(frame_id, blob);
-        self.images_dirty = true;
+        self.touch_images();
     }
 
     pub fn clear_photo(&mut self, carousel_id: u64, frame_id: FrameId) -> bool {
@@ -141,9 +152,29 @@ impl Library {
         let cleared = carousel.layout.clear_photo(frame_id);
         carousel.photos.remove(&frame_id);
         if cleared {
-            self.images_dirty = true;
+            self.touch_images();
         }
         cleared
+    }
+
+    #[must_use]
+    pub fn snapshot(&self) -> LibrarySnapshot {
+        LibrarySnapshot {
+            generation: self.image_generation,
+            text: serialize(self),
+            images: self.images_dirty.then(|| image_files(self)),
+        }
+    }
+
+    pub fn stored_generation(&mut self, generation: u64) {
+        if self.image_generation == generation {
+            self.images_dirty = false;
+        }
+    }
+
+    fn touch_images(&mut self) {
+        self.images_dirty = true;
+        self.image_generation = self.image_generation.wrapping_add(1);
     }
 
     fn alloc(&mut self) -> u64 {
@@ -158,20 +189,26 @@ impl Library {
         parse_library(&text, root)
     }
 
+    #[cfg(test)]
     fn store_to(&mut self, root: &Path) -> Result<(), String> {
-        std::fs::create_dir_all(root.join("images")).map_err(|error| error.to_string())?;
-        if self.images_dirty {
-            write_images(self, root)?;
-            self.images_dirty = false;
-        }
-        let text = serialize(self);
-        let destination = root.join("library.txt");
-        let temporary = root.join("library.txt.tmp");
-        std::fs::write(&temporary, text).map_err(|error| error.to_string())?;
-        let _ = std::fs::remove_file(&destination);
-        std::fs::rename(&temporary, &destination).map_err(|error| error.to_string())?;
+        let snapshot = self.snapshot();
+        write_snapshot(root, &snapshot)?;
+        self.stored_generation(snapshot.generation);
         Ok(())
     }
+}
+
+pub fn write_snapshot(root: &Path, snapshot: &LibrarySnapshot) -> Result<(), String> {
+    std::fs::create_dir_all(root.join("images")).map_err(|error| error.to_string())?;
+    if let Some(images) = &snapshot.images {
+        write_named_images(root, images)?;
+    }
+    let destination = root.join("library.txt");
+    let temporary = root.join("library.txt.tmp");
+    std::fs::write(&temporary, &snapshot.text).map_err(|error| error.to_string())?;
+    let _ = std::fs::remove_file(&destination);
+    std::fs::rename(&temporary, &destination).map_err(|error| error.to_string())?;
+    Ok(())
 }
 
 #[must_use]
@@ -202,12 +239,8 @@ pub fn load_blob(path: &Path) -> Result<Blob, String> {
 }
 
 fn decode_blob(path: &Path, bytes: Vec<u8>) -> Result<Blob, String> {
-    let image = image::load_from_memory(&bytes)
-        .map_err(|error| format!("Could not decode {}: {error}", path.display()))?
-        .to_rgba8();
-    if image.width() == 0 || image.height() == 0 {
-        return Err(format!("{} has no pixels", path.display()));
-    }
+    let raster = raster_from_bytes(&bytes)
+        .map_err(|error| format!("Could not decode {}: {error}", path.display()))?;
     let name = path
         .file_name()
         .and_then(|name| name.to_str())
@@ -216,8 +249,10 @@ fn decode_blob(path: &Path, bytes: Vec<u8>) -> Result<Blob, String> {
     Ok(Blob {
         name,
         ext: image_ext(path),
-        bytes,
-        image: Arc::new(image),
+        width: raster.width.max(1),
+        height: raster.height.max(1),
+        bytes: Arc::from(bytes),
+        proxy: Arc::new(raster.proxy),
     })
 }
 
@@ -242,27 +277,32 @@ fn photo_file(carousel_id: u64, frame_id: FrameId, ext: &str) -> String {
     format!("c{carousel_id}-f{}.{ext}", frame_id.0)
 }
 
-fn write_images(library: &Library, root: &Path) -> Result<(), String> {
-    let dir = root.join("images");
-    std::fs::create_dir_all(&dir).map_err(|error| error.to_string())?;
-    let mut keep = Vec::new();
+fn image_files(library: &Library) -> Vec<(String, Arc<[u8]>)> {
+    let mut files = Vec::new();
     for template in &library.templates {
-        let name = cover_file(template);
-        std::fs::write(dir.join(&name), &template.cover.bytes)
-            .map_err(|error| error.to_string())?;
-        keep.push(name);
+        files.push((cover_file(template), Arc::clone(&template.cover.bytes)));
     }
     for carousel in &library.carousels {
         for (frame_id, blob) in &carousel.photos {
-            let name = photo_file(carousel.id, *frame_id, &blob.ext);
-            std::fs::write(dir.join(&name), &blob.bytes).map_err(|error| error.to_string())?;
-            keep.push(name);
+            files.push((
+                photo_file(carousel.id, *frame_id, &blob.ext),
+                Arc::clone(&blob.bytes),
+            ));
         }
+    }
+    files
+}
+
+fn write_named_images(root: &Path, files: &[(String, Arc<[u8]>)]) -> Result<(), String> {
+    let dir = root.join("images");
+    std::fs::create_dir_all(&dir).map_err(|error| error.to_string())?;
+    for (name, bytes) in files {
+        std::fs::write(dir.join(name), bytes.as_ref()).map_err(|error| error.to_string())?;
     }
     if let Ok(entries) = std::fs::read_dir(&dir) {
         for entry in entries.flatten() {
             let name = entry.file_name().to_string_lossy().to_string();
-            if !keep.iter().any(|kept| kept == &name) {
+            if !files.iter().any(|(kept, _)| kept == &name) {
                 let _ = std::fs::remove_file(entry.path());
             }
         }
@@ -308,8 +348,17 @@ fn push_frames(out: &mut String, layout: &Layout, carousel: Option<&Carousel>) {
     for frame in &layout.frames {
         let _ = writeln!(
             out,
-            "frame {} {:.6} {:.6} {:.6} {:.6} {}",
-            frame.id.0, frame.x, frame.y, frame.w, frame.h, frame.z
+            "frame {} {:.6} {:.6} {:.6} {:.6} {} {:.6} {} {} {}",
+            frame.id.0,
+            frame.x,
+            frame.y,
+            frame.w,
+            frame.h,
+            frame.z,
+            frame.border,
+            frame.border_color[0],
+            frame.border_color[1],
+            frame.border_color[2]
         );
         let Some(photo) = &frame.photo else {
             continue;
@@ -324,7 +373,7 @@ fn push_frames(out: &mut String, layout: &Layout, carousel: Option<&Carousel>) {
         push_quoted(out, &photo.name);
         let _ = writeln!(
             out,
-            " {} {} {:.6} {:.6} {:.6} {:.6} {:.6} {:.6} {} {}",
+            " {} {} {:.6} {:.6} {:.6} {:.6} {:.6} {:.6} {} {} {:.6} {:.6}",
             photo.image_width,
             photo.image_height,
             photo.pan_x,
@@ -334,7 +383,9 @@ fn push_frames(out: &mut String, layout: &Layout, carousel: Option<&Carousel>) {
             photo.crop.w,
             photo.crop.h,
             preset_token(photo.preset),
-            blob.ext
+            blob.ext,
+            photo.rotation,
+            photo.zoom
         );
     }
 }
@@ -496,6 +547,8 @@ struct FrameBuild {
     w: f32,
     h: f32,
     z: i32,
+    border: f32,
+    border_color: [u8; 4],
     photo: Option<PhotoBuild>,
 }
 
@@ -506,6 +559,8 @@ struct PhotoBuild {
     crop: Crop,
     preset: CropPreset,
     ext: String,
+    rotation: f32,
+    zoom: f32,
 }
 
 struct TemplateBuild {
@@ -585,6 +640,8 @@ fn push_loaded_frames(
             w: source.w,
             h: source.h,
             z: source.z,
+            border: source.border,
+            border_color: source.border_color,
             photo: None,
         };
         if let Some(photo) = &source.photo
@@ -597,12 +654,14 @@ fn push_loaded_frames(
             blob.name.clone_from(&photo.name);
             frame.photo = Some(FramePhoto {
                 name: photo.name.clone(),
-                image_width: blob.image.width().max(1),
-                image_height: blob.image.height().max(1),
+                image_width: blob.width.max(1),
+                image_height: blob.height.max(1),
                 pan_x: photo.pan_x.clamp(0.0, 1.0),
                 pan_y: photo.pan_y.clamp(0.0, 1.0),
+                zoom: clamp_photo_zoom(photo.zoom),
                 crop: photo.crop.clamp(),
                 preset: photo.preset,
+                rotation: normalize_rotation(photo.rotation),
             });
             blobs.insert(source.id, blob);
         }
@@ -713,6 +772,28 @@ fn parse_frame(text: &str, line: usize) -> Result<FrameBuild, String> {
         .ok_or_else(|| format!("line {line}: frame layer"))?
         .parse::<i32>()
         .map_err(|error| format!("line {line}: frame layer: {error}"))?;
+    let border = match parts.next() {
+        Some(token) => parse_f32(token)
+            .map_err(|error| format!("line {line}: {error}"))?
+            .clamp(0.0, 1.0),
+        None => 0.0,
+    };
+    let border_color = if let Some(red) = parts.next() {
+        let green = parts
+            .next()
+            .ok_or_else(|| format!("line {line}: border color"))?;
+        let blue = parts
+            .next()
+            .ok_or_else(|| format!("line {line}: border color"))?;
+        [
+            parse_channel(red, line)?,
+            parse_channel(green, line)?,
+            parse_channel(blue, line)?,
+            255,
+        ]
+    } else {
+        [255, 255, 255, 255]
+    };
     Ok(FrameBuild {
         id: FrameId(id),
         x,
@@ -720,8 +801,15 @@ fn parse_frame(text: &str, line: usize) -> Result<FrameBuild, String> {
         w,
         h,
         z,
+        border,
+        border_color,
         photo: None,
     })
+}
+
+fn parse_channel(text: &str, line: usize) -> Result<u8, String> {
+    text.parse::<u8>()
+        .map_err(|error| format!("line {line}: border color: {error}"))
 }
 
 fn parse_photo(text: &str, line: usize) -> Result<PhotoBuild, String> {
@@ -752,6 +840,14 @@ fn parse_photo(text: &str, line: usize) -> Result<PhotoBuild, String> {
     };
     let preset = preset_from(token()?).ok_or_else(|| format!("line {line}: crop preset"))?;
     let ext = token()?.to_string();
+    let rotation = match token() {
+        Ok(value) => parse_f32(value).map_err(|error| format!("line {line}: {error}"))?,
+        Err(_) => 0.0,
+    };
+    let zoom = match token() {
+        Ok(value) => parse_f32(value).map_err(|error| format!("line {line}: {error}"))?,
+        Err(_) => 1.0,
+    };
     Ok(PhotoBuild {
         name,
         pan_x,
@@ -759,6 +855,8 @@ fn parse_photo(text: &str, line: usize) -> Result<PhotoBuild, String> {
         crop,
         preset,
         ext,
+        rotation,
+        zoom,
     })
 }
 
@@ -841,6 +939,39 @@ mod tests {
             .unwrap()
             .layout
             .set_pan(FrameId(1), 0.2, 0.7);
+        library
+            .carousels
+            .iter_mut()
+            .find(|carousel| carousel.id == carousel_id)
+            .unwrap()
+            .layout
+            .set_rotation(FrameId(1), 0.4);
+        library
+            .carousels
+            .iter_mut()
+            .find(|carousel| carousel.id == carousel_id)
+            .unwrap()
+            .layout
+            .frame_mut(FrameId(1))
+            .unwrap()
+            .photo
+            .as_mut()
+            .unwrap()
+            .zoom = 2.0;
+        library
+            .carousels
+            .iter_mut()
+            .find(|carousel| carousel.id == carousel_id)
+            .unwrap()
+            .layout
+            .set_border(FrameId(1), 0.35);
+        library
+            .carousels
+            .iter_mut()
+            .find(|carousel| carousel.id == carousel_id)
+            .unwrap()
+            .layout
+            .set_border_color(FrameId(1), [12, 34, 56, 255]);
         library.store_to(&root).unwrap();
         library
             .templates
@@ -868,6 +999,10 @@ mod tests {
         assert_eq!(photo.name, "night.jpg");
         assert!((photo.pan_x - 0.2).abs() < 1e-4);
         assert!((photo.pan_y - 0.7).abs() < 1e-4);
+        assert!((photo.rotation - 0.4).abs() < 1e-4);
+        assert!((photo.zoom - 2.0).abs() < 1e-4);
+        assert!((frame.border - 0.35).abs() < 1e-4);
+        assert_eq!(frame.border_color, [12, 34, 56, 255]);
         assert!(carousel.photos.contains_key(&frame.id));
         let _ = std::fs::remove_dir_all(&root);
     }
@@ -884,8 +1019,10 @@ mod tests {
         Blob {
             name: name.to_string(),
             ext: "png".to_string(),
-            bytes,
-            image: Arc::new(image),
+            bytes: Arc::from(bytes),
+            width: image.width(),
+            height: image.height(),
+            proxy: Arc::new(image),
         }
     }
 }

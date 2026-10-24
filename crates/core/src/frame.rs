@@ -13,8 +13,16 @@ pub struct FramePhoto {
     pub image_height: u32,
     pub pan_x: f32,
     pub pan_y: f32,
+    pub zoom: f32,
     pub crop: Crop,
     pub preset: CropPreset,
+    pub rotation: f32,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Turn {
+    Clockwise,
+    Counterclockwise,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -25,6 +33,8 @@ pub struct Frame {
     pub w: f32,
     pub h: f32,
     pub z: i32,
+    pub border: f32,
+    pub border_color: [u8; 4],
     pub photo: Option<FramePhoto>,
 }
 
@@ -92,6 +102,7 @@ impl Layout {
     pub fn restore_frame(&mut self, mut frame: Frame) {
         frame.w = frame.w.max(MIN_WIDTH);
         frame.h = frame.h.max(MIN_WIDTH);
+        frame.border = frame.border.clamp(0.0, 1.0);
         self.next_id = self.next_id.max(frame.id.0.saturating_add(1));
         self.next_z = self.next_z.max(frame.z.saturating_add(1));
         self.frames.push(frame);
@@ -110,6 +121,8 @@ impl Layout {
             w: 1.0,
             h: 1.0,
             z,
+            border: 0.0,
+            border_color: [255, 255, 255, 255],
             photo: None,
         });
         id
@@ -128,6 +141,18 @@ impl Layout {
 
     pub fn frame_mut(&mut self, id: FrameId) -> Option<&mut Frame> {
         self.frames.iter_mut().find(|frame| frame.id == id)
+    }
+
+    pub fn set_border(&mut self, id: FrameId, border: f32) {
+        if let Some(frame) = self.frame_mut(id) {
+            frame.border = border.clamp(0.0, 1.0);
+        }
+    }
+
+    pub fn set_border_color(&mut self, id: FrameId, color: [u8; 4]) {
+        if let Some(frame) = self.frame_mut(id) {
+            frame.border_color = color;
+        }
     }
 
     pub fn set_frame_rect(&mut self, id: FrameId, x: f32, y: f32, w: f32, h: f32) {
@@ -161,8 +186,10 @@ impl Layout {
             image_height: image_height.max(1),
             pan_x: 0.5,
             pan_y: 0.5,
+            zoom: MIN_PHOTO_ZOOM,
             crop: Crop::full(),
             preset: CropPreset::Original,
+            rotation: 0.0,
         });
     }
 
@@ -188,6 +215,40 @@ impl Layout {
         if let Some(photo) = self.frame_mut(id).and_then(|frame| frame.photo.as_mut()) {
             photo.pan_x = pan_x.clamp(0.0, 1.0);
             photo.pan_y = pan_y.clamp(0.0, 1.0);
+        }
+    }
+
+    pub fn zoom_photo(&mut self, id: FrameId, x: f32, y: f32, factor: f32) {
+        let ratio = self.ratio.value();
+        let Some(frame) = self.frame(id).cloned() else {
+            return;
+        };
+        let (zoom, pan_x, pan_y) = zoom_about(&frame, ratio, x, y, factor);
+        let Some(photo) = self.frame_mut(id).and_then(|frame| frame.photo.as_mut()) else {
+            return;
+        };
+        photo.zoom = zoom;
+        photo.pan_x = pan_x;
+        photo.pan_y = pan_y;
+    }
+
+    pub fn turn_photo(&mut self, id: FrameId, turn: Turn) {
+        let Some(photo) = self.frame_mut(id).and_then(|frame| frame.photo.as_mut()) else {
+            return;
+        };
+        let delta = match turn {
+            Turn::Clockwise => std::f32::consts::FRAC_PI_2,
+            Turn::Counterclockwise => -std::f32::consts::FRAC_PI_2,
+        };
+        photo.rotation = normalize_rotation(photo.rotation + delta);
+    }
+
+    pub fn set_rotation(&mut self, id: FrameId, radians: f32) {
+        if !radians.is_finite() {
+            return;
+        }
+        if let Some(photo) = self.frame_mut(id).and_then(|frame| frame.photo.as_mut()) {
+            photo.rotation = normalize_rotation(radians);
         }
     }
 
@@ -257,42 +318,133 @@ impl Layout {
     }
 }
 
+pub const MIN_PHOTO_ZOOM: f32 = 1.0;
+pub const MAX_PHOTO_ZOOM: f32 = 8.0;
+
+#[must_use]
+pub fn clamp_photo_zoom(zoom: f32) -> f32 {
+    if zoom.is_nan() {
+        MIN_PHOTO_ZOOM
+    } else {
+        zoom.clamp(MIN_PHOTO_ZOOM, MAX_PHOTO_ZOOM)
+    }
+}
+
+#[must_use]
+pub fn border_thickness(border: f32, canvas_width: f32, canvas_height: f32) -> f32 {
+    let span = canvas_width.max(0.0).min(canvas_height.max(0.0));
+    border.clamp(0.0, 1.0) * 0.2 * span
+}
+
 #[must_use]
 pub fn frame_pixel_aspect(w: f32, h: f32, canvas_ratio: f32) -> f32 {
     (w / h.max(1.0e-6)) * canvas_ratio
 }
 
 #[must_use]
-pub fn displayed_cover(frame: &Frame, canvas_ratio: f32) -> Option<(f32, f32)> {
+pub fn normalize_rotation(radians: f32) -> f32 {
+    if !radians.is_finite() {
+        return 0.0;
+    }
+    let tau = std::f32::consts::TAU;
+    let mut angle = radians.rem_euclid(tau);
+    if angle > std::f32::consts::PI {
+        angle -= tau;
+    }
+    if angle.abs() <= 1.0e-5 { 0.0 } else { angle }
+}
+
+#[must_use]
+pub fn photo_local(frame: &Frame, canvas_ratio: f32, x: f32, y: f32) -> (f32, f32) {
+    let angle = frame.photo.as_ref().map_or(0.0, |photo| photo.rotation);
+    let cx = frame.x + frame.w * 0.5;
+    let cy = frame.y + frame.h * 0.5;
+    let ratio = canvas_ratio.max(1.0e-4);
+    let dx = (x - cx) * ratio;
+    let dy = y - cy;
+    let (sin, cos) = angle.sin_cos();
+    let local_x = dx * cos + dy * sin;
+    let local_y = -dx * sin + dy * cos;
+    (cx + local_x / ratio, cy + local_y)
+}
+
+#[must_use]
+pub fn rotation_from_pointer(frame: &Frame, canvas_ratio: f32, x: f32, y: f32) -> f32 {
+    let cx = frame.x + frame.w * 0.5;
+    let cy = frame.y + frame.h * 0.5;
+    let ratio = canvas_ratio.max(1.0e-4);
+    let dx = (x - cx) * ratio;
+    let dy = y - cy;
+    if dx * dx + dy * dy < 1.0e-8 {
+        return frame.photo.as_ref().map_or(0.0, |photo| photo.rotation);
+    }
+    normalize_rotation(dx.atan2(-dy))
+}
+
+struct CoverSize {
+    image_w: f32,
+    image_h: f32,
+    bounds_w: f32,
+    bounds_h: f32,
+}
+
+fn cover_size(frame: &Frame, canvas_ratio: f32) -> Option<CoverSize> {
     let photo = frame.photo.as_ref()?;
-    let image_aspect = photo
+    let ratio = canvas_ratio.max(1.0e-4);
+    let aspect = photo
         .crop
         .pixel_aspect(photo.image_width, photo.image_height)
         .max(1.0e-4);
-    let frame_aspect = frame_pixel_aspect(frame.w, frame.h, canvas_ratio).max(1.0e-4);
-    if image_aspect >= frame_aspect {
-        let h = frame.h.max(MIN_WIDTH);
-        let w = h * image_aspect / canvas_ratio.max(1.0e-4);
-        Some((w, h))
-    } else {
-        let w = frame.w.max(MIN_WIDTH);
-        let h = w * canvas_ratio.max(1.0e-4) / image_aspect;
-        Some((w, h))
-    }
+    let (sin, cos) = photo.rotation.sin_cos();
+    let frame_px_w = frame.w.max(1.0e-4) * ratio;
+    let frame_px_h = frame.h.max(1.0e-4);
+    let bounds_px_w = frame_px_w * cos.abs() + frame_px_h * sin.abs();
+    let bounds_px_h = frame_px_w * sin.abs() + frame_px_h * cos.abs();
+    let image_px_w = bounds_px_w.max(bounds_px_h * aspect) * clamp_photo_zoom(photo.zoom);
+    Some(CoverSize {
+        image_w: image_px_w / ratio,
+        image_h: image_px_w / aspect,
+        bounds_w: bounds_px_w / ratio,
+        bounds_h: bounds_px_h,
+    })
+}
+
+#[must_use]
+pub fn displayed_cover(frame: &Frame, canvas_ratio: f32) -> Option<(f32, f32)> {
+    let size = cover_size(frame, canvas_ratio)?;
+    Some((size.image_w, size.image_h))
 }
 
 #[must_use]
 pub fn cover_fit(frame: &Frame, canvas_ratio: f32) -> Option<CoverFit> {
     let photo = frame.photo.as_ref()?;
-    let (w, h) = displayed_cover(frame, canvas_ratio)?;
-    let slack_x = (w - frame.w).max(0.0);
-    let slack_y = (h - frame.h).max(0.0);
+    let size = cover_size(frame, canvas_ratio)?;
+    let cx = frame.x + frame.w * 0.5;
+    let cy = frame.y + frame.h * 0.5;
+    let slack_x = (size.image_w - size.bounds_w).max(0.0);
+    let slack_y = (size.image_h - size.bounds_h).max(0.0);
     Some(CoverFit {
-        x: frame.x - photo.pan_x.clamp(0.0, 1.0) * slack_x,
-        y: frame.y - photo.pan_y.clamp(0.0, 1.0) * slack_y,
-        w,
-        h,
+        x: cx - size.bounds_w * 0.5 - photo.pan_x.clamp(0.0, 1.0) * slack_x,
+        y: cy - size.bounds_h * 0.5 - photo.pan_y.clamp(0.0, 1.0) * slack_y,
+        w: size.image_w,
+        h: size.image_h,
     })
+}
+
+#[must_use]
+pub fn photo_on_canvases(frame: &Frame, canvas_count: usize) -> Option<FrameRect> {
+    let right = canvas_count.max(1) as f32;
+    let x0 = frame.x.max(0.0);
+    let y0 = frame.y.max(0.0);
+    let x1 = (frame.x + frame.w).min(right);
+    let y1 = (frame.y + frame.h).min(1.0);
+    let w = x1 - x0;
+    let h = y1 - y0;
+    if w <= 1.0e-5 || h <= 1.0e-5 {
+        None
+    } else {
+        Some(FrameRect { x: x0, y: y0, w, h })
+    }
 }
 
 #[must_use]
@@ -300,28 +452,92 @@ pub fn cover_contains_frame(frame: &Frame, canvas_ratio: f32) -> bool {
     let Some(fit) = cover_fit(frame, canvas_ratio) else {
         return true;
     };
-    fit.x <= frame.x + 1.0e-3
-        && fit.y <= frame.y + 1.0e-3
-        && fit.x + fit.w + 1.0e-3 >= frame.x + frame.w
-        && fit.y + fit.h + 1.0e-3 >= frame.y + frame.h
+    let corners = [
+        (frame.x, frame.y),
+        (frame.x + frame.w, frame.y),
+        (frame.x, frame.y + frame.h),
+        (frame.x + frame.w, frame.y + frame.h),
+    ];
+    corners.into_iter().all(|(x, y)| {
+        let (local_x, local_y) = photo_local(frame, canvas_ratio, x, y);
+        local_x >= fit.x - 1.0e-3
+            && local_y >= fit.y - 1.0e-3
+            && local_x <= fit.x + fit.w + 1.0e-3
+            && local_y <= fit.y + fit.h + 1.0e-3
+    })
+}
+
+fn zoom_about(frame: &Frame, canvas_ratio: f32, x: f32, y: f32, factor: f32) -> (f32, f32, f32) {
+    let Some(photo) = frame.photo.as_ref() else {
+        return (MIN_PHOTO_ZOOM, 0.5, 0.5);
+    };
+    let pan_x = photo.pan_x.clamp(0.0, 1.0);
+    let pan_y = photo.pan_y.clamp(0.0, 1.0);
+    let current = clamp_photo_zoom(photo.zoom);
+    if !factor.is_finite() || factor <= 0.0 {
+        return (current, pan_x, pan_y);
+    }
+    let next = clamp_photo_zoom(current * factor);
+    if (next - current).abs() <= 1.0e-5 {
+        return (current, pan_x, pan_y);
+    }
+    let Some(size) = cover_size(frame, canvas_ratio) else {
+        return (next, pan_x, pan_y);
+    };
+    if size.image_w <= 1.0e-6 || size.image_h <= 1.0e-6 {
+        return (next, pan_x, pan_y);
+    }
+    let (local_x, local_y) = photo_local(frame, canvas_ratio, x, y);
+    let cx = frame.x + frame.w * 0.5;
+    let cy = frame.y + frame.h * 0.5;
+    let slack_x = (size.image_w - size.bounds_w).max(0.0);
+    let slack_y = (size.image_h - size.bounds_h).max(0.0);
+    let image_x = cx - size.bounds_w * 0.5 - pan_x * slack_x;
+    let image_y = cy - size.bounds_h * 0.5 - pan_y * slack_y;
+    let mut u = (local_x - image_x) / size.image_w;
+    let mut v = (local_y - image_y) / size.image_h;
+    if !(0.0..=1.0).contains(&u) || !(0.0..=1.0).contains(&v) {
+        u = 0.5;
+        v = 0.5;
+    }
+    let scale = next / current;
+    let new_w = size.image_w * scale;
+    let new_h = size.image_h * scale;
+    let new_x = image_x + u * (size.image_w - new_w);
+    let new_y = image_y + v * (size.image_h - new_h);
+    let new_slack_x = (new_w - size.bounds_w).max(0.0);
+    let new_slack_y = (new_h - size.bounds_h).max(0.0);
+    let pan_x = if new_slack_x <= 1.0e-5 {
+        0.5
+    } else {
+        ((cx - size.bounds_w * 0.5 - new_x) / new_slack_x).clamp(0.0, 1.0)
+    };
+    let pan_y = if new_slack_y <= 1.0e-5 {
+        0.5
+    } else {
+        ((cy - size.bounds_h * 0.5 - new_y) / new_slack_y).clamp(0.0, 1.0)
+    };
+    (next, pan_x, pan_y)
 }
 
 #[must_use]
 pub fn pan_for_origin(frame: &Frame, canvas_ratio: f32, image_x: f32, image_y: f32) -> (f32, f32) {
-    let Some((w, h)) = displayed_cover(frame, canvas_ratio) else {
+    let Some(size) = cover_size(frame, canvas_ratio) else {
         return (0.5, 0.5);
     };
-    let slack_x = (w - frame.w).max(0.0);
-    let slack_y = (h - frame.h).max(0.0);
+    let cx = frame.x + frame.w * 0.5;
+    let cy = frame.y + frame.h * 0.5;
+    let slack_x = (size.image_w - size.bounds_w).max(0.0);
+    let slack_y = (size.image_h - size.bounds_h).max(0.0);
     let pan_x = if slack_x <= 1.0e-5 {
         0.5
     } else {
-        ((frame.x - image_x) / slack_x).clamp(0.0, 1.0)
+        ((cx - size.bounds_w * 0.5 - image_x) / slack_x).clamp(0.0, 1.0)
     };
     let pan_y = if slack_y <= 1.0e-5 {
         0.5
     } else {
-        ((frame.y - image_y) / slack_y).clamp(0.0, 1.0)
+        ((cy - size.bounds_h * 0.5 - image_y) / slack_y).clamp(0.0, 1.0)
     };
     (pan_x, pan_y)
 }

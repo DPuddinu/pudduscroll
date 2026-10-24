@@ -113,8 +113,9 @@ impl PudduScrollApp {
                 pointer.latest_pos(),
             )
         });
+        let space = Self::space_held(ctx);
         let mut gesture = self.crop_session.as_ref().and_then(|session| session.drag);
-        if gesture.is_none() && pressed {
+        if gesture.is_none() && pressed && !space {
             let origin = press.or(interact).or(latest);
             if let Some(origin) = origin {
                 if editor.contains(origin)
@@ -133,7 +134,7 @@ impl PudduScrollApp {
                 }
             }
         }
-        if gesture.is_none() && down {
+        if gesture.is_none() && down && !space {
             if let Some(origin) = press.or(interact).or(latest) {
                 if editor.contains(origin)
                     && let Some(handle) = crop_handle_at(crop_rect, origin)
@@ -170,7 +171,19 @@ impl PudduScrollApp {
                     }
                 }
                 None => {
-                    if let Some(pos) = latest.or(interact) {
+                    if space {
+                        if let Some(pos) = latest.or(interact).or(press) {
+                            if editor.contains(pos) {
+                                let grabbing =
+                                    down && press.is_some_and(|origin| editor.contains(origin));
+                                ctx.set_cursor_icon(if grabbing {
+                                    egui::CursorIcon::Grabbing
+                                } else {
+                                    egui::CursorIcon::Grab
+                                });
+                            }
+                        }
+                    } else if let Some(pos) = latest.or(interact) {
                         if editor.contains(pos)
                             && let Some(handle) = crop_handle_at(crop_rect, pos)
                         {
