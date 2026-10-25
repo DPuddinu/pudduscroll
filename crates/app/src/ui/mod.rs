@@ -29,6 +29,8 @@ const TEXT: egui::Color32 = egui::Color32::from_rgb(240, 236, 230);
 const MUTED: egui::Color32 = egui::Color32::from_rgb(164, 158, 148);
 const SELECT_BG: egui::Color32 = egui::Color32::from_rgb(48, 38, 30);
 const DEFAULT_EDITOR_ZOOM: f32 = 0.7;
+const MIN_GRID_CELLS: i32 = 2;
+const MAX_GRID_CELLS: i32 = 16;
 const MIN_EDITOR_ZOOM: f32 = 0.25;
 const MAX_EDITOR_ZOOM: f32 = 4.0;
 const EDITOR_ZOOM_SPEED: f32 = 1.0 / 200.0;
@@ -248,6 +250,7 @@ pub struct PudduScrollApp {
     crop_press: Option<egui::Pos2>,
     show_grid: bool,
     snap_to_grid: bool,
+    grid_cells: i32,
     rail_weights: [f32; RAIL_SECTIONS],
     create_open: bool,
     create_name: String,

@@ -7,8 +7,8 @@ use std::time::{Duration, Instant};
 
 use eframe::egui;
 use pudduscroll_core::{
-    AspectRatio, ExportFormat, ExportSettings, FrameId, FrameImages, Layout, decode_frame_images,
-    export_layout_canvases_with, layout_export_width,
+    AspectRatio, CANVAS_GRID, ExportFormat, ExportSettings, FrameId, FrameImages, Layout,
+    decode_frame_images, export_layout_canvases_with, layout_export_width,
 };
 
 use crate::library::{Library, SaveRequest, library_directory, load_blob, write_snapshot};
@@ -83,6 +83,7 @@ impl PudduScrollApp {
             crop_press: None,
             show_grid: true,
             snap_to_grid: true,
+            grid_cells: CANVAS_GRID as i32,
             rail_weights: DEFAULT_RAIL_WEIGHTS,
             create_open: false,
             create_name: "Template".to_string(),

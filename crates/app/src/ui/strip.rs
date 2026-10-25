@@ -1,14 +1,14 @@
 use eframe::egui;
 use pudduscroll_core::{
     FrameId, FrameRect, Handle, cover_fit, pan_for_origin, photo_local, resize_frame,
-    rotation_from_pointer, snap_frame_to_grid, snap_resized_frame_to_grid,
+    rotation_from_pointer, snap_frame, snap_frame_resize,
 };
 
 use super::draw::{
-    cursor_for, editor_strip_size, frame_screen, handle_at, handle_points, next_editor_zoom,
-    norm_rect, paint_alignment_grid, paint_clipped_image, paint_frame, paint_loading,
-    paint_photo_border, paint_plus, paint_resize_handle, paint_rotate_handle, paint_rotated_photo,
-    photo_screen, place_strip, rotate_handle_hit, screen_to_norm,
+    cursor_for, editor_strip_size, frame_screen, grid_step, handle_at, handle_points,
+    next_editor_zoom, norm_rect, paint_alignment_grid, paint_clipped_image, paint_frame,
+    paint_loading, paint_photo_border, paint_plus, paint_resize_handle, paint_rotate_handle,
+    paint_rotated_photo, photo_screen, place_strip, rotate_handle_hit, screen_to_norm,
 };
 use super::{ACCENT, CANVAS_BG, Drag, EDITOR_ZOOM_SPEED, PudduScrollApp, Route};
 
@@ -484,7 +484,7 @@ impl PudduScrollApp {
         let Some(frame) = self.layout().and_then(|layout| layout.frame(id)).cloned() else {
             return;
         };
-        let (x, y) = snap_frame_to_grid(&frame);
+        let (x, y) = snap_frame(&frame, grid_step(self.grid_cells));
         if let Some(layout) = self.layout_mut() {
             layout.set_frame_rect(id, x, y, frame.w, frame.h);
         }
@@ -494,7 +494,14 @@ impl PudduScrollApp {
         let Some(frame) = self.layout().and_then(|layout| layout.frame(id)).cloned() else {
             return;
         };
-        let (x, y, w, h) = snap_resized_frame_to_grid(handle, frame.x, frame.y, frame.w, frame.h);
+        let (x, y, w, h) = snap_frame_resize(
+            handle,
+            frame.x,
+            frame.y,
+            frame.w,
+            frame.h,
+            grid_step(self.grid_cells),
+        );
         if let Some(layout) = self.layout_mut() {
             layout.set_frame_rect(id, x, y, w, h);
         }
@@ -656,7 +663,7 @@ impl PudduScrollApp {
             }
         }
         if self.show_grid {
-            paint_alignment_grid(painter, rect, count, clip);
+            paint_alignment_grid(painter, rect, count, clip, self.grid_cells);
         }
         for index in 1..count {
             let x = rect.min.x + index as f32 * canvas_w;

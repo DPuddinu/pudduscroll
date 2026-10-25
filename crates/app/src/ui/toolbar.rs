@@ -5,7 +5,7 @@ use pudduscroll_core::{
 };
 
 use super::draw::{Glyph, dialog_frame, fitted_rect, icon_button, section_scroll, short_name};
-use super::{ACCENT, MUTED, PudduScrollApp, RAIL_W, Route, TEXT};
+use super::{ACCENT, MAX_GRID_CELLS, MIN_GRID_CELLS, MUTED, PudduScrollApp, RAIL_W, Route, TEXT};
 
 impl PudduScrollApp {
     pub(super) fn toolbar(&mut self, ui: &mut egui::Ui) {
@@ -112,6 +112,12 @@ impl PudduScrollApp {
                 let snap = ui.checkbox(&mut self.snap_to_grid, "Snap");
                 self.remember("snap", snap.rect);
             });
+            ui.label("Squares");
+            let slider = ui.add(
+                egui::Slider::new(&mut self.grid_cells, MIN_GRID_CELLS..=MAX_GRID_CELLS)
+                    .trailing_fill(true),
+            );
+            self.remember("grid-squares", slider.rect);
             ui.horizontal_wrapped(|ui| {
                 ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Extend);
                 let add_frame = ui.button("Add frame");

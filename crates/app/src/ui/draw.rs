@@ -4,15 +4,14 @@ use eframe::egui;
 use image::RgbaImage;
 use image::imageops::overlay;
 use pudduscroll_core::{
-    CANVAS_GRID, CoverFit, Crop, EncodedCanvas, ExportError, ExportFormat, ExportSettings, Frame,
-    FrameImages, Handle, Layout, border_thickness, canvas_file_name, cover_fit,
-    export_layout_canvases_with, layout_export_width, photo_local, photo_on_canvases,
-    render_layout, write_canvases,
+    CoverFit, Crop, EncodedCanvas, ExportError, ExportFormat, ExportSettings, Frame, FrameImages,
+    Handle, Layout, border_thickness, canvas_file_name, cover_fit, export_layout_canvases_with,
+    layout_export_width, photo_local, photo_on_canvases, render_layout, write_canvases,
 };
 
 use super::{
-    ACCENT, BG, CROP_HANDLE_HIT, EDITOR_ZOOM_SPEED, MAX_EDITOR_ZOOM, MIN_EDITOR_ZOOM, PANEL,
-    RAIL_SECTION_MIN, RAIL_SECTIONS, RAIL_SPLIT, TEXT,
+    ACCENT, BG, CROP_HANDLE_HIT, EDITOR_ZOOM_SPEED, MAX_EDITOR_ZOOM, MAX_GRID_CELLS,
+    MIN_EDITOR_ZOOM, MIN_GRID_CELLS, PANEL, RAIL_SECTION_MIN, RAIL_SECTIONS, RAIL_SPLIT, TEXT,
 };
 
 pub(super) fn counted(count: usize, one: &str, many: &str) -> String {
@@ -644,15 +643,21 @@ pub(super) fn next_editor_zoom(current: f32, scroll_y: f32) -> f32 {
     (current * (scroll_y * EDITOR_ZOOM_SPEED).exp()).clamp(MIN_EDITOR_ZOOM, MAX_EDITOR_ZOOM)
 }
 
+pub(super) fn grid_step(cells: i32) -> f32 {
+    1.0 / cells.clamp(MIN_GRID_CELLS, MAX_GRID_CELLS) as f32
+}
+
 pub(super) fn paint_alignment_grid(
     painter: &egui::Painter,
     strip: egui::Rect,
     count: usize,
     clip: egui::Rect,
+    cells: i32,
 ) {
     let count = count.max(1);
+    let cells = cells.clamp(MIN_GRID_CELLS, MAX_GRID_CELLS);
     let canvas_w = strip.width() / count as f32;
-    let cells = CANVAS_GRID as f32;
+    let divisions = cells as f32;
     let dark = egui::Stroke::new(1.0, egui::Color32::from_black_alpha(150));
     let light = egui::Stroke::new(1.0, egui::Color32::from_white_alpha(120));
     for index in 0..count {
@@ -665,9 +670,9 @@ pub(super) fn paint_alignment_grid(
             continue;
         }
         let painter = painter.with_clip_rect(visible);
-        let step_x = canvas.width() / cells;
-        let step_y = canvas.height() / cells;
-        for line in 0..=CANVAS_GRID {
+        let step_x = canvas.width() / divisions;
+        let step_y = canvas.height() / divisions;
+        for line in 0..=cells {
             let x = canvas.min.x + line as f32 * step_x;
             let y = canvas.min.y + line as f32 * step_y;
             let vertical = [egui::pos2(x, canvas.top()), egui::pos2(x, canvas.bottom())];
