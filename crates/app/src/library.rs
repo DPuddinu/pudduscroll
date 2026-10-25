@@ -99,6 +99,33 @@ impl Library {
         removed
     }
 
+    pub fn duplicate_carousel(&mut self, id: u64) -> Option<u64> {
+        let (name, layout, photos) = {
+            let source = self.carousels.iter().find(|carousel| carousel.id == id)?;
+            (
+                format!("{} copy", source.name),
+                source.layout.clone(),
+                source.photos.clone(),
+            )
+        };
+        let index = self
+            .carousels
+            .iter()
+            .position(|carousel| carousel.id == id)?;
+        let new_id = self.alloc();
+        self.carousels.insert(
+            index + 1,
+            Carousel {
+                id: new_id,
+                name,
+                layout,
+                photos,
+            },
+        );
+        self.touch_images();
+        Some(new_id)
+    }
+
     pub fn delete_carousel(&mut self, id: u64) -> bool {
         let before = self.carousels.len();
         self.carousels.retain(|carousel| carousel.id != id);
@@ -1005,6 +1032,54 @@ mod tests {
         assert_eq!(frame.border_color, [12, 34, 56, 255]);
         assert!(carousel.photos.contains_key(&frame.id));
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn duplicate_carousel_copies_layout_and_photos() {
+        let mut library = Library::empty();
+        let template_id = library.create_template(
+            "Sea".to_string(),
+            AspectRatio::FOUR_FIVE,
+            sample_blob("dune.png"),
+        );
+        let carousel_id = library.instantiate(template_id).unwrap();
+        let frame = library
+            .carousels
+            .iter_mut()
+            .find(|carousel| carousel.id == carousel_id)
+            .unwrap()
+            .layout
+            .add_frame();
+        library.set_photo(carousel_id, frame, sample_blob("night.jpg"));
+        library
+            .carousels
+            .iter_mut()
+            .find(|carousel| carousel.id == carousel_id)
+            .unwrap()
+            .layout
+            .set_pan(frame, 0.2, 0.7);
+        let copy_id = library.duplicate_carousel(carousel_id).unwrap();
+        assert_ne!(copy_id, carousel_id);
+        assert_eq!(library.carousels[1].id, copy_id);
+        assert_eq!(library.carousels[1].name, "Sea copy");
+        library
+            .carousels
+            .iter_mut()
+            .find(|carousel| carousel.id == carousel_id)
+            .unwrap()
+            .layout
+            .set_pan(frame, 0.9, 0.1);
+        library.clear_photo(carousel_id, frame);
+        let copy = library
+            .carousels
+            .iter()
+            .find(|carousel| carousel.id == copy_id)
+            .unwrap();
+        let photo = copy.layout.frame(frame).unwrap().photo.as_ref().unwrap();
+        assert!((photo.pan_x - 0.2).abs() < 1e-4);
+        assert!((photo.pan_y - 0.7).abs() < 1e-4);
+        assert!(copy.photos.contains_key(&frame));
+        assert!(library.duplicate_carousel(99).is_none());
     }
 
     fn sample_blob(name: &str) -> Blob {

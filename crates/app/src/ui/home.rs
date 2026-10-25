@@ -185,6 +185,11 @@ impl PudduScrollApp {
                 .color(MUTED),
             );
             buttons.horizontal(|ui| {
+                let duplicate = ui.button("Duplicate");
+                self.remember(format!("carousel-duplicate-{id}"), duplicate.rect);
+                if duplicate.clicked() {
+                    action = Some(HomeAction::DuplicateCarousel(id));
+                }
                 let delete = ui.button("Delete");
                 self.remember(format!("carousel-delete-{id}"), delete.rect);
                 if delete.clicked() {
@@ -247,6 +252,10 @@ impl PudduScrollApp {
                 self.note_geometry();
             }
             HomeAction::OpenCarousel(id) => self.enter(Route::Carousel(id), ctx),
+            HomeAction::DuplicateCarousel(id) => {
+                self.library.duplicate_carousel(id);
+                self.note_geometry();
+            }
             HomeAction::DeleteCarousel(id) => {
                 self.library.delete_carousel(id);
                 self.card_previews.remove(&id);

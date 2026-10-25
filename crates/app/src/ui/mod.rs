@@ -54,6 +54,7 @@ enum HomeAction {
     EditTemplate(u64),
     DeleteTemplate(u64),
     OpenCarousel(u64),
+    DuplicateCarousel(u64),
     DeleteCarousel(u64),
 }
 

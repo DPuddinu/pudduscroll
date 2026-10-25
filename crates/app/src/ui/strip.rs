@@ -10,9 +10,7 @@ use super::draw::{
     paint_photo_border, paint_plus, paint_resize_handle, paint_rotate_handle, paint_rotated_photo,
     photo_screen, place_strip, rotate_handle_hit, screen_to_norm,
 };
-use super::{
-    ACCENT, CANVAS_BG, DEFAULT_EDITOR_ZOOM, Drag, EDITOR_ZOOM_SPEED, PudduScrollApp, Route,
-};
+use super::{ACCENT, CANVAS_BG, Drag, EDITOR_ZOOM_SPEED, PudduScrollApp, Route};
 
 impl PudduScrollApp {
     pub(super) fn sync_zoom_basis(&mut self) {
@@ -24,7 +22,6 @@ impl PudduScrollApp {
             return;
         }
         self.zoom_basis = basis;
-        self.editor_zoom = DEFAULT_EDITOR_ZOOM;
         self.strip_lead = egui::Vec2::ZERO;
         self.pending_scroll = Some(egui::Vec2::ZERO);
         self.strip_wheel_pan = false;
