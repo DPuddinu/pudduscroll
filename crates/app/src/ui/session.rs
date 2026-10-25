@@ -7,16 +7,16 @@ use std::time::{Duration, Instant};
 
 use eframe::egui;
 use pudduscroll_core::{
-    AspectRatio, ExportFormat, ExportSettings, FrameId, FrameImages, Layout, estimate_layout_bytes,
-    image_from_bytes, layout_export_width,
+    AspectRatio, ExportFormat, ExportSettings, FrameId, FrameImages, Layout, decode_frame_images,
+    export_layout_canvases_with, layout_export_width,
 };
 
 use crate::library::{Library, SaveRequest, library_directory, load_blob, write_snapshot};
 
-use super::draw::{apply_style, export_folder, pick_image_path, texture_from_preview};
+use super::draw::{apply_style, export_folder, pick_image_path, save_folder, texture_from_preview};
 use super::{
-    DEFAULT_EDITOR_ZOOM, DEFAULT_RAIL_WEIGHTS, DecodeTarget, EstimateMsg, IncomingPhoto,
-    PendingUpload, PhotoAsset, PudduScrollApp, Route, UNDO_LIMIT,
+    DEFAULT_EDITOR_ZOOM, DEFAULT_RAIL_WEIGHTS, DecodeTarget, EstimateMsg, EstimateUpdate,
+    ExportUpdate, IncomingPhoto, PendingUpload, PhotoAsset, PudduScrollApp, Route, UNDO_LIMIT,
 };
 
 impl PudduScrollApp {
@@ -52,9 +52,13 @@ impl PudduScrollApp {
             status: "Opening library…".to_string(),
             estimate_mb: None,
             estimate_for: None,
+            estimate_canvases: None,
             estimate_after: None,
+            estimate_label: String::new(),
+            estimate_done: 0,
             estimate_rx: None,
             export_rx: None,
+            export_done: 0,
             photo_tx,
             photo_rx,
             save_tx,
@@ -210,6 +214,8 @@ impl PudduScrollApp {
 
     pub(super) fn schedule_estimate(&mut self) {
         self.estimate_after = Some(Instant::now() + Duration::from_millis(280));
+        self.estimate_label.clear();
+        self.estimate_done = 0;
     }
 
     pub(super) fn proxy_map(&self) -> FrameImages {
@@ -254,34 +260,23 @@ impl PudduScrollApp {
         while let Ok(message) = self.photo_rx.try_recv() {
             self.apply_incoming(message);
         }
-        let estimate_msg = match self
-            .estimate_rx
-            .as_ref()
-            .map(std::sync::mpsc::Receiver::try_recv)
-        {
-            Some(Ok(msg)) => Some(msg),
-            Some(Err(mpsc::TryRecvError::Disconnected)) => {
-                self.estimate_rx = None;
-                None
-            }
-            _ => None,
-        };
-        if estimate_msg.is_some() {
-            self.estimate_rx = None;
-        }
+        let estimate_msg = self.poll_estimate();
         if let Some(msg) = estimate_msg {
             if msg.geometry == self.geometry_revision
                 && msg.quality == self.quality
                 && msg.format == self.format
             {
                 match msg.result {
-                    Ok(bytes) => {
+                    Ok(canvases) => {
+                        let bytes: usize = canvases.iter().map(|canvas| canvas.bytes.len()).sum();
                         self.estimate_mb = Some(bytes as f64 / 1_048_576.0);
                         self.estimate_for = Some((msg.geometry, msg.quality, msg.format));
+                        self.estimate_canvases = Some(canvases);
                     }
                     Err(error) => {
                         self.status = error;
                         self.estimate_mb = None;
+                        self.estimate_canvases = None;
                     }
                 }
             }
@@ -300,20 +295,95 @@ impl PudduScrollApp {
                 }
             }
         }
-        let export_msg = match self
-            .export_rx
-            .as_ref()
-            .map(std::sync::mpsc::Receiver::try_recv)
-        {
-            Some(Ok(result)) => Some(result),
-            Some(Err(mpsc::TryRecvError::Disconnected)) => {
-                self.export_rx = None;
-                self.exporting = false;
-                Some(Err("Export stopped before it finished.".to_string()))
+        self.poll_export();
+        self.upload_one(ctx);
+        if self.photos_busy() {
+            ctx.request_repaint_after(Duration::from_millis(16));
+        } else if self.estimate_rx.is_some() || self.export_rx.is_some() {
+            ctx.request_repaint_after(Duration::from_millis(40));
+        }
+    }
+
+    fn poll_estimate(&mut self) -> Option<EstimateMsg> {
+        let (updates, closed) = self.drain_estimate();
+        let mut ready = None;
+        for update in updates {
+            match update {
+                EstimateUpdate::Decoding { done, total } => {
+                    self.estimate_label = format!("Decoding {done} of {total}");
+                }
+                EstimateUpdate::Slide { done, total } => {
+                    if done >= self.estimate_done {
+                        self.estimate_done = done;
+                        self.estimate_label = if done == 0 {
+                            if total == 1 {
+                                "Estimating 1 slide".to_string()
+                            } else {
+                                format!("Estimating {total} slides")
+                            }
+                        } else {
+                            format!("Estimating {done} of {total}")
+                        };
+                    }
+                }
+                EstimateUpdate::Ready(msg) => ready = Some(msg),
             }
-            _ => None,
+        }
+        if closed || ready.is_some() {
+            self.estimate_rx = None;
+            if ready.is_some() {
+                self.estimate_label.clear();
+            }
+        }
+        ready
+    }
+
+    fn drain_estimate(&self) -> (Vec<EstimateUpdate>, bool) {
+        let Some(rx) = &self.estimate_rx else {
+            return (Vec::new(), false);
         };
-        if let Some(result) = export_msg {
+        let mut updates = Vec::new();
+        loop {
+            match rx.try_recv() {
+                Ok(update) => updates.push(update),
+                Err(mpsc::TryRecvError::Empty) => return (updates, false),
+                Err(mpsc::TryRecvError::Disconnected) => return (updates, true),
+            }
+        }
+    }
+
+    fn poll_export(&mut self) {
+        let (updates, closed) = self.drain_export();
+        let mut finished = None;
+        for update in updates {
+            match update {
+                ExportUpdate::Decoding { done, total } => {
+                    self.status = format!("Decoding {done} of {total}");
+                }
+                ExportUpdate::Exporting { done, total } => {
+                    if done >= self.export_done {
+                        self.export_done = done;
+                        self.status = if done == 0 {
+                            if total == 1 {
+                                "Exporting 1 slide".to_string()
+                            } else {
+                                format!("Exporting {total} slides")
+                            }
+                        } else {
+                            format!("Exporting {done} of {total}")
+                        };
+                    }
+                }
+                ExportUpdate::Saving => {
+                    self.status = "Saving…".to_string();
+                }
+                ExportUpdate::Finished(result) => finished = Some(result),
+            }
+        }
+        if closed && finished.is_none() {
+            finished = Some(Err("Export stopped before it finished.".to_string()));
+        }
+        if let Some(result) = finished {
             self.export_rx = None;
             self.exporting = false;
             self.status = match result {
@@ -321,11 +391,19 @@ impl PudduScrollApp {
                 Err(error) => error,
             };
         }
-        self.upload_one(ctx);
-        if self.photos_busy() {
-            ctx.request_repaint_after(Duration::from_millis(16));
-        } else if self.estimate_rx.is_some() || self.export_rx.is_some() {
-            ctx.request_repaint_after(Duration::from_millis(40));
+    }
+
+    fn drain_export(&self) -> (Vec<ExportUpdate>, bool) {
+        let Some(rx) = &self.export_rx else {
+            return (Vec::new(), false);
+        };
+        let mut updates = Vec::new();
+        loop {
+            match rx.try_recv() {
+                Ok(update) => updates.push(update),
+                Err(mpsc::TryRecvError::Empty) => return (updates, false),
+                Err(mpsc::TryRecvError::Disconnected) => return (updates, true),
+            }
         }
     }
 
@@ -501,6 +579,8 @@ impl PudduScrollApp {
 
     pub(super) fn spawn_estimate(&mut self) {
         self.estimate_after = None;
+        self.estimate_done = 0;
+        self.estimate_label.clear();
         let Some(layout) = self.layout().cloned() else {
             return;
         };
@@ -509,9 +589,18 @@ impl PudduScrollApp {
         let format = self.format;
         let geometry = self.geometry_revision;
         let (tx, rx) = mpsc::channel();
+        let progress = tx.clone();
         thread::spawn(move || {
-            let result = images_from_encoded(&encoded).and_then(|images| {
-                estimate_layout_bytes(
+            let result = decode_frame_images(&encoded, &|done, total| {
+                let _ = progress.send(EstimateUpdate::Decoding { done, total });
+            })
+            .and_then(|images| {
+                let slides = progress.clone();
+                let _ = slides.send(EstimateUpdate::Slide {
+                    done: 0,
+                    total: layout.canvas_count,
+                });
+                export_layout_canvases_with(
                     &layout,
                     &images,
                     ExportSettings {
@@ -519,15 +608,19 @@ impl PudduScrollApp {
                         quality,
                         format,
                     },
+                    &|done, total| {
+                        let _ = slides.send(EstimateUpdate::Slide { done, total });
+                    },
                 )
-                .map_err(|error| error.to_string())
-            });
-            let _ = tx.send(EstimateMsg {
+                .map(Arc::from)
+            })
+            .map_err(|error| error.to_string());
+            let _ = tx.send(EstimateUpdate::Ready(EstimateMsg {
                 geometry,
                 quality,
                 format,
                 result,
-            });
+            }));
         });
         self.estimate_rx = Some(rx);
     }
@@ -902,28 +995,54 @@ impl PudduScrollApp {
         let Some(layout) = self.layout().cloned() else {
             return;
         };
-        let encoded = self.original_bytes();
         let quality = self.quality;
         let format = self.format;
         let (tx, rx) = mpsc::channel();
         self.exporting = true;
+        self.export_done = 0;
         self.status = "Exporting…".to_string();
-        thread::spawn(move || {
-            let outcome = images_from_encoded(&encoded)
-                .and_then(|images| export_folder(&layout, &images, quality, format, &dir));
-            let _ = tx.send(outcome);
-        });
         self.export_rx = Some(rx);
+        let estimated = self
+            .estimate_canvases
+            .clone()
+            .filter(|_| self.estimate_for == Some((self.geometry_revision, quality, format)));
+        if let Some(canvases) = estimated {
+            thread::spawn(move || {
+                let _ = tx.send(ExportUpdate::Saving);
+                let _ = tx.send(ExportUpdate::Finished(save_folder(&dir, &canvases, format)));
+            });
+            return;
+        }
+        let encoded = self.original_bytes();
+        let progress = tx.clone();
+        thread::spawn(move || {
+            let outcome = (|| {
+                let images = decode_frame_images(&encoded, &|done, total| {
+                    let _ = progress.send(ExportUpdate::Decoding { done, total });
+                })
+                .map_err(|error| error.to_string())?;
+                let slides = progress.clone();
+                let _ = slides.send(ExportUpdate::Exporting {
+                    done: 0,
+                    total: layout.canvas_count,
+                });
+                export_folder(
+                    &layout,
+                    &images,
+                    quality,
+                    format,
+                    &dir,
+                    &|done, total| {
+                        let _ = slides.send(ExportUpdate::Exporting { done, total });
+                    },
+                    &|| {
+                        let _ = progress.send(ExportUpdate::Saving);
+                    },
+                )
+            })();
+            let _ = tx.send(ExportUpdate::Finished(outcome));
+        });
     }
-}
-
-fn images_from_encoded(encoded: &HashMap<FrameId, Arc<[u8]>>) -> Result<FrameImages, String> {
-    let mut images = FrameImages::new();
-    for (id, bytes) in encoded {
-        let image = image_from_bytes(bytes).map_err(|error| error.to_string())?;
-        images.insert(*id, Arc::new(image));
-    }
-    Ok(images)
 }
 
 fn spawn_saver(photo_tx: Sender<IncomingPhoto>) -> Sender<SaveRequest> {

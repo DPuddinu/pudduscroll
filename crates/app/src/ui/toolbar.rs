@@ -34,7 +34,13 @@ impl PudduScrollApp {
                     self.schedule_estimate();
                 }
                 if !self.status.is_empty() {
-                    ui.label(egui::RichText::new(&self.status).color(MUTED));
+                    let text = egui::RichText::new(&self.status);
+                    let text = if self.exporting {
+                        text.strong().color(TEXT)
+                    } else {
+                        text.color(MUTED)
+                    };
+                    ui.label(text);
                 }
             });
         });
@@ -394,7 +400,12 @@ impl PudduScrollApp {
                         );
                     }
                 } else {
-                    ui.label(egui::RichText::new("Estimating size…").color(MUTED));
+                    let label = if self.estimate_label.is_empty() {
+                        "Estimating size…".to_string()
+                    } else {
+                        self.estimate_label.clone()
+                    };
+                    ui.label(egui::RichText::new(label).color(MUTED));
                 }
                 ui.add_space(12.0);
                 ui.horizontal(|ui| {

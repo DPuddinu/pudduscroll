@@ -8,7 +8,9 @@ publish.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+fast_image_resize = "5.1.4"
 image = { workspace = true, features = ["png", "jpeg", "webp"] }
+jpeg-encoder = { version = "0.6.1", features = ["simd"] }
 
 [lints]
 workspace = true

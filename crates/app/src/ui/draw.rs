@@ -4,9 +4,10 @@ use eframe::egui;
 use image::RgbaImage;
 use image::imageops::overlay;
 use pudduscroll_core::{
-    CANVAS_GRID, CoverFit, Crop, ExportError, ExportFormat, ExportSettings, Frame, FrameImages,
-    Handle, Layout, border_thickness, canvas_file_name, cover_fit, export_layout_canvases,
-    layout_export_width, photo_local, photo_on_canvases, render_layout, write_canvases,
+    CANVAS_GRID, CoverFit, Crop, EncodedCanvas, ExportError, ExportFormat, ExportSettings, Frame,
+    FrameImages, Handle, Layout, border_thickness, canvas_file_name, cover_fit,
+    export_layout_canvases_with, layout_export_width, photo_local, photo_on_canvases,
+    render_layout, write_canvases,
 };
 
 use super::{
@@ -557,8 +558,10 @@ pub(super) fn export_folder(
     quality: u8,
     format: ExportFormat,
     dir: &Path,
+    on_slide: &(impl Fn(usize, usize) + Sync),
+    before_write: &impl Fn(),
 ) -> Result<String, String> {
-    let encoded = export_layout_canvases(
+    let encoded = export_layout_canvases_with(
         layout,
         images,
         ExportSettings {
@@ -566,10 +569,20 @@ pub(super) fn export_folder(
             quality,
             format,
         },
+        on_slide,
     )
     .map_err(|error| error.to_string())?;
+    before_write();
+    save_folder(dir, &encoded, format)
+}
+
+pub(super) fn save_folder(
+    dir: &Path,
+    encoded: &[EncodedCanvas],
+    format: ExportFormat,
+) -> Result<String, String> {
     let count = encoded.len();
-    write_canvases(dir, &encoded).map_err(|error: ExportError| error.to_string())?;
+    write_canvases(dir, encoded).map_err(|error: ExportError| error.to_string())?;
     let sample = canvas_file_name(0, format);
     Ok(format!(
         "Exported {count} images to {} ({sample})",

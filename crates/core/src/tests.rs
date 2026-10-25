@@ -1143,6 +1143,81 @@ fn proxy_buffer_samples_the_original_split() {
 }
 
 #[test]
+fn export_reports_each_slide_once() {
+    let mut layout = Layout::new(AspectRatio::SQUARE);
+    layout.set_canvas_count(3);
+    let id = layout.add_frame();
+    layout.fill_frame(id, "solid", 8, 8);
+    let mut images = FrameImages::new();
+    images.insert(id, Arc::new(solid(8, 8, [20, 30, 40, 255])));
+    let seen = std::sync::atomic::AtomicUsize::new(0);
+    let files = export_layout_canvases_with(
+        &layout,
+        &images,
+        ExportSettings {
+            width: 8,
+            quality: 90,
+            format: ExportFormat::Png,
+        },
+        &|done, total| {
+            assert_eq!(total, 3);
+            assert!((1..=3).contains(&done));
+            seen.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        },
+    )
+    .unwrap();
+    assert_eq!(files.len(), 3);
+    assert_eq!(seen.load(std::sync::atomic::Ordering::Relaxed), 3);
+}
+
+#[test]
+fn parallel_decode_keeps_every_frame() {
+    let mut encoded = std::collections::HashMap::new();
+    for index in 0..5u8 {
+        let bytes = png_bytes(&solid(4, 3, [index * 40, 10, 20, 255]));
+        encoded.insert(FrameId(u64::from(index)), Arc::from(bytes));
+    }
+    let seen = std::sync::atomic::AtomicUsize::new(0);
+    let images = decode_frame_images(&encoded, &|done, total| {
+        assert_eq!(total, 5);
+        assert!((1..=5).contains(&done));
+        seen.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    })
+    .unwrap();
+    assert_eq!(seen.load(std::sync::atomic::Ordering::Relaxed), 5);
+    for index in 0..5u8 {
+        let image = &images[&FrameId(u64::from(index))];
+        assert_eq!(image.dimensions(), (4, 3));
+        assert_eq!(pixel(image, 1, 1), [index * 40, 10, 20, 255]);
+    }
+}
+
+#[test]
+fn jpeg_export_keeps_a_flat_color() {
+    let mut layout = Layout::new(AspectRatio::SQUARE);
+    let id = layout.add_frame();
+    layout.fill_frame(id, "red", 32, 32);
+    let mut images = FrameImages::new();
+    images.insert(id, Arc::new(solid(32, 32, [200, 40, 40, 255])));
+    let files = export_layout_canvases(
+        &layout,
+        &images,
+        ExportSettings {
+            width: 32,
+            quality: 90,
+            format: ExportFormat::Jpeg,
+        },
+    )
+    .unwrap();
+    let decoded = image::load_from_memory(&files[0].bytes).unwrap().to_rgba8();
+    let sample = pixel(&decoded, 16, 16);
+    assert!(
+        sample[0] > 180 && sample[1] < 80 && sample[2] < 80,
+        "{sample:?}"
+    );
+}
+
+#[test]
 fn encoded_bytes_export_matches_the_decoded_image() {
     let image = solid(8, 8, [12, 34, 56, 255]);
     let bytes = png_bytes(&image);

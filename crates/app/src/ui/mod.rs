@@ -15,7 +15,9 @@ use std::time::Instant;
 
 use eframe::egui;
 use image::RgbaImage;
-use pudduscroll_core::{AspectRatio, Crop, CropPreset, ExportFormat, FrameId, Handle, Layout};
+use pudduscroll_core::{
+    AspectRatio, Crop, CropPreset, EncodedCanvas, ExportFormat, FrameId, Handle, Layout,
+};
 
 use crate::library::{Blob, Library, SaveRequest};
 
@@ -108,7 +110,20 @@ struct EstimateMsg {
     geometry: u64,
     quality: u8,
     format: ExportFormat,
-    result: Result<u64, String>,
+    result: Result<Arc<[EncodedCanvas]>, String>,
+}
+
+enum EstimateUpdate {
+    Decoding { done: usize, total: usize },
+    Slide { done: usize, total: usize },
+    Ready(EstimateMsg),
+}
+
+enum ExportUpdate {
+    Decoding { done: usize, total: usize },
+    Exporting { done: usize, total: usize },
+    Saving,
+    Finished(Result<String, String>),
 }
 
 struct PhotoAsset {
@@ -201,9 +216,13 @@ pub struct PudduScrollApp {
     status: String,
     estimate_mb: Option<f64>,
     estimate_for: Option<(u64, u8, ExportFormat)>,
+    estimate_canvases: Option<Arc<[EncodedCanvas]>>,
     estimate_after: Option<Instant>,
-    estimate_rx: Option<Receiver<EstimateMsg>>,
-    export_rx: Option<Receiver<Result<String, String>>>,
+    estimate_label: String,
+    estimate_done: usize,
+    estimate_rx: Option<Receiver<EstimateUpdate>>,
+    export_rx: Option<Receiver<ExportUpdate>>,
+    export_done: usize,
     photo_tx: Sender<IncomingPhoto>,
     photo_rx: Receiver<IncomingPhoto>,
     save_tx: Sender<SaveRequest>,

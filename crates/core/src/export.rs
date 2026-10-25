@@ -1,13 +1,16 @@
+use std::collections::HashMap;
+use std::hash::BuildHasher;
 use std::io::Cursor;
 use std::path::Path;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
-use image::codecs::jpeg::JpegEncoder;
-use image::codecs::png::PngEncoder;
+use image::codecs::png::{CompressionType, FilterType, PngEncoder};
 use image::{ExtendedColorType, ImageEncoder, RgbImage, RgbaImage};
 
 use crate::{
-    DEFAULT_EXPORT_WIDTH, Document, FrameImages, ImageMap, Layout, PROXY_LONG_EDGE, render_canvas,
-    render_layout, shrink_long_edge,
+    DEFAULT_EXPORT_WIDTH, Document, FrameId, FrameImages, ImageMap, Layout, PROXY_LONG_EDGE,
+    render_canvas, render_layout, shrink_long_edge,
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -156,6 +159,41 @@ pub fn image_from_bytes(bytes: &[u8]) -> Result<RgbaImage, ExportError> {
     Ok(image)
 }
 
+pub fn decode_frame_images<S: BuildHasher>(
+    encoded: &HashMap<FrameId, Arc<[u8]>, S>,
+    on_photo: &(impl Fn(usize, usize) + Sync),
+) -> Result<FrameImages, ExportError> {
+    let jobs: Vec<(FrameId, &[u8])> = encoded.iter().map(|(id, bytes)| (*id, &**bytes)).collect();
+    let total = jobs.len();
+    let next = &AtomicUsize::new(0);
+    let finished = &AtomicUsize::new(0);
+    let jobs = &jobs;
+    std::thread::scope(|scope| {
+        let workers: Vec<_> = (0..export_workers(total))
+            .map(|_| {
+                scope.spawn(move || -> Result<Vec<(FrameId, RgbaImage)>, ExportError> {
+                    let mut part = Vec::new();
+                    while let Some((id, bytes)) = jobs.get(next.fetch_add(1, Ordering::Relaxed)) {
+                        part.push((*id, image_from_bytes(bytes)?));
+                        note_slide(finished, total, on_photo);
+                    }
+                    Ok(part)
+                })
+            })
+            .collect();
+        let mut images = FrameImages::with_capacity(total);
+        for worker in workers {
+            let part = worker
+                .join()
+                .map_err(|_panic| ExportError::Encode("decode worker stopped".to_string()))??;
+            for (id, image) in part {
+                images.insert(id, Arc::new(image));
+            }
+        }
+        Ok(images)
+    })
+}
+
 pub fn raster_from_bytes(bytes: &[u8]) -> Result<Raster, ExportError> {
     let image = image_from_bytes(bytes)?;
     let width = image.width();
@@ -173,12 +211,23 @@ pub fn export_layout_canvases(
     images: &FrameImages,
     settings: ExportSettings,
 ) -> Result<Vec<EncodedCanvas>, ExportError> {
+    export_layout_canvases_with(layout, images, settings, &|_, _| {})
+}
+
+pub fn export_layout_canvases_with(
+    layout: &Layout,
+    images: &FrameImages,
+    settings: ExportSettings,
+    on_slide: &(impl Fn(usize, usize) + Sync),
+) -> Result<Vec<EncodedCanvas>, ExportError> {
     let count = layout.canvas_count;
+    let finished = &AtomicUsize::new(0);
     let workers = export_workers(count);
     if workers == 1 {
         let mut canvases = Vec::with_capacity(count);
         for index in 0..count {
             canvases.push(encode_layout_canvas(layout, images, settings, index)?);
+            note_slide(finished, count, on_slide);
         }
         return Ok(canvases);
     }
@@ -201,6 +250,7 @@ pub fn export_layout_canvases(
                             index,
                             encode_layout_canvas(layout, images, settings, index)?,
                         ));
+                        note_slide(finished, count, on_slide);
                     }
                     Ok(part)
                 },
@@ -224,6 +274,11 @@ pub fn export_layout_canvases(
         canvases.push(canvas);
     }
     Ok(canvases)
+}
+
+fn note_slide(finished: &AtomicUsize, total: usize, on_slide: &(impl Fn(usize, usize) + Sync)) {
+    let done = finished.fetch_add(1, Ordering::Relaxed) + 1;
+    on_slide(done, total);
 }
 
 fn export_workers(canvas_count: usize) -> usize {
@@ -260,7 +315,16 @@ pub fn estimate_layout_bytes(
     images: &FrameImages,
     settings: ExportSettings,
 ) -> Result<u64, ExportError> {
-    let canvases = export_layout_canvases(layout, images, settings)?;
+    estimate_layout_bytes_with(layout, images, settings, &|_, _| {})
+}
+
+pub fn estimate_layout_bytes_with(
+    layout: &Layout,
+    images: &FrameImages,
+    settings: ExportSettings,
+    on_slide: &(impl Fn(usize, usize) + Sync),
+) -> Result<u64, ExportError> {
+    let canvases = export_layout_canvases_with(layout, images, settings, on_slide)?;
     Ok(canvases
         .iter()
         .map(|canvas| canvas.bytes.len() as u64)
@@ -275,35 +339,97 @@ pub fn write_canvases(dir: &Path, canvases: &[EncodedCanvas]) -> Result<(), Expo
 }
 
 fn encode_png(img: &RgbaImage) -> Result<Vec<u8>, ExportError> {
-    let mut buf = Cursor::new(Vec::new());
-    let encoder = PngEncoder::new(&mut buf);
-    encoder.write_image(
+    if fully_opaque(img) {
+        let rgb = strip_alpha(img);
+        return write_png(
+            rgb.as_raw(),
+            rgb.width(),
+            rgb.height(),
+            ExtendedColorType::Rgb8,
+        );
+    }
+    write_png(
         img.as_raw(),
         img.width(),
         img.height(),
         ExtendedColorType::Rgba8,
-    )?;
+    )
+}
+
+fn write_png(
+    data: &[u8],
+    width: u32,
+    height: u32,
+    color: ExtendedColorType,
+) -> Result<Vec<u8>, ExportError> {
+    let mut buf = Cursor::new(Vec::new());
+    PngEncoder::new_with_quality(&mut buf, CompressionType::Fast, FilterType::Sub)
+        .write_image(data, width, height, color)?;
     Ok(buf.into_inner())
+}
+
+fn fully_opaque(img: &RgbaImage) -> bool {
+    img.as_raw().chunks_exact(4).all(|pixel| pixel[3] == 255)
+}
+
+fn strip_alpha(img: &RgbaImage) -> RgbImage {
+    let width = img.width();
+    let height = img.height();
+    let mut rgb = vec![0; width as usize * height as usize * 3];
+    let mut dst = 0;
+    for pixel in img.as_raw().chunks_exact(4) {
+        rgb[dst] = pixel[0];
+        rgb[dst + 1] = pixel[1];
+        rgb[dst + 2] = pixel[2];
+        dst += 3;
+    }
+    RgbImage::from_raw(width, height, rgb)
+        .unwrap_or_else(|| RgbImage::from_pixel(width, height, image::Rgb([255, 255, 255])))
 }
 
 fn encode_jpeg(img: &RgbaImage, quality: u8) -> Result<Vec<u8>, ExportError> {
     let rgb = composite_on_white(img);
-    let mut buf = Cursor::new(Vec::new());
-    let mut encoder = JpegEncoder::new_with_quality(&mut buf, quality.clamp(1, 100));
-    encoder.encode(
-        rgb.as_raw(),
-        rgb.width(),
-        rgb.height(),
-        ExtendedColorType::Rgb8,
-    )?;
-    Ok(buf.into_inner())
+    let width = u16::try_from(rgb.width()).map_err(|_error| {
+        ExportError::Encode(format!("width {} is above the JPEG limit", rgb.width()))
+    })?;
+    let height = u16::try_from(rgb.height()).map_err(|_error| {
+        ExportError::Encode(format!("height {} is above the JPEG limit", rgb.height()))
+    })?;
+    let mut buf = Vec::new();
+    jpeg_encoder::Encoder::new(&mut buf, quality.clamp(1, 100))
+        .encode(rgb.as_raw(), width, height, jpeg_encoder::ColorType::Rgb)
+        .map_err(|error| ExportError::Encode(error.to_string()))?;
+    Ok(buf)
 }
 
 fn composite_on_white(img: &RgbaImage) -> RgbImage {
-    RgbImage::from_fn(img.width(), img.height(), |x, y| {
-        let pixel = img.get_pixel(x, y);
-        let alpha = pixel[3] as f32 / 255.0;
-        let channel = |value: u8| (value as f32 * alpha + 255.0 * (1.0 - alpha)).round() as u8;
-        image::Rgb([channel(pixel[0]), channel(pixel[1]), channel(pixel[2])])
-    })
+    let width = img.width();
+    let height = img.height();
+    let src = img.as_raw();
+    let mut rgb = vec![0; width as usize * height as usize * 3];
+    let mut src_index = 0;
+    let mut dst_index = 0;
+    while src_index + 3 < src.len() {
+        let alpha = src[src_index + 3];
+        if alpha == 255 {
+            rgb[dst_index] = src[src_index];
+            rgb[dst_index + 1] = src[src_index + 1];
+            rgb[dst_index + 2] = src[src_index + 2];
+        } else if alpha == 0 {
+            rgb[dst_index] = 255;
+            rgb[dst_index + 1] = 255;
+            rgb[dst_index + 2] = 255;
+        } else {
+            let covered = f32::from(alpha) / 255.0;
+            let open = 1.0 - covered;
+            let channel = |value: u8| (f32::from(value) * covered + 255.0 * open).round() as u8;
+            rgb[dst_index] = channel(src[src_index]);
+            rgb[dst_index + 1] = channel(src[src_index + 1]);
+            rgb[dst_index + 2] = channel(src[src_index + 2]);
+        }
+        src_index += 4;
+        dst_index += 3;
+    }
+    RgbImage::from_raw(width, height, rgb)
+        .unwrap_or_else(|| RgbImage::from_pixel(width, height, image::Rgb([255, 255, 255])))
 }

@@ -1,12 +1,12 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use fast_image_resize::images::{Image, ImageRef};
+use fast_image_resize::{PixelType, ResizeAlg, ResizeOptions, Resizer};
 use image::imageops::{FilterType, crop_imm, overlay, resize, thumbnail};
 use image::{Rgba, RgbaImage};
 
-use crate::{
-    Document, Frame, FrameId, Layout, Photo, PhotoId, border_thickness, cover_fit, photo_local,
-};
+use crate::{Document, Frame, FrameId, Layout, Photo, PhotoId, border_thickness, cover_fit};
 
 pub type ImageMap = HashMap<PhotoId, Arc<RgbaImage>>;
 pub type FrameImages = HashMap<FrameId, Arc<RgbaImage>>;
@@ -197,8 +197,18 @@ fn paint_frame_border(dest: &mut RgbaImage, frame: &Frame, canvas: usize) {
     let y0 = top.floor().max(0.0) as u32;
     let x1 = right.ceil().min(dest_w) as u32;
     let y1 = bottom.ceil().min(dest_h) as u32;
+    let reach = (thickness + 1.0).ceil().max(1.0) as u32;
+    let band_left = x0.saturating_add(reach).min(x1);
+    let band_right = x1.saturating_sub(reach).max(band_left);
+    let band_top = y0.saturating_add(reach).min(y1);
+    let band_bottom = y1.saturating_sub(reach).max(band_top);
     for y in y0..y1 {
-        for x in x0..x1 {
+        let rows = if (band_top..band_bottom).contains(&y) {
+            [x0..band_left, band_right..x1]
+        } else {
+            [x0..x1, x0..x0]
+        };
+        for x in rows.into_iter().flatten() {
             let px = x as f32 + 0.5;
             let py = y as f32 + 0.5;
             if px < left || py < top || px > right || py > bottom {
@@ -257,50 +267,82 @@ fn paint_rotated(dest: &mut RgbaImage, src: &RgbaImage, frame: &Frame, canvas: u
     let py1 = ((y1 * dest_h as f32).ceil() as u32).min(dest_h);
     let image_w = src.width() as f32;
     let image_h = src.height() as f32;
+    let src_w = src.width();
+    let src_h = src.height();
+    let (sin, cos) = photo.rotation.sin_cos();
+    let center_x = frame.x + frame.w * 0.5;
+    let center_y = frame.y + frame.h * 0.5;
+    let canvas_ratio = ratio.max(1.0e-4);
+    let frame_right = frame.x + frame.w;
+    let frame_bottom = frame.y + frame.h;
+    let crop = photo.crop;
+    let src_raw = src.as_raw();
+    let dest_stride = dest_w as usize * 4;
+    let dest_raw = dest.as_mut();
     for py in py0..py1 {
+        let row = py as usize * dest_stride;
+        let ly = (py as f32 + 0.5) / dest_h as f32;
         for px in px0..px1 {
             let lx = canvas_x + (px as f32 + 0.5) / dest_w as f32;
-            let ly = (py as f32 + 0.5) / dest_h as f32;
-            if lx < frame.x || ly < frame.y || lx > frame.x + frame.w || ly > frame.y + frame.h {
+            if lx < frame.x || ly < frame.y || lx > frame_right || ly > frame_bottom {
                 continue;
             }
-            let (local_x, local_y) = photo_local(frame, ratio, lx, ly);
+            let dx = (lx - center_x) * canvas_ratio;
+            let dy = ly - center_y;
+            let local_x = center_x + (dx * cos + dy * sin) / canvas_ratio;
+            let local_y = center_y - dx * sin + dy * cos;
             let u = (local_x - fit.x) / fit.w;
             let v = (local_y - fit.y) / fit.h;
             if !(0.0..=1.0).contains(&u) || !(0.0..=1.0).contains(&v) {
                 continue;
             }
-            let sx = (photo.crop.x + u * photo.crop.w) * image_w;
-            let sy = (photo.crop.y + v * photo.crop.h) * image_h;
-            let sampled = sample_bilinear(src, sx, sy);
-            let blended = over(dest.get_pixel(px, py).0, sampled.0);
-            dest.put_pixel(px, py, Rgba(blended));
+            let sx = (crop.x + u * crop.w) * image_w;
+            let sy = (crop.y + v * crop.h) * image_h;
+            let sampled = sample_bilinear(src_raw, src_w, src_h, sx, sy);
+            let offset = row + px as usize * 4;
+            let blended = over(
+                [
+                    dest_raw[offset],
+                    dest_raw[offset + 1],
+                    dest_raw[offset + 2],
+                    dest_raw[offset + 3],
+                ],
+                sampled,
+            );
+            dest_raw[offset..offset + 4].copy_from_slice(&blended);
         }
     }
 }
 
-fn sample_bilinear(src: &RgbaImage, x: f32, y: f32) -> Rgba<u8> {
-    let max_x = src.width().saturating_sub(1) as f32;
-    let max_y = src.height().saturating_sub(1) as f32;
+fn sample_bilinear(src: &[u8], width: u32, height: u32, x: f32, y: f32) -> [u8; 4] {
+    let max_x = width.saturating_sub(1) as f32;
+    let max_y = height.saturating_sub(1) as f32;
     let x = x.clamp(0.0, max_x);
     let y = y.clamp(0.0, max_y);
     let x0 = x.floor() as u32;
     let y0 = y.floor() as u32;
-    let x1 = (x0 + 1).min(src.width() - 1);
-    let y1 = (y0 + 1).min(src.height() - 1);
+    let x1 = (x0 + 1).min(width - 1);
+    let y1 = (y0 + 1).min(height - 1);
     let tx = x - x0 as f32;
     let ty = y - y0 as f32;
-    let p00 = src.get_pixel(x0, y0).0;
-    let p10 = src.get_pixel(x1, y0).0;
-    let p01 = src.get_pixel(x0, y1).0;
-    let p11 = src.get_pixel(x1, y1).0;
+    let stride = width as usize * 4;
+    let at = |px: u32, py: u32| {
+        let index = py as usize * stride + px as usize * 4;
+        [src[index], src[index + 1], src[index + 2], src[index + 3]]
+    };
+    let p00 = at(x0, y0);
+    let p10 = at(x1, y0);
+    let p01 = at(x0, y1);
+    let p11 = at(x1, y1);
     let mut out = [0; 4];
+    let inverse_x = 1.0 - tx;
+    let inverse_y = 1.0 - ty;
     for (channel, slot) in out.iter_mut().enumerate() {
-        let top = p00[channel] as f32 * (1.0 - tx) + p10[channel] as f32 * tx;
-        let bottom = p01[channel] as f32 * (1.0 - tx) + p11[channel] as f32 * tx;
-        *slot = (top * (1.0 - ty) + bottom * ty).round().clamp(0.0, 255.0) as u8;
+        let top = p00[channel] as f32 * inverse_x + p10[channel] as f32 * tx;
+        let bottom = p01[channel] as f32 * inverse_x + p11[channel] as f32 * tx;
+        *slot = (top * inverse_y + bottom * ty).round().clamp(0.0, 255.0) as u8;
     }
-    Rgba(out)
+    out
 }
 
 fn over(dst: [u8; 4], src: [u8; 4]) -> [u8; 4] {
@@ -361,7 +403,59 @@ fn blit(dest: &mut RgbaImage, src: &RgbaImage, region: &ClippedRegion, space_w: 
     let src_h = ((sy1.ceil() as u32).saturating_sub(src_y))
         .max(1)
         .min(src.height() - src_y);
-    let view = crop_imm(src, src_x, src_y, src_w, src_h);
-    let resized = resize(&view.to_image(), rw, rh, FilterType::Triangle);
-    overlay(dest, &resized, x0 as i64, y0 as i64);
+    if src_w == rw && src_h == rh {
+        overlay(
+            dest,
+            &*crop_imm(src, src_x, src_y, src_w, src_h),
+            x0 as i64,
+            y0 as i64,
+        );
+        return;
+    }
+    let cropped = if src_x == 0 && src_y == 0 && src_w == src.width() && src_h == src.height() {
+        None
+    } else {
+        Some(crop_imm(src, src_x, src_y, src_w, src_h).to_image())
+    };
+    let source = cropped.as_ref().unwrap_or(src);
+    let resized = scale_image(source, rw, rh);
+    if resized
+        .as_raw()
+        .chunks_exact(4)
+        .all(|pixel| pixel[3] == 255)
+    {
+        copy_opaque(dest, &resized, x0 as u32, y0 as u32);
+    } else {
+        overlay(dest, &resized, x0 as i64, y0 as i64);
+    }
+}
+
+fn scale_image(src: &RgbaImage, width: u32, height: u32) -> RgbaImage {
+    let fallback = || resize(src, width, height, FilterType::Triangle);
+    let Ok(view) = ImageRef::new(src.width(), src.height(), src.as_raw(), PixelType::U8x4) else {
+        return fallback();
+    };
+    let mut dest = Image::new(width, height, PixelType::U8x4);
+    let options = ResizeOptions::new()
+        .resize_alg(ResizeAlg::Convolution(
+            fast_image_resize::FilterType::Bilinear,
+        ))
+        .use_alpha(false);
+    if Resizer::new().resize(&view, &mut dest, &options).is_err() {
+        return fallback();
+    }
+    RgbaImage::from_raw(width, height, dest.into_vec()).unwrap_or_else(fallback)
+}
+
+fn copy_opaque(dest: &mut RgbaImage, src: &RgbaImage, x: u32, y: u32) {
+    let dest_width = dest.width() as usize;
+    let row_bytes = src.width() as usize * 4;
+    let src_raw = src.as_raw();
+    let dest_raw = dest.as_mut();
+    for row in 0..src.height() as usize {
+        let src_offset = row * row_bytes;
+        let dest_offset = ((y as usize + row) * dest_width + x as usize) * 4;
+        dest_raw[dest_offset..dest_offset + row_bytes]
+            .copy_from_slice(&src_raw[src_offset..src_offset + row_bytes]);
+    }
 }
