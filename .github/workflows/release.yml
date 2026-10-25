@@ -112,6 +112,7 @@ jobs:
     permissions:
       contents: write
     steps:
+      - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
         with:
           path: dist
@@ -196,5 +197,6 @@ jobs:
           - When those names are already in the folder, PudduScroll lists them and asks before replacing them.
           ENDNOTES
           gh release create "${GITHUB_REF_NAME}" dist/* \
+            --repo "${GITHUB_REPOSITORY}" \
             --title "PudduScroll ${GITHUB_REF_NAME#v}" \
             --notes-file release-notes.md
