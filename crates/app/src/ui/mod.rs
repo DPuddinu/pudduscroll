@@ -1,6 +1,7 @@
 mod card;
 mod crop;
 mod draw;
+mod history;
 mod home;
 mod rail;
 mod session;
@@ -16,10 +17,14 @@ use std::time::Instant;
 use eframe::egui;
 use image::RgbaImage;
 use pudduscroll_core::{
-    AspectRatio, Crop, CropPreset, EncodedCanvas, ExportFormat, FrameId, Handle, Layout,
+    AspectRatio, Crop, CropPreset, EncodedCanvas, ExportFormat, FrameId, Handle,
 };
 
 use crate::library::{Blob, Library, SaveRequest};
+
+use history::{Edit, EditHistory};
+
+pub(super) use crate::library::{MAX_GRID_CELLS, MIN_GRID_CELLS};
 
 const BG: egui::Color32 = egui::Color32::from_rgb(16, 16, 16);
 const PANEL: egui::Color32 = egui::Color32::from_rgb(24, 24, 24);
@@ -29,8 +34,6 @@ const TEXT: egui::Color32 = egui::Color32::from_rgb(240, 236, 230);
 const MUTED: egui::Color32 = egui::Color32::from_rgb(164, 158, 148);
 const SELECT_BG: egui::Color32 = egui::Color32::from_rgb(48, 38, 30);
 const DEFAULT_EDITOR_ZOOM: f32 = 0.7;
-const MIN_GRID_CELLS: i32 = 2;
-const MAX_GRID_CELLS: i32 = 16;
 const MIN_EDITOR_ZOOM: f32 = 0.25;
 const MAX_EDITOR_ZOOM: f32 = 4.0;
 const EDITOR_ZOOM_SPEED: f32 = 1.0 / 200.0;
@@ -245,7 +248,8 @@ pub struct PudduScrollApp {
     center_strip: bool,
     strip_rect: Option<egui::Rect>,
     view_rect: Option<egui::Rect>,
-    undo: Vec<Layout>,
+    history: EditHistory<Edit>,
+    drag_origin: Option<Edit>,
     crop_session: Option<CropSession>,
     crop_press: Option<egui::Pos2>,
     show_grid: bool,

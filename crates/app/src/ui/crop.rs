@@ -60,9 +60,7 @@ impl PudduScrollApp {
         if photo.preset == session.preset && crop_unchanged(photo.crop, session.crop) {
             return;
         }
-        if let Some(snapshot) = self.layout().cloned() {
-            self.push_undo(snapshot);
-        }
+        self.checkpoint();
         if let Some(layout) = self.layout_mut() {
             layout.set_photo_crop(session.id, session.crop, session.preset);
         }

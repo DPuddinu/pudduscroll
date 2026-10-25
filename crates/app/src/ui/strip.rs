@@ -125,6 +125,7 @@ impl PudduScrollApp {
             return false;
         }
         let before = (photo.zoom, photo.pan_x, photo.pan_y);
+        let origin = self.zoom_origin();
         let (nx, ny) = screen_to_norm(strip, count, pointer);
         let factor = (scroll_y * EDITOR_ZOOM_SPEED).exp();
         if let Some(layout) = self.layout_mut() {
@@ -140,6 +141,7 @@ impl PudduScrollApp {
                     || (photo.pan_y - before.2).abs() > 1.0e-4
             });
         if changed {
+            self.remember_zoom(origin);
             self.gesture = "zoom".to_string();
             self.note_geometry();
         }
@@ -474,6 +476,7 @@ impl PudduScrollApp {
                         }
                     }
                 }
+                self.seal_drag();
                 self.note_geometry();
                 ctx.stop_dragging();
             }
@@ -484,7 +487,7 @@ impl PudduScrollApp {
         let Some(frame) = self.layout().and_then(|layout| layout.frame(id)).cloned() else {
             return;
         };
-        let (x, y) = snap_frame(&frame, grid_step(self.grid_cells));
+        let (x, y) = snap_frame(&frame, grid_step(self.grid_cells()));
         if let Some(layout) = self.layout_mut() {
             layout.set_frame_rect(id, x, y, frame.w, frame.h);
         }
@@ -500,7 +503,7 @@ impl PudduScrollApp {
             frame.y,
             frame.w,
             frame.h,
-            grid_step(self.grid_cells),
+            grid_step(self.grid_cells()),
         );
         if let Some(layout) = self.layout_mut() {
             layout.set_frame_rect(id, x, y, w, h);
@@ -509,6 +512,7 @@ impl PudduScrollApp {
 
     pub(super) fn begin_drag(&mut self, rect: egui::Rect, pos: egui::Pos2) {
         if let Some(drag) = self.gesture_at(rect, pos) {
+            self.begin_history_drag();
             self.selected = Some(drag.id());
             self.drag = Some(drag);
             return;
@@ -663,7 +667,7 @@ impl PudduScrollApp {
             }
         }
         if self.show_grid {
-            paint_alignment_grid(painter, rect, count, clip, self.grid_cells);
+            paint_alignment_grid(painter, rect, count, clip, self.grid_cells());
         }
         for index in 1..count {
             let x = rect.min.x + index as f32 * canvas_w;

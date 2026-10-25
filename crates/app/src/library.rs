@@ -6,9 +6,17 @@ use std::sync::mpsc::Sender;
 
 use image::RgbaImage;
 use pudduscroll_core::{
-    AspectRatio, CANVAS_PRESETS, Crop, CropPreset, Frame, FrameId, FramePhoto, Layout,
+    AspectRatio, CANVAS_GRID, CANVAS_PRESETS, Crop, CropPreset, Frame, FrameId, FramePhoto, Layout,
     clamp_photo_zoom, normalize_rotation, raster_from_bytes,
 };
+
+pub(crate) const MIN_GRID_CELLS: i32 = 2;
+pub(crate) const MAX_GRID_CELLS: i32 = 16;
+pub(crate) const DEFAULT_GRID_CELLS: i32 = CANVAS_GRID as i32;
+
+pub(crate) fn clamp_grid_cells(cells: i32) -> i32 {
+    cells.clamp(MIN_GRID_CELLS, MAX_GRID_CELLS)
+}
 
 #[derive(Clone)]
 pub struct Blob {
@@ -32,6 +40,7 @@ pub struct Carousel {
     pub name: String,
     pub layout: Layout,
     pub photos: HashMap<FrameId, Blob>,
+    pub grid_cells: i32,
 }
 
 pub struct Library {
@@ -100,12 +109,13 @@ impl Library {
     }
 
     pub fn duplicate_carousel(&mut self, id: u64) -> Option<u64> {
-        let (name, layout, photos) = {
+        let (name, layout, photos, grid_cells) = {
             let source = self.carousels.iter().find(|carousel| carousel.id == id)?;
             (
                 format!("{} copy", source.name),
                 source.layout.clone(),
                 source.photos.clone(),
+                source.grid_cells,
             )
         };
         let index = self
@@ -120,6 +130,7 @@ impl Library {
                 name,
                 layout,
                 photos,
+                grid_cells,
             },
         );
         self.touch_images();
@@ -149,6 +160,7 @@ impl Library {
             name,
             layout,
             photos: HashMap::new(),
+            grid_cells: DEFAULT_GRID_CELLS,
         });
         Some(id)
     }
@@ -199,7 +211,7 @@ impl Library {
         }
     }
 
-    fn touch_images(&mut self) {
+    pub(crate) fn touch_images(&mut self) {
         self.images_dirty = true;
         self.image_generation = self.image_generation.wrapping_add(1);
     }
@@ -366,6 +378,7 @@ fn serialize(library: &Library) -> String {
             carousel.layout.ratio.width, carousel.layout.ratio.height
         );
         let _ = writeln!(out, "canvases {}", carousel.layout.canvas_count);
+        let _ = writeln!(out, "squares {}", clamp_grid_cells(carousel.grid_cells));
         push_frames(&mut out, &carousel.layout, Some(carousel));
     }
     out
@@ -473,6 +486,7 @@ fn parse_library(text: &str, root: &Path) -> Result<Library, String> {
                     name: String::new(),
                     ratio: AspectRatio::FOUR_FIVE,
                     canvases: 1,
+                    grid_cells: DEFAULT_GRID_CELLS,
                     frames: Vec::new(),
                 });
             }
@@ -507,6 +521,17 @@ fn parse_library(text: &str, root: &Path) -> Result<Library, String> {
             }
             "cover" => {
                 template_mut(&mut template, place)?.cover_ext = rest.to_string();
+            }
+            "squares" => {
+                let cells = i32::try_from(parse_u64(rest, place)?).unwrap_or(MAX_GRID_CELLS);
+                match kind {
+                    Some(ItemKind::Carousel) => {
+                        carousel_mut(&mut carousel, place)?.grid_cells = cells;
+                    }
+                    Some(ItemKind::Template) | None => {
+                        return Err(format!("line {place}: squares without a carousel"));
+                    }
+                }
             }
             "frame" => {
                 let frame = parse_frame(rest, place)?;
@@ -604,6 +629,7 @@ struct CarouselBuild {
     name: String,
     ratio: AspectRatio,
     canvases: usize,
+    grid_cells: i32,
     frames: Vec<FrameBuild>,
 }
 
@@ -650,6 +676,7 @@ impl CarouselBuild {
             name: self.name,
             layout,
             photos,
+            grid_cells: clamp_grid_cells(self.grid_cells),
         })
     }
 }
@@ -1080,6 +1107,85 @@ mod tests {
         assert!((photo.pan_y - 0.7).abs() < 1e-4);
         assert!(copy.photos.contains_key(&frame));
         assert!(library.duplicate_carousel(99).is_none());
+    }
+
+    #[test]
+    fn carousel_grid_squares_stay_on_that_carousel() {
+        let root =
+            std::env::temp_dir().join(format!("pudduscroll-grid-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let mut library = Library::empty();
+        let template_id = library.create_template(
+            "Sea".to_string(),
+            AspectRatio::FOUR_FIVE,
+            sample_blob("dune.png"),
+        );
+        let first = library.instantiate(template_id).unwrap();
+        let second = library.instantiate(template_id).unwrap();
+        library
+            .carousels
+            .iter_mut()
+            .find(|carousel| carousel.id == first)
+            .unwrap()
+            .grid_cells = 5;
+        library
+            .carousels
+            .iter_mut()
+            .find(|carousel| carousel.id == second)
+            .unwrap()
+            .grid_cells = 12;
+        let copy = library.duplicate_carousel(first).unwrap();
+        library
+            .carousels
+            .iter_mut()
+            .find(|carousel| carousel.id == first)
+            .unwrap()
+            .grid_cells = 3;
+        assert_eq!(
+            library
+                .carousels
+                .iter()
+                .find(|carousel| carousel.id == copy)
+                .unwrap()
+                .grid_cells,
+            5
+        );
+        assert_eq!(
+            library
+                .carousels
+                .iter()
+                .find(|carousel| carousel.id == second)
+                .unwrap()
+                .grid_cells,
+            12
+        );
+        library.store_to(&root).unwrap();
+        let loaded = Library::load_from(&root).unwrap();
+        assert_eq!(loaded.carousels[0].grid_cells, 3);
+        assert_eq!(loaded.carousels[1].grid_cells, 5);
+        assert_eq!(loaded.carousels[2].grid_cells, 12);
+        let legacy = "\
+pudduscroll 1
+next 2
+carousel 1
+name \"Old\"
+ratio 4 5
+canvases 1
+";
+        let parsed = parse_library(legacy, Path::new(".")).unwrap();
+        assert_eq!(parsed.carousels[0].grid_cells, DEFAULT_GRID_CELLS);
+        let wide = "\
+pudduscroll 1
+next 2
+carousel 1
+name \"Wide\"
+ratio 4 5
+canvases 1
+squares 99
+";
+        let parsed = parse_library(wide, Path::new(".")).unwrap();
+        assert_eq!(parsed.carousels[0].grid_cells, MAX_GRID_CELLS);
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     fn sample_blob(name: &str) -> Blob {

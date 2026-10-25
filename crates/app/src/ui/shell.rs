@@ -4,9 +4,7 @@ use eframe::egui;
 use pudduscroll_core::cover_contains_frame;
 
 use super::draw::{frame_screen, handle_name, handle_points};
-use super::{
-    BG, Drag, MAX_GRID_CELLS, MIN_GRID_CELLS, PANEL, PudduScrollApp, RAIL_W, Route, TEXT, TOOLBAR_H,
-};
+use super::{BG, Drag, PANEL, PudduScrollApp, RAIL_W, Route, TEXT, TOOLBAR_H};
 
 impl PudduScrollApp {
     pub(super) fn editor_screen(&mut self, ui: &mut egui::Ui, full: egui::Rect) {
@@ -77,7 +75,7 @@ impl PudduScrollApp {
             "grid {} snap {} cells {} edit_frame {} free {}",
             u8::from(self.show_grid),
             u8::from(self.snap_to_grid),
-            self.grid_cells.clamp(MIN_GRID_CELLS, MAX_GRID_CELLS),
+            self.grid_cells(),
             u8::from(self.edit_frame),
             u8::from(self.free_rotate)
         );

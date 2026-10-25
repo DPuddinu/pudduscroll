@@ -5,6 +5,7 @@ use pudduscroll_core::{
 };
 
 use super::draw::{Glyph, dialog_frame, fitted_rect, icon_button, section_scroll, short_name};
+use super::history::HistoryKind;
 use super::{ACCENT, MAX_GRID_CELLS, MIN_GRID_CELLS, MUTED, PudduScrollApp, RAIL_W, Route, TEXT};
 
 impl PudduScrollApp {
@@ -56,7 +57,10 @@ impl PudduScrollApp {
                     let selected = self.layout().is_some_and(|layout| layout.ratio == preset);
                     let response = ui.selectable_label(selected, &label);
                     self.remember(format!("canvas-{label}"), response.rect);
-                    if response.clicked() {
+                    if response.clicked()
+                        && self.layout().is_some_and(|layout| layout.ratio != preset)
+                    {
+                        self.checkpoint();
                         if let Some(layout) = self.layout_mut() {
                             layout.set_ratio(preset);
                         }
@@ -76,12 +80,14 @@ impl PudduScrollApp {
                 let can_remove = self.layout().is_some_and(|layout| layout.canvas_count > 1);
                 let remove = ui.add_enabled(can_remove, egui::Button::new("Remove"));
                 self.remember("remove-canvas", remove.rect);
-                if remove.clicked()
-                    && self
+                if remove.clicked() && can_remove {
+                    self.checkpoint();
+                    if self
                         .layout_mut()
                         .is_some_and(pudduscroll_core::Layout::remove_canvas)
-                {
-                    self.note_geometry();
+                    {
+                        self.note_geometry();
+                    }
                 }
                 if let Some(layout) = self.layout() {
                     ui.monospace(format!("{:02} / {MAX_CANVASES:02}", layout.canvas_count));
@@ -91,12 +97,14 @@ impl PudduScrollApp {
                     .is_some_and(|layout| layout.canvas_count < MAX_CANVASES);
                 let add = ui.add_enabled(can_add, egui::Button::new("Add"));
                 self.remember("add-canvas", add.rect);
-                if add.clicked()
-                    && self
+                if add.clicked() && can_add {
+                    self.checkpoint();
+                    if self
                         .layout_mut()
                         .is_some_and(pudduscroll_core::Layout::add_canvas)
-                {
-                    self.note_geometry();
+                    {
+                        self.note_geometry();
+                    }
                 }
             });
         });
@@ -113,16 +121,24 @@ impl PudduScrollApp {
                 self.remember("snap", snap.rect);
             });
             ui.label("Squares");
+            let previous = self.grid_cells();
+            let mut cells = previous;
             let slider = ui.add(
-                egui::Slider::new(&mut self.grid_cells, MIN_GRID_CELLS..=MAX_GRID_CELLS)
-                    .trailing_fill(true),
+                egui::Slider::new(&mut cells, MIN_GRID_CELLS..=MAX_GRID_CELLS).trailing_fill(true),
             );
             self.remember("grid-squares", slider.rect);
+            if slider.changed() {
+                self.edit_grid(previous, cells);
+            }
+            if slider.drag_stopped() || (slider.changed() && !slider.dragged()) {
+                self.persist();
+            }
             ui.horizontal_wrapped(|ui| {
                 ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Extend);
                 let add_frame = ui.button("Add frame");
                 self.remember("add-frame", add_frame.rect);
-                if add_frame.clicked() {
+                if add_frame.clicked() && self.layout().is_some() {
+                    self.checkpoint();
                     let id = self.layout_mut().map(pudduscroll_core::Layout::add_frame);
                     if let Some(id) = id {
                         self.selected = Some(id);
@@ -153,11 +169,12 @@ impl PudduScrollApp {
                         let label = preset.label();
                         let response = ui.button(&label);
                         self.remember(format!("frame-aspect-{label}"), response.rect);
-                        if response.clicked() {
-                            let id = self.selected;
-                            if let Some(id) = id
-                                && let Some(layout) = self.layout_mut()
-                            {
+                        if response.clicked()
+                            && let Some(id) = self.selected
+                            && self.layout().is_some()
+                        {
+                            self.checkpoint();
+                            if let Some(layout) = self.layout_mut() {
                                 layout.set_frame_aspect(id, preset.value());
                             }
                             self.note_geometry();
@@ -201,7 +218,8 @@ impl PudduScrollApp {
                         egui::DragValue::new(&mut percent).range(0..=100).speed(1.0),
                     );
                     self.remember("border-value", number.rect);
-                    if number.changed() {
+                    let number_changed = number.changed();
+                    if number_changed {
                         border = (percent as f32 / 100.0).clamp(0.0, 1.0);
                     }
                     let popup_id = egui::Id::unique("pudduscroll-border-color");
@@ -257,7 +275,8 @@ impl PudduScrollApp {
                     if color_changed {
                         rgb = [picked.r(), picked.g(), picked.b()];
                     }
-                    if slider.changed() || color_changed {
+                    if slider.changed() || color_changed || number_changed {
+                        self.edit_coalesced(HistoryKind::Border(id.0));
                         if let Some(layout) = self.layout_mut() {
                             layout.set_border(id, border);
                             layout.set_border_color(id, [rgb[0], rgb[1], rgb[2], 255]);
@@ -273,26 +292,30 @@ impl PudduScrollApp {
                     .on_hover_text("CCW 90");
                 self.remember("rotate-ccw", ccw.rect);
                 if ccw.clicked()
-                    && self.selected.is_some_and(|id| {
-                        self.layout_mut().is_some_and(|layout| {
-                            layout.turn_photo(id, Turn::Counterclockwise);
-                            true
-                        })
+                    && let Some(id) = self.selected
+                    && self.layout().is_some_and(|layout| {
+                        layout.frame(id).is_some_and(|frame| frame.photo.is_some())
                     })
                 {
+                    self.checkpoint();
+                    if let Some(layout) = self.layout_mut() {
+                        layout.turn_photo(id, Turn::Counterclockwise);
+                    }
                     self.note_geometry();
                 }
                 let cw = icon_square(ui, "rotate-cw", photo_ready, false, Glyph::RotateCw)
                     .on_hover_text("CW 90");
                 self.remember("rotate-cw", cw.rect);
                 if cw.clicked()
-                    && self.selected.is_some_and(|id| {
-                        self.layout_mut().is_some_and(|layout| {
-                            layout.turn_photo(id, Turn::Clockwise);
-                            true
-                        })
+                    && let Some(id) = self.selected
+                    && self.layout().is_some_and(|layout| {
+                        layout.frame(id).is_some_and(|frame| frame.photo.is_some())
                     })
                 {
+                    self.checkpoint();
+                    if let Some(layout) = self.layout_mut() {
+                        layout.turn_photo(id, Turn::Clockwise);
+                    }
                     self.note_geometry();
                 }
                 let free = icon_square(
@@ -350,7 +373,7 @@ impl PudduScrollApp {
                 ui.add_space(8.0);
                 if let Some(layout) = self.layout() {
                     let (width, height) = layout.ratio.export_size(layout_export_width(layout));
-                    let sample = canvas_file_name(0, self.format);
+                    let sample = canvas_file_name(&self.item_name(), 0, self.format);
                     ui.label(format!(
                         "{} canvases · {width}×{height}",
                         layout.canvas_count

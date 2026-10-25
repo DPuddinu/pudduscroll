@@ -7,13 +7,17 @@ use std::time::{Duration, Instant};
 
 use eframe::egui;
 use pudduscroll_core::{
-    AspectRatio, CANVAS_GRID, ExportFormat, ExportSettings, FrameId, FrameImages, Layout,
-    decode_frame_images, export_layout_canvases_with, layout_export_width,
+    AspectRatio, ExportFormat, ExportSettings, FrameId, FrameImages, Layout, decode_frame_images,
+    export_layout_canvases_with, layout_export_width,
 };
 
-use crate::library::{Library, SaveRequest, library_directory, load_blob, write_snapshot};
+use crate::library::{
+    DEFAULT_GRID_CELLS, Library, SaveRequest, clamp_grid_cells, library_directory, load_blob,
+    write_snapshot,
+};
 
 use super::draw::{apply_style, export_folder, pick_image_path, save_folder, texture_from_preview};
+use super::history::{Edit, EditHistory, HISTORY_WINDOW, HistoryKind, photo_stamp};
 use super::{
     DEFAULT_EDITOR_ZOOM, DEFAULT_RAIL_WEIGHTS, DecodeTarget, EstimateMsg, EstimateUpdate,
     ExportUpdate, IncomingPhoto, PendingUpload, PhotoAsset, PudduScrollApp, Route, UNDO_LIMIT,
@@ -78,12 +82,13 @@ impl PudduScrollApp {
             center_strip: true,
             strip_rect: None,
             view_rect: None,
-            undo: Vec::new(),
+            history: EditHistory::new(UNDO_LIMIT),
+            drag_origin: None,
             crop_session: None,
             crop_press: None,
             show_grid: true,
             snap_to_grid: true,
-            grid_cells: CANVAS_GRID as i32,
+            grid_cells: DEFAULT_GRID_CELLS,
             rail_weights: DEFAULT_RAIL_WEIGHTS,
             create_open: false,
             create_name: "Template".to_string(),
@@ -135,6 +140,34 @@ impl PudduScrollApp {
     pub(super) fn metrics(&self) -> Option<(f32, usize)> {
         self.layout()
             .map(|layout| (layout.ratio.value(), layout.canvas_count))
+    }
+
+    pub(super) fn grid_cells(&self) -> i32 {
+        let cells = match self.route {
+            Route::Carousel(id) => self
+                .library
+                .carousels
+                .iter()
+                .find(|carousel| carousel.id == id)
+                .map_or(self.grid_cells, |carousel| carousel.grid_cells),
+            Route::Home | Route::Template(_) => self.grid_cells,
+        };
+        clamp_grid_cells(cells)
+    }
+
+    pub(super) fn set_grid_cells(&mut self, cells: i32) {
+        let cells = clamp_grid_cells(cells);
+        if let Route::Carousel(id) = self.route
+            && let Some(carousel) = self
+                .library
+                .carousels
+                .iter_mut()
+                .find(|carousel| carousel.id == id)
+        {
+            carousel.grid_cells = cells;
+            return;
+        }
+        self.grid_cells = cells;
     }
 
     pub(super) fn item_name(&self) -> String {
@@ -205,12 +238,169 @@ impl PudduScrollApp {
         self.persist();
     }
 
-    pub(super) fn push_undo(&mut self, layout: Layout) {
-        self.undo.push(layout);
-        if self.undo.len() > UNDO_LIMIT {
-            let extra = self.undo.len() - UNDO_LIMIT;
-            self.undo.drain(0..extra);
+    pub(super) fn checkpoint(&mut self) {
+        self.seal_drag();
+        let Some(edit) = self.capture_edit() else {
+            return;
+        };
+        self.history.checkpoint(edit);
+    }
+
+    pub(super) fn edit_coalesced(&mut self, kind: HistoryKind) {
+        let now = Instant::now();
+        if self.history.absorb(kind, now, HISTORY_WINDOW) {
+            return;
         }
+        self.checkpoint();
+        self.history.arm(kind, now);
+    }
+
+    pub(super) fn edit_grid(&mut self, previous: i32, updated: i32) {
+        let now = Instant::now();
+        if self.history.absorb(HistoryKind::Grid, now, HISTORY_WINDOW) {
+            self.set_grid_cells(updated);
+            return;
+        }
+        self.set_grid_cells(previous);
+        self.checkpoint();
+        self.history.arm(HistoryKind::Grid, now);
+        self.set_grid_cells(updated);
+    }
+
+    pub(super) fn begin_history_drag(&mut self) {
+        self.seal_drag();
+        self.drag_origin = self.capture_edit();
+    }
+
+    pub(super) fn seal_drag(&mut self) {
+        let Some(before) = self.drag_origin.take() else {
+            return;
+        };
+        let Some(current) = self.capture_edit() else {
+            return;
+        };
+        if before.differs(&current) {
+            self.history.checkpoint(before);
+        }
+    }
+
+    pub(super) fn zoom_origin(&mut self) -> Option<Edit> {
+        let now = Instant::now();
+        if self.history.absorb(HistoryKind::Zoom, now, HISTORY_WINDOW) {
+            None
+        } else {
+            self.seal_drag();
+            self.capture_edit()
+        }
+    }
+
+    pub(super) fn remember_zoom(&mut self, before: Option<Edit>) {
+        let Some(before) = before else {
+            return;
+        };
+        self.history.checkpoint(before);
+        self.history.arm(HistoryKind::Zoom, Instant::now());
+    }
+
+    fn capture_edit(&self) -> Option<Edit> {
+        let layout = self.layout()?.clone();
+        let photos = match self.route {
+            Route::Carousel(id) => self
+                .library
+                .carousels
+                .iter()
+                .find(|carousel| carousel.id == id)
+                .map(|carousel| carousel.photos.clone())
+                .unwrap_or_default(),
+            Route::Home | Route::Template(_) => HashMap::new(),
+        };
+        Some(Edit {
+            layout,
+            photos,
+            grid_cells: self.grid_cells(),
+        })
+    }
+
+    fn restore_edit(&mut self, edit: Edit, ctx: &egui::Context) {
+        let before = self.current_photo_stamp();
+        match self.route {
+            Route::Template(id) => {
+                if let Some(template) = self
+                    .library
+                    .templates
+                    .iter_mut()
+                    .find(|template| template.id == id)
+                {
+                    template.layout = edit.layout;
+                }
+            }
+            Route::Carousel(id) => {
+                if let Some(carousel) = self
+                    .library
+                    .carousels
+                    .iter_mut()
+                    .find(|carousel| carousel.id == id)
+                {
+                    carousel.layout = edit.layout;
+                    carousel.photos = edit.photos;
+                }
+            }
+            Route::Home => return,
+        }
+        self.set_grid_cells(edit.grid_cells);
+        let selected_ok = self.selected.is_some_and(|id| {
+            self.layout()
+                .is_some_and(|layout| layout.frame(id).is_some())
+        });
+        if !selected_ok {
+            self.selected = None;
+            self.edit_frame = false;
+        }
+        self.drag = None;
+        self.drag_origin = None;
+        self.crop_session = None;
+        self.crop_press = None;
+        if self.current_photo_stamp() != before {
+            self.library.touch_images();
+            self.reload_assets(ctx);
+        }
+        self.note_geometry();
+    }
+
+    fn current_photo_stamp(&self) -> Vec<(u64, usize)> {
+        let Route::Carousel(id) = self.route else {
+            return Vec::new();
+        };
+        self.library
+            .carousels
+            .iter()
+            .find(|carousel| carousel.id == id)
+            .map(|carousel| photo_stamp(&carousel.photos))
+            .unwrap_or_default()
+    }
+
+    pub(super) fn undo_edit(&mut self, ctx: &egui::Context) {
+        self.seal_drag();
+        let Some(current) = self.capture_edit() else {
+            return;
+        };
+        let Some(previous) = self.history.take_undo(current) else {
+            return;
+        };
+        self.restore_edit(previous, ctx);
+        self.status = "Undone".to_string();
+    }
+
+    pub(super) fn redo_edit(&mut self, ctx: &egui::Context) {
+        self.seal_drag();
+        let Some(current) = self.capture_edit() else {
+            return;
+        };
+        let Some(next) = self.history.take_redo(current) else {
+            return;
+        };
+        self.restore_edit(next, ctx);
+        self.status = "Redone".to_string();
     }
 
     pub(super) fn schedule_estimate(&mut self) {
@@ -551,6 +741,7 @@ impl PudduScrollApp {
         }
         let name = blob.name.clone();
         let proxy = Arc::clone(&blob.proxy);
+        self.checkpoint();
         self.library.set_photo(carousel_id, frame_id, blob);
         let queued = self.route == Route::Carousel(carousel_id);
         if queued {
@@ -648,6 +839,29 @@ impl PudduScrollApp {
             return;
         }
         if !matches!(self.route, Route::Home) {
+            let redo = ctx.input_mut(|input| {
+                input.consume_key(
+                    egui::Modifiers::COMMAND | egui::Modifiers::SHIFT,
+                    egui::Key::Z,
+                ) || input.consume_key(egui::Modifiers::COMMAND, egui::Key::Y)
+            });
+            let undo =
+                ctx.input_mut(|input| input.consume_key(egui::Modifiers::COMMAND, egui::Key::Z));
+            if redo {
+                self.crop_session = None;
+                self.crop_press = None;
+                self.redo_edit(ctx);
+                return;
+            }
+            if undo {
+                if self.crop_session.take().is_some() {
+                    self.crop_press = None;
+                    self.status = "Crop canceled".to_string();
+                    return;
+                }
+                self.undo_edit(ctx);
+                return;
+            }
             ctx.input_mut(|input| {
                 input.consume_key(egui::Modifiers::NONE, egui::Key::Space);
             });
@@ -892,6 +1106,7 @@ impl PudduScrollApp {
     }
 
     pub(super) fn remove_photo(&mut self, id: FrameId) {
+        self.checkpoint();
         self.forget_load(id);
         if let Route::Carousel(carousel_id) = self.route {
             self.library.clear_photo(carousel_id, id);
@@ -911,6 +1126,7 @@ impl PudduScrollApp {
     }
 
     pub(super) fn remove_frame(&mut self, id: FrameId) {
+        self.checkpoint();
         self.forget_load(id);
         if let Route::Carousel(carousel_id) = self.route {
             self.library.clear_photo(carousel_id, id);
@@ -955,7 +1171,8 @@ impl PudduScrollApp {
         self.center_strip = true;
         self.strip_rect = None;
         self.view_rect = None;
-        self.undo.clear();
+        self.history.clear();
+        self.drag_origin = None;
         self.export_open = false;
         self.create_open = false;
         self.show_grid = true;
@@ -998,6 +1215,7 @@ impl PudduScrollApp {
         };
         let quality = self.quality;
         let format = self.format;
+        let name = self.item_name();
         let (tx, rx) = mpsc::channel();
         self.exporting = true;
         self.export_done = 0;
@@ -1010,7 +1228,9 @@ impl PudduScrollApp {
         if let Some(canvases) = estimated {
             thread::spawn(move || {
                 let _ = tx.send(ExportUpdate::Saving);
-                let _ = tx.send(ExportUpdate::Finished(save_folder(&dir, &canvases, format)));
+                let _ = tx.send(ExportUpdate::Finished(save_folder(
+                    &dir, &name, &canvases, format,
+                )));
             });
             return;
         }
@@ -1027,19 +1247,11 @@ impl PudduScrollApp {
                     done: 0,
                     total: layout.canvas_count,
                 });
-                export_folder(
-                    &layout,
-                    &images,
-                    quality,
-                    format,
-                    &dir,
-                    &|done, total| {
-                        let _ = slides.send(ExportUpdate::Exporting { done, total });
-                    },
-                    &|| {
-                        let _ = progress.send(ExportUpdate::Saving);
-                    },
-                )
+                let encoded = export_folder(&layout, &images, quality, format, &|done, total| {
+                    let _ = slides.send(ExportUpdate::Exporting { done, total });
+                })?;
+                let _ = progress.send(ExportUpdate::Saving);
+                save_folder(&dir, &name, &encoded, format)
             })();
             let _ = tx.send(ExportUpdate::Finished(outcome));
         });

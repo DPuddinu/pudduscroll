@@ -503,9 +503,50 @@ fn byte_estimate_matches_encoded_carousel() {
 
     let dir = std::env::temp_dir().join(format!("pudduscroll-export-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
-    write_canvases(&dir, &low_files).unwrap();
+    write_canvases(&dir, "pudduscroll", ExportFormat::Jpeg, &low_files).unwrap();
     assert!(dir.join("pudduscroll-01.jpg").is_file());
     assert!(dir.join("pudduscroll-02.jpg").is_file());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn export_file_names_use_the_carousel_name() {
+    assert_eq!(
+        canvas_file_name("gemma luce", 0, ExportFormat::Jpeg),
+        "gemma_luce-01.jpg"
+    );
+    assert_eq!(
+        canvas_file_name("gemma luce", 1, ExportFormat::Jpeg),
+        "gemma_luce-02.jpg"
+    );
+    assert_eq!(
+        canvas_file_name("  Gemma   Luce  ", 0, ExportFormat::Png),
+        "Gemma_Luce-01.png"
+    );
+    assert_eq!(
+        canvas_file_name("Sea \"m\"", 0, ExportFormat::Jpeg),
+        "Sea_m-01.jpg"
+    );
+    assert_eq!(
+        canvas_file_name("...", 0, ExportFormat::Jpeg),
+        "pudduscroll-01.jpg"
+    );
+
+    let dir = std::env::temp_dir().join(format!("pudduscroll-name-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    write_canvases(
+        &dir,
+        "gemma luce",
+        ExportFormat::Jpeg,
+        &[EncodedCanvas {
+            file_name: "pudduscroll-01.jpg".to_string(),
+            bytes: vec![1, 2, 3],
+        }],
+    )
+    .unwrap();
+    assert!(dir.join("gemma_luce-01.jpg").is_file());
+    assert!(!dir.join("pudduscroll-01.jpg").exists());
     let _ = std::fs::remove_dir_all(&dir);
 }
 

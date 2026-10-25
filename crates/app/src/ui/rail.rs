@@ -116,11 +116,15 @@ impl PudduScrollApp {
                         if icon_button(ui, rect, ("layer-move", id.0, slot), enabled, false, glyph)
                             .clicked()
                             && enabled
-                            && self
+                            && self.layout().is_some()
+                        {
+                            self.checkpoint();
+                            if self
                                 .layout_mut()
                                 .is_some_and(|layout| layout.move_layer(id, movement))
-                        {
-                            self.note_geometry();
+                            {
+                                self.note_geometry();
+                            }
                         }
                     }
                 }

@@ -96,12 +96,45 @@ pub fn quality_description(quality: u8, format: ExportFormat) -> String {
 }
 
 #[must_use]
-pub fn canvas_file_name(index: usize, format: ExportFormat) -> String {
+pub fn canvas_file_name(name: &str, index: usize, format: ExportFormat) -> String {
     let ext = match format {
         ExportFormat::Png => "png",
         ExportFormat::Jpeg => "jpg",
     };
-    format!("pudduscroll-{:02}.{ext}", index + 1)
+    format!("{}-{:02}.{ext}", export_stem(name), index + 1)
+}
+
+fn breaks_file_name(ch: char) -> bool {
+    ch.is_whitespace()
+        || ch.is_control()
+        || matches!(ch, '<' | '>' | ':' | '"' | '/' | '\\' | '|' | '?' | '*')
+}
+
+fn export_stem(name: &str) -> String {
+    let mut stem = String::new();
+    let mut separator = false;
+    for ch in name.chars() {
+        if breaks_file_name(ch) {
+            separator = !stem.is_empty();
+            continue;
+        }
+        if separator {
+            stem.push('_');
+            separator = false;
+        }
+        stem.push(ch);
+        if stem.len() >= 200 {
+            break;
+        }
+    }
+    while stem.ends_with('.') {
+        stem.pop();
+    }
+    if stem.is_empty() {
+        "pudduscroll".to_string()
+    } else {
+        stem
+    }
 }
 
 #[must_use]
@@ -132,7 +165,7 @@ pub fn export_canvases(
     for index in 0..doc.canvas_count {
         let rendered = render_canvas(doc, index, images, settings.width);
         canvases.push(EncodedCanvas {
-            file_name: canvas_file_name(index, settings.format),
+            file_name: canvas_file_name("", index, settings.format),
             bytes: encode_rendered(&rendered, settings)?,
         });
     }
@@ -298,7 +331,7 @@ fn encode_layout_canvas(
 ) -> Result<EncodedCanvas, ExportError> {
     let rendered = render_layout(layout, index, images, settings.width);
     Ok(EncodedCanvas {
-        file_name: canvas_file_name(index, settings.format),
+        file_name: canvas_file_name("", index, settings.format),
         bytes: encode_rendered(&rendered, settings)?,
     })
 }
@@ -331,9 +364,17 @@ pub fn estimate_layout_bytes_with(
         .sum())
 }
 
-pub fn write_canvases(dir: &Path, canvases: &[EncodedCanvas]) -> Result<(), ExportError> {
-    for canvas in canvases {
-        std::fs::write(dir.join(&canvas.file_name), &canvas.bytes)?;
+pub fn write_canvases(
+    dir: &Path,
+    name: &str,
+    format: ExportFormat,
+    canvases: &[EncodedCanvas],
+) -> Result<(), ExportError> {
+    for (index, canvas) in canvases.iter().enumerate() {
+        std::fs::write(
+            dir.join(canvas_file_name(name, index, format)),
+            &canvas.bytes,
+        )?;
     }
     Ok(())
 }

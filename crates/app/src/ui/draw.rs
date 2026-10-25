@@ -556,11 +556,9 @@ pub(super) fn export_folder(
     images: &FrameImages,
     quality: u8,
     format: ExportFormat,
-    dir: &Path,
     on_slide: &(impl Fn(usize, usize) + Sync),
-    before_write: &impl Fn(),
-) -> Result<String, String> {
-    let encoded = export_layout_canvases_with(
+) -> Result<Vec<EncodedCanvas>, String> {
+    export_layout_canvases_with(
         layout,
         images,
         ExportSettings {
@@ -570,19 +568,18 @@ pub(super) fn export_folder(
         },
         on_slide,
     )
-    .map_err(|error| error.to_string())?;
-    before_write();
-    save_folder(dir, &encoded, format)
+    .map_err(|error| error.to_string())
 }
 
 pub(super) fn save_folder(
     dir: &Path,
+    name: &str,
     encoded: &[EncodedCanvas],
     format: ExportFormat,
 ) -> Result<String, String> {
     let count = encoded.len();
-    write_canvases(dir, encoded).map_err(|error: ExportError| error.to_string())?;
-    let sample = canvas_file_name(0, format);
+    write_canvases(dir, name, format, encoded).map_err(|error: ExportError| error.to_string())?;
+    let sample = canvas_file_name(name, 0, format);
     Ok(format!(
         "Exported {count} images to {} ({sample})",
         dir.display()
