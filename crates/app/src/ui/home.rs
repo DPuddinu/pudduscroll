@@ -1,4 +1,3 @@
-use std::sync::Arc;
 use std::thread;
 
 use eframe::egui;
@@ -92,7 +91,7 @@ impl PudduScrollApp {
         if self.cover_textures.contains_key(&id) || self.cover_pending.contains_key(&id) {
             return;
         }
-        let proxy = Arc::clone(&self.library.templates[index].cover.proxy);
+        let proxy = self.library.templates[index].cover.screen();
         self.queue_cover(id, proxy);
         ctx.request_repaint();
     }
@@ -221,7 +220,7 @@ impl PudduScrollApp {
         let images: FrameImages = carousel
             .photos
             .iter()
-            .map(|(frame_id, blob)| (*frame_id, Arc::clone(&blob.proxy)))
+            .map(|(frame_id, blob)| (*frame_id, blob.screen()))
             .collect();
         self.card_jobs.insert(id, visuals);
         let tx = self.photo_tx.clone();

@@ -190,7 +190,8 @@ impl PudduScrollApp {
 }
 
 impl eframe::App for PudduScrollApp {
-    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+    fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
+        crate::color::note_display(frame);
         self.painted = self.painted.wrapping_add(1);
         let ctx = ui.ctx().clone();
         self.poll_jobs(&ctx);

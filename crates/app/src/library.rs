@@ -4,6 +4,8 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::mpsc::Sender;
 
+use std::sync::Mutex;
+
 use image::RgbaImage;
 use pudduscroll_core::{
     AspectRatio, CANVAS_GRID, CANVAS_PRESETS, Crop, CropPreset, Frame, FrameId, FramePhoto, Layout,
@@ -26,6 +28,23 @@ pub struct Blob {
     pub width: u32,
     pub height: u32,
     pub proxy: Arc<RgbaImage>,
+    profile: Option<Arc<[u8]>>,
+    screen_cache: Arc<Mutex<Option<Arc<RgbaImage>>>>,
+}
+
+impl Blob {
+    pub(crate) fn screen(&self) -> Arc<RgbaImage> {
+        let mut slot = self
+            .screen_cache
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(image) = slot.as_ref() {
+            return Arc::clone(image);
+        }
+        let image = crate::color::for_display(&self.proxy, self.profile.as_deref());
+        *slot = Some(Arc::clone(&image));
+        image
+    }
 }
 
 pub struct Template {
@@ -285,6 +304,7 @@ fn decode_blob(path: &Path, bytes: Vec<u8>) -> Result<Blob, String> {
         .and_then(|name| name.to_str())
         .unwrap_or("photo")
         .to_string();
+    let profile = crate::color::embedded_profile(&bytes).map(Arc::from);
     Ok(Blob {
         name,
         ext: image_ext(path),
@@ -292,6 +312,8 @@ fn decode_blob(path: &Path, bytes: Vec<u8>) -> Result<Blob, String> {
         height: raster.height.max(1),
         bytes: Arc::from(bytes),
         proxy: Arc::new(raster.proxy),
+        profile,
+        screen_cache: Arc::new(Mutex::new(None)),
     })
 }
 
@@ -1204,6 +1226,8 @@ squares 99
             width: image.width(),
             height: image.height(),
             proxy: Arc::new(image),
+            profile: None,
+            screen_cache: Arc::new(Mutex::new(None)),
         }
     }
 }

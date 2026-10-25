@@ -426,7 +426,7 @@ impl PudduScrollApp {
         carousel
             .photos
             .iter()
-            .map(|(frame_id, blob)| (*frame_id, Arc::clone(&blob.proxy)))
+            .map(|(frame_id, blob)| (*frame_id, blob.screen()))
             .collect()
     }
 
@@ -713,7 +713,7 @@ impl PudduScrollApp {
                 match result {
                     Ok(blob) => {
                         let name = blob.name.clone();
-                        let proxy = Arc::clone(&blob.proxy);
+                        let proxy = blob.screen();
                         self.create_cover = Some(blob);
                         self.pending_uploads
                             .push_back(PendingUpload::CreateCover { token, proxy });
@@ -742,7 +742,7 @@ impl PudduScrollApp {
             return false;
         }
         let name = blob.name.clone();
-        let proxy = Arc::clone(&blob.proxy);
+        let proxy = blob.screen();
         self.checkpoint();
         self.library.set_photo(carousel_id, frame_id, blob);
         let queued = self.route == Route::Carousel(carousel_id);
@@ -1039,7 +1039,7 @@ impl PudduScrollApp {
         let loaded: Vec<(FrameId, String, Arc<image::RgbaImage>)> = carousel
             .photos
             .iter()
-            .map(|(frame_id, blob)| (*frame_id, blob.name.clone(), Arc::clone(&blob.proxy)))
+            .map(|(frame_id, blob)| (*frame_id, blob.name.clone(), blob.screen()))
             .collect();
         for (frame_id, name, proxy) in loaded {
             if self.loading.contains_key(&(carousel_id, frame_id)) {

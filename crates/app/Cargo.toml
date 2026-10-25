@@ -11,8 +11,13 @@ authors = ["Dario Puddinu"]
 [dependencies]
 eframe = { workspace = true }
 image = { workspace = true, features = ["png", "jpeg", "webp"] }
+moxcms = "0.8.1"
 pudduscroll-core = { workspace = true }
+pudduscroll-display = { path = "../display", version = "0.1.0" }
 rfd = { workspace = true }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+winit = "=0.30.13"
 
 [lints]
 workspace = true
