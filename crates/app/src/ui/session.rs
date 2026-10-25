@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 use eframe::egui;
 use pudduscroll_core::{
     AspectRatio, ExportFormat, ExportSettings, FrameId, FrameImages, Layout, decode_frame_images,
-    export_layout_canvases_with, layout_export_width,
+    existing_export_files, export_layout_canvases_with, layout_export_width,
 };
 
 use crate::library::{
@@ -74,6 +74,8 @@ impl PudduScrollApp {
             painted: 0,
             exporting: false,
             export_open: false,
+            overwrite_dir: None,
+            overwrite_names: Vec::new(),
             editor_zoom: DEFAULT_EDITOR_ZOOM,
             zoom_basis: (4, 5),
             strip_lead: egui::Vec2::ZERO,
@@ -818,6 +820,9 @@ impl PudduScrollApp {
     }
 
     pub(super) fn handle_keys(&mut self, ctx: &egui::Context) {
+        if self.overwrite_dir.is_some() {
+            return;
+        }
         if self.crop_session.is_some() && !self.export_open {
             let (enter, escape) = ctx.input_mut(|input| {
                 (
@@ -1174,6 +1179,7 @@ impl PudduScrollApp {
         self.history.clear();
         self.drag_origin = None;
         self.export_open = false;
+        self.cancel_overwrite();
         self.create_open = false;
         self.show_grid = true;
         self.snap_to_grid = true;
@@ -1195,6 +1201,7 @@ impl PudduScrollApp {
         self.edit_frame = false;
         self.free_rotate = false;
         self.export_open = false;
+        self.cancel_overwrite();
         self.assets.clear();
         self.preview_job = None;
         self.pending_uploads.retain(|pending| {
@@ -1210,6 +1217,33 @@ impl PudduScrollApp {
         let Some(dir) = rfd::FileDialog::new().pick_folder() else {
             return;
         };
+        let name = self.item_name();
+        let Some(count) = self.layout().map(|layout| layout.canvas_count) else {
+            return;
+        };
+        let existing = existing_export_files(&dir, &name, self.format, count);
+        if !existing.is_empty() {
+            self.overwrite_names = existing;
+            self.overwrite_dir = Some(dir);
+            return;
+        }
+        self.launch_export(dir);
+    }
+
+    pub(super) fn confirm_overwrite(&mut self) {
+        let Some(dir) = self.overwrite_dir.take() else {
+            return;
+        };
+        self.overwrite_names.clear();
+        self.launch_export(dir);
+    }
+
+    pub(super) fn cancel_overwrite(&mut self) {
+        self.overwrite_dir = None;
+        self.overwrite_names.clear();
+    }
+
+    fn launch_export(&mut self, dir: PathBuf) {
         let Some(layout) = self.layout().cloned() else {
             return;
         };

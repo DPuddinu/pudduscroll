@@ -69,7 +69,7 @@ impl PudduScrollApp {
     }
 
     pub(super) fn drag_crop(&mut self, ctx: &egui::Context, rect: egui::Rect, editor: egui::Rect) {
-        if self.export_open {
+        if self.export_open || self.overwrite_dir.is_some() {
             return;
         }
         let Some(id) = self.crop_session.as_ref().map(|session| session.id) else {
@@ -366,7 +366,7 @@ impl PudduScrollApp {
     }
 
     pub(super) fn apply_crop_click(&mut self, ctx: &egui::Context, editor_rect: egui::Rect) {
-        if self.export_open || self.crop_session.is_none() {
+        if self.export_open || self.overwrite_dir.is_some() || self.crop_session.is_none() {
             self.crop_press = None;
             return;
         }

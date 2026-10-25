@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::hash::BuildHasher;
 use std::io::Cursor;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -364,6 +364,19 @@ pub fn estimate_layout_bytes_with(
         .sum())
 }
 
+#[must_use]
+pub fn existing_export_files(
+    dir: &Path,
+    name: &str,
+    format: ExportFormat,
+    count: usize,
+) -> Vec<String> {
+    (0..count)
+        .map(|index| canvas_file_name(name, index, format))
+        .filter(|file_name| dir.join(file_name).is_file())
+        .collect()
+}
+
 pub fn write_canvases(
     dir: &Path,
     name: &str,
@@ -371,12 +384,57 @@ pub fn write_canvases(
     canvases: &[EncodedCanvas],
 ) -> Result<(), ExportError> {
     for (index, canvas) in canvases.iter().enumerate() {
-        std::fs::write(
-            dir.join(canvas_file_name(name, index, format)),
+        write_replacing(
+            &dir.join(canvas_file_name(name, index, format)),
             &canvas.bytes,
         )?;
     }
     Ok(())
+}
+
+fn write_replacing(path: &Path, bytes: &[u8]) -> Result<(), ExportError> {
+    if !path.exists() {
+        std::fs::write(path, bytes)?;
+        return Ok(());
+    }
+    let backup = backup_path(path)?;
+    std::fs::rename(path, &backup)?;
+    if let Err(error) = std::fs::write(path, bytes) {
+        if std::fs::rename(&backup, path).is_err() {
+            return Err(ExportError::Io(std::io::Error::other(format!(
+                "{error}; the previous file is at {}",
+                backup.display()
+            ))));
+        }
+        return Err(error.into());
+    }
+    if std::fs::remove_file(&backup).is_err() {
+        let parked = std::env::temp_dir().join(backup.file_name().unwrap_or_default());
+        if std::fs::rename(&backup, &parked).is_ok() {
+            let _ = std::fs::remove_file(&parked);
+        }
+    }
+    Ok(())
+}
+
+fn backup_path(path: &Path) -> Result<PathBuf, ExportError> {
+    let name = path.file_name().map_or_else(
+        || "export".to_string(),
+        |file_name| file_name.to_string_lossy().into_owned(),
+    );
+    let dir = path
+        .parent()
+        .filter(|dir| !dir.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    for index in 0..100 {
+        let candidate = dir.join(format!(".{name}.pudduscroll-old-{index}"));
+        if !candidate.exists() {
+            return Ok(candidate);
+        }
+    }
+    Err(ExportError::Io(std::io::Error::other(
+        "could not move the existing export aside",
+    )))
 }
 
 fn encode_png(img: &RgbaImage) -> Result<Vec<u8>, ExportError> {

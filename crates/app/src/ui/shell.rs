@@ -224,6 +224,7 @@ impl eframe::App for PudduScrollApp {
         }
         self.create_modal(&ctx);
         self.export_modal(&ctx);
+        self.overwrite_modal(&ctx);
         self.write_probe(&ctx);
     }
 

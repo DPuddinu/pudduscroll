@@ -550,6 +550,79 @@ fn export_file_names_use_the_carousel_name() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+#[test]
+fn export_replaces_only_its_own_files() {
+    let dir = std::env::temp_dir().join(format!("pudduscroll-overwrite-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("notes.txt"), b"keep").unwrap();
+    assert_eq!(
+        existing_export_files(&dir, "gemma luce", ExportFormat::Jpeg, 2),
+        Vec::<String>::new()
+    );
+
+    write_canvases(
+        &dir,
+        "gemma luce",
+        ExportFormat::Jpeg,
+        &[
+            EncodedCanvas {
+                file_name: "ignored".to_string(),
+                bytes: b"one".to_vec(),
+            },
+            EncodedCanvas {
+                file_name: "ignored".to_string(),
+                bytes: b"two".to_vec(),
+            },
+        ],
+    )
+    .unwrap();
+    assert_eq!(
+        existing_export_files(&dir, "gemma luce", ExportFormat::Jpeg, 2),
+        vec![
+            "gemma_luce-01.jpg".to_string(),
+            "gemma_luce-02.jpg".to_string()
+        ]
+    );
+    assert_eq!(
+        existing_export_files(&dir, "gemma luce", ExportFormat::Png, 2),
+        Vec::<String>::new()
+    );
+    assert_eq!(
+        existing_export_files(&dir, "other", ExportFormat::Jpeg, 2),
+        Vec::<String>::new()
+    );
+
+    write_canvases(
+        &dir,
+        "gemma luce",
+        ExportFormat::Jpeg,
+        &[EncodedCanvas {
+            file_name: "ignored".to_string(),
+            bytes: b"replaced".to_vec(),
+        }],
+    )
+    .unwrap();
+    assert_eq!(
+        std::fs::read(dir.join("gemma_luce-01.jpg")).unwrap(),
+        b"replaced"
+    );
+    assert_eq!(
+        std::fs::read(dir.join("gemma_luce-02.jpg")).unwrap(),
+        b"two"
+    );
+    assert_eq!(std::fs::read(dir.join("notes.txt")).unwrap(), b"keep");
+    let leftovers = std::fs::read_dir(&dir).unwrap().any(|entry| {
+        entry
+            .unwrap()
+            .file_name()
+            .to_string_lossy()
+            .contains("pudduscroll-old")
+    });
+    assert!(!leftovers);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 fn assert_crop_inside(crop: Crop) {
     assert!(crop.x >= -1e-3, "{crop:?}");
     assert!(crop.y >= -1e-3, "{crop:?}");

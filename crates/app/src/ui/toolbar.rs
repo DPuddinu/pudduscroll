@@ -460,6 +460,58 @@ impl PudduScrollApp {
         }
     }
 
+    pub(super) fn overwrite_modal(&mut self, ctx: &egui::Context) {
+        if self.overwrite_dir.is_none() {
+            return;
+        }
+        let modal_id = egui::Id::unique("overwrite-export");
+        let response = egui::Modal::new(modal_id)
+            .area(egui::Modal::default_area(modal_id).order(egui::Order::Debug))
+            .frame(dialog_frame())
+            .show(ctx, |ui| {
+                ui.set_min_width(420.0);
+                ui.heading("Overwrite files?");
+                ui.add_space(6.0);
+                let line = if self.overwrite_names.len() == 1 {
+                    "This file is already in the folder."
+                } else {
+                    "These files are already in the folder."
+                };
+                ui.label(line);
+                ui.add_space(6.0);
+                let height = (self.overwrite_names.len() as f32 * 22.0).clamp(22.0, 176.0);
+                section_scroll(ui, "overwrite-files")
+                    .max_height(height)
+                    .show(ui, |ui| {
+                        for name in &self.overwrite_names {
+                            ui.label(egui::RichText::new(short_name(name)).color(MUTED));
+                        }
+                    });
+                ui.add_space(12.0);
+                ui.horizontal(|ui| {
+                    let cancel = ui.button("Cancel");
+                    self.remember("cancel-overwrite", cancel.rect);
+                    if cancel.clicked() {
+                        self.cancel_overwrite();
+                    }
+                    let overwrite = ui.add(
+                        egui::Button::new(
+                            egui::RichText::new("Overwrite").color(egui::Color32::BLACK),
+                        )
+                        .fill(ACCENT),
+                    );
+                    self.remember("confirm-overwrite", overwrite.rect);
+                    if overwrite.clicked() {
+                        self.confirm_overwrite();
+                    }
+                });
+            });
+        ctx.move_to_top(egui::LayerId::new(egui::Order::Debug, modal_id));
+        if response.should_close() {
+            self.cancel_overwrite();
+        }
+    }
+
     fn preview_nav(&mut self, ui: &mut egui::Ui) {
         let count = self.metrics().map_or(1, |(_, count)| count);
         ui.horizontal(|ui| {

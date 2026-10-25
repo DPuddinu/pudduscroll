@@ -153,7 +153,11 @@ impl PudduScrollApp {
     }
 
     pub(super) fn apply_space_pan(&mut self, ui: &egui::Ui, bounds: egui::Rect, size: egui::Vec2) {
-        if self.export_open || self.create_open || !Self::space_held(ui.ctx()) {
+        if self.export_open
+            || self.overwrite_dir.is_some()
+            || self.create_open
+            || !Self::space_held(ui.ctx())
+        {
             return;
         }
         let (down, released, delta, press, latest) = ui.input(|input| {
@@ -293,7 +297,7 @@ impl PudduScrollApp {
         if Self::space_held(ctx) {
             return true;
         }
-        if self.crop_session.is_some() || self.export_open {
+        if self.crop_session.is_some() || self.export_open || self.overwrite_dir.is_some() {
             return false;
         }
         if self.drag.is_some() {
@@ -390,7 +394,7 @@ impl PudduScrollApp {
         editor: egui::Rect,
         layer: egui::LayerId,
     ) {
-        if self.export_open {
+        if self.export_open || self.overwrite_dir.is_some() {
             return;
         }
         let (pressed, down, released, press, interact, latest) = ctx.input(|input| {

@@ -10,6 +10,7 @@ mod strip;
 mod toolbar;
 
 use std::collections::{HashMap, VecDeque};
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::mpsc::{Receiver, Sender};
 use std::time::Instant;
@@ -240,6 +241,8 @@ pub struct PudduScrollApp {
     painted: u64,
     exporting: bool,
     export_open: bool,
+    overwrite_dir: Option<PathBuf>,
+    overwrite_names: Vec<String>,
     editor_zoom: f32,
     zoom_basis: (u32, u32),
     strip_lead: egui::Vec2,
