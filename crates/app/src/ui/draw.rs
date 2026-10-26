@@ -11,7 +11,8 @@ use pudduscroll_core::{
 
 use super::{
     ACCENT, BG, CROP_HANDLE_HIT, EDITOR_ZOOM_SPEED, MAX_EDITOR_ZOOM, MAX_GRID_CELLS,
-    MIN_EDITOR_ZOOM, MIN_GRID_CELLS, PANEL, RAIL_SECTION_MIN, RAIL_SECTIONS, RAIL_SPLIT, TEXT,
+    MIN_EDITOR_ZOOM, MIN_GRID_CELLS, OUTSIDE_FRAME_ALPHA, PANEL, RAIL_SECTION_MIN, RAIL_SECTIONS,
+    RAIL_SPLIT, TEXT,
 };
 
 pub(super) fn counted(count: usize, one: &str, many: &str) -> String {
@@ -361,8 +362,20 @@ pub(super) fn paint_rotated_photo(
         return;
     };
     let screen = frame_screen(strip, count, frame);
-    let visible = clip.intersect(photo_screen(strip, count, frame));
-    if visible.is_positive() {
+    let passes = [
+        (
+            clip.intersect(screen),
+            egui::Color32::from_white_alpha(OUTSIDE_FRAME_ALPHA),
+        ),
+        (
+            clip.intersect(photo_screen(strip, count, frame)),
+            egui::Color32::WHITE,
+        ),
+    ];
+    for (visible, tint) in passes {
+        if !visible.is_positive() {
+            continue;
+        }
         let outline = [
             screen.left_top(),
             screen.right_top(),
@@ -383,7 +396,7 @@ pub(super) fn paint_rotated_photo(
                 mesh.vertices.push(egui::epaint::Vertex {
                     pos: stamp.pos,
                     uv: stamp.uv,
-                    color: egui::Color32::WHITE,
+                    color: tint,
                 });
             }
             let last = stamps.len() as u32;
@@ -393,14 +406,6 @@ pub(super) fn paint_rotated_photo(
             painter.add(egui::Shape::mesh(mesh));
         }
     }
-    let canvas_w = strip.width() / count.max(1) as f32;
-    paint_photo_border(
-        painter,
-        screen,
-        clip,
-        frame,
-        egui::vec2(canvas_w, strip.height()),
-    );
 }
 
 fn photo_uv(
@@ -531,6 +536,7 @@ pub(super) fn paint_clipped_image(
     clip: egui::Rect,
     uv: egui::Rect,
     texture: egui::TextureId,
+    tint: egui::Color32,
 ) {
     let visible = screen.intersect(clip);
     if !visible.is_positive() || screen.width() <= 0.0 || screen.height() <= 0.0 {
@@ -548,7 +554,7 @@ pub(super) fn paint_clipped_image(
             uv.min.y + (visible.max.y - screen.min.y) * sy,
         ),
     );
-    painter.image(texture, visible, clipped_uv, egui::Color32::WHITE);
+    painter.image(texture, visible, clipped_uv, tint);
 }
 
 pub(super) fn export_folder(
@@ -698,19 +704,63 @@ pub(super) fn place_strip(
     desired: egui::Pos2,
     size: egui::Vec2,
     view: egui::Rect,
+    pad_min: egui::Vec2,
+    pad_max: egui::Vec2,
 ) -> (egui::Vec2, egui::Vec2) {
     let mut lead = egui::Vec2::ZERO;
     let mut scroll = egui::Vec2::ZERO;
-    let want = [desired.x, desired.y];
+    let want = [desired.x - view.min.x, desired.y - view.min.y];
     let len = [size.x, size.y];
-    let origin = [view.min.x, view.min.y];
     let view_len = [view.width(), view.height()];
+    let before = [pad_min.x, pad_min.y];
+    let after = [pad_max.x, pad_max.y];
     for axis in 0..2 {
         if len[axis] <= view_len[axis] {
             let slack = (view_len[axis] - len[axis]).max(0.0);
-            lead[axis] = (want[axis] - origin[axis]).clamp(0.0, slack);
+            let lead_ideal = want[axis] - before[axis];
+            if (0.0..=slack).contains(&lead_ideal) {
+                lead[axis] = lead_ideal;
+            } else if lead_ideal < 0.0 {
+                let max_scroll = (before[axis] + len[axis] + after[axis] - view_len[axis]).max(0.0);
+                scroll[axis] = (before[axis] - want[axis]).clamp(0.0, max_scroll);
+            } else {
+                lead[axis] = slack;
+                let content = before[axis] + slack + len[axis] + after[axis];
+                let max_scroll = (content - view_len[axis]).max(0.0);
+                scroll[axis] = (before[axis] + slack - want[axis]).clamp(0.0, max_scroll);
+            }
         } else {
-            scroll[axis] = (origin[axis] - want[axis]).clamp(0.0, len[axis] - view_len[axis]);
+            let max_scroll = (before[axis] + len[axis] + after[axis] - view_len[axis]).max(0.0);
+            scroll[axis] = (before[axis] - want[axis]).clamp(0.0, max_scroll);
+        }
+    }
+    (lead, scroll)
+}
+
+pub(super) fn center_on_strip(
+    view: egui::Vec2,
+    size: egui::Vec2,
+    pad_min: egui::Vec2,
+    pad_max: egui::Vec2,
+) -> (egui::Vec2, egui::Vec2) {
+    let mut lead = egui::Vec2::ZERO;
+    let mut scroll = egui::Vec2::ZERO;
+    let strip = [size.x, size.y];
+    let before = [pad_min.x, pad_min.y];
+    let after = [pad_max.x, pad_max.y];
+    let view_len = [view.x, view.y];
+    for axis in 0..2 {
+        let content = before[axis] + strip[axis] + after[axis];
+        let max_scroll = (content - view_len[axis]).max(0.0);
+        if strip[axis] <= view_len[axis] {
+            let ideal = (view_len[axis] - strip[axis]) * 0.5;
+            if before[axis] <= ideal {
+                lead[axis] = ideal - before[axis];
+            } else {
+                scroll[axis] = (before[axis] - ideal).clamp(0.0, max_scroll);
+            }
+        } else {
+            scroll[axis] = before[axis].clamp(0.0, max_scroll);
         }
     }
     (lead, scroll)

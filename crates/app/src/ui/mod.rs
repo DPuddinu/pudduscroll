@@ -34,6 +34,7 @@ const ACCENT: egui::Color32 = egui::Color32::from_rgb(232, 160, 96);
 const TEXT: egui::Color32 = egui::Color32::from_rgb(240, 236, 230);
 const MUTED: egui::Color32 = egui::Color32::from_rgb(164, 158, 148);
 const SELECT_BG: egui::Color32 = egui::Color32::from_rgb(48, 38, 30);
+const OUTSIDE_FRAME_ALPHA: u8 = 102;
 const DEFAULT_EDITOR_ZOOM: f32 = 0.7;
 const MIN_EDITOR_ZOOM: f32 = 0.25;
 const MAX_EDITOR_ZOOM: f32 = 4.0;
@@ -246,6 +247,8 @@ pub struct PudduScrollApp {
     editor_zoom: f32,
     zoom_basis: (u32, u32),
     strip_lead: egui::Vec2,
+    strip_pad: egui::Vec2,
+    reveal_canvas: Option<usize>,
     pending_scroll: Option<egui::Vec2>,
     strip_wheel_pan: bool,
     center_strip: bool,

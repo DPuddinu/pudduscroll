@@ -225,7 +225,7 @@ impl PudduScrollApp {
         }
         let crop_rect = crop_to_screen(image, session.crop);
         let full_uv = egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0));
-        paint_clipped_image(painter, image, clip, full_uv, texture);
+        paint_clipped_image(painter, image, clip, full_uv, texture, egui::Color32::WHITE);
         paint_crop_veil(painter, visible, crop_rect);
         let inside_uv = egui::Rect::from_min_max(
             egui::pos2(session.crop.x, session.crop.y),
@@ -234,7 +234,14 @@ impl PudduScrollApp {
                 session.crop.y + session.crop.h,
             ),
         );
-        paint_clipped_image(painter, crop_rect, clip, inside_uv, texture);
+        paint_clipped_image(
+            painter,
+            crop_rect,
+            clip,
+            inside_uv,
+            texture,
+            egui::Color32::WHITE,
+        );
         paint_frame(
             painter,
             image,

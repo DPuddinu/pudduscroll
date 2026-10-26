@@ -1443,6 +1443,60 @@ fn zoom_in_shows_the_middle_of_the_photo_and_zoom_out_restores_it() {
     assert!(pixel(&restored, 20, 20)[0] > 180);
 }
 
+#[test]
+fn add_left_shifts_frames_and_stops_at_the_limit() {
+    let mut layout = Layout::new(AspectRatio::SQUARE);
+    let id = layout.add_frame();
+    assert!((layout.frame(id).unwrap().x).abs() < 1e-6);
+    assert!(layout.add_canvas_left());
+    assert_eq!(layout.canvas_count, 2);
+    assert!((layout.frame(id).unwrap().x - 1.0).abs() < 1e-6);
+    layout.set_canvas_count(MAX_CANVASES);
+    let before = layout.frame(id).unwrap().x;
+    assert!(!layout.add_canvas_left());
+    assert_eq!(layout.canvas_count, MAX_CANVASES);
+    assert!((layout.frame(id).unwrap().x - before).abs() < 1e-6);
+}
+
+#[test]
+fn removing_a_canvas_deletes_frames_that_overlap_it() {
+    let mut layout = Layout::new(AspectRatio::SQUARE);
+    assert!(layout.add_canvas());
+    let keep = layout.add_frame();
+    let drop = layout.add_frame();
+    layout.set_frame_rect(keep, 0.1, 0.1, 0.5, 0.5);
+    layout.set_frame_rect(drop, 1.2, 0.2, 0.6, 0.4);
+    let hanging = layout.add_frame();
+    layout.set_frame_rect(hanging, 2.2, 0.0, 0.5, 0.5);
+    let above = layout.add_frame();
+    layout.set_frame_rect(above, 1.1, -0.8, 0.4, 0.5);
+    let spanning = layout.add_frame();
+    layout.set_frame_rect(spanning, 0.6, 0.1, 0.8, 0.5);
+    let removed = layout.remove_canvas().unwrap();
+    assert_eq!(layout.canvas_count, 1);
+    assert!(layout.frame(keep).is_some());
+    assert!(layout.frame(drop).is_none());
+    assert!(layout.frame(hanging).is_some());
+    assert!(layout.frame(above).is_some());
+    assert!(layout.frame(spanning).is_none());
+    assert!(removed.contains(&drop));
+    assert!(removed.contains(&spanning));
+    assert!(!removed.contains(&keep));
+    assert!(layout.remove_canvas().is_none());
+}
+
+#[test]
+fn move_frame_shifts_by_one_canvas_and_can_leave_the_strip() {
+    let mut layout = Layout::new(AspectRatio::SQUARE);
+    let id = layout.add_frame();
+    assert!(layout.move_frame(id, 1.0));
+    assert!((layout.frame(id).unwrap().x - 1.0).abs() < 1e-6);
+    assert!(layout.move_frame(id, -1.0));
+    assert!(layout.move_frame(id, -1.0));
+    assert!((layout.frame(id).unwrap().x + 1.0).abs() < 1e-6);
+    assert!(!layout.move_frame(FrameId(99), 1.0));
+}
+
 fn png_bytes(image: &RgbaImage) -> Vec<u8> {
     let mut bytes = Vec::new();
     image::DynamicImage::ImageRgba8(image.clone())

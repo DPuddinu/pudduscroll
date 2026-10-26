@@ -76,33 +76,49 @@ impl PudduScrollApp {
                         .size(13.0),
                 );
             }
-            ui.horizontal(|ui| {
+            ui.horizontal_wrapped(|ui| {
+                let can_add = self
+                    .layout()
+                    .is_some_and(|layout| layout.canvas_count < MAX_CANVASES);
+                let add_left = ui.add_enabled(can_add, egui::Button::new("Add left"));
+                self.remember("add-canvas-left", add_left.rect);
+                if add_left.clicked() && can_add {
+                    self.checkpoint();
+                    if self
+                        .layout_mut()
+                        .is_some_and(pudduscroll_core::Layout::add_canvas_left)
+                    {
+                        self.reveal_canvas = Some(0);
+                        self.note_geometry();
+                    }
+                }
                 let can_remove = self.layout().is_some_and(|layout| layout.canvas_count > 1);
                 let remove = ui.add_enabled(can_remove, egui::Button::new("Remove"));
                 self.remember("remove-canvas", remove.rect);
                 if remove.clicked() && can_remove {
                     self.checkpoint();
-                    if self
+                    if let Some(removed) = self
                         .layout_mut()
-                        .is_some_and(pudduscroll_core::Layout::remove_canvas)
+                        .and_then(pudduscroll_core::Layout::remove_canvas)
                     {
+                        for id in removed {
+                            self.release_frame(id);
+                        }
                         self.note_geometry();
                     }
                 }
                 if let Some(layout) = self.layout() {
                     ui.monospace(format!("{:02} / {MAX_CANVASES:02}", layout.canvas_count));
                 }
-                let can_add = self
-                    .layout()
-                    .is_some_and(|layout| layout.canvas_count < MAX_CANVASES);
-                let add = ui.add_enabled(can_add, egui::Button::new("Add"));
+                let add = ui.add_enabled(can_add, egui::Button::new("Add right"));
                 self.remember("add-canvas", add.rect);
                 if add.clicked() && can_add {
                     self.checkpoint();
-                    if self
+                    let added = self
                         .layout_mut()
-                        .is_some_and(pudduscroll_core::Layout::add_canvas)
-                    {
+                        .is_some_and(pudduscroll_core::Layout::add_canvas);
+                    if added {
+                        self.reveal_canvas = self.layout().map(|layout| layout.canvas_count - 1);
                         self.note_geometry();
                     }
                 }
@@ -161,6 +177,36 @@ impl PudduScrollApp {
                     && let Some(id) = self.selected
                 {
                     self.remove_frame(id);
+                }
+                let move_left =
+                    ui.add_enabled(self.selected.is_some(), egui::Button::new("Move left"));
+                self.remember("move-frame-left", move_left.rect);
+                if move_left.clicked()
+                    && let Some(id) = self.selected
+                    && self.layout().is_some()
+                {
+                    self.checkpoint();
+                    if self
+                        .layout_mut()
+                        .is_some_and(|layout| layout.move_frame(id, -1.0))
+                    {
+                        self.note_geometry();
+                    }
+                }
+                let move_right =
+                    ui.add_enabled(self.selected.is_some(), egui::Button::new("Move right"));
+                self.remember("move-frame-right", move_right.rect);
+                if move_right.clicked()
+                    && let Some(id) = self.selected
+                    && self.layout().is_some()
+                {
+                    self.checkpoint();
+                    if self
+                        .layout_mut()
+                        .is_some_and(|layout| layout.move_frame(id, 1.0))
+                    {
+                        self.note_geometry();
+                    }
                 }
             });
             if self.edit_frame && self.selected.is_some() {

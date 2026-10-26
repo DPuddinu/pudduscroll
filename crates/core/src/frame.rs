@@ -87,11 +87,38 @@ impl Layout {
         true
     }
 
-    pub fn remove_canvas(&mut self) -> bool {
-        if self.canvas_count <= 1 {
+    pub fn add_canvas_left(&mut self) -> bool {
+        if self.canvas_count >= MAX_CANVASES {
             return false;
         }
+        self.canvas_count += 1;
+        for frame in &mut self.frames {
+            frame.x += 1.0;
+        }
+        true
+    }
+
+    pub fn remove_canvas(&mut self) -> Option<Vec<FrameId>> {
+        if self.canvas_count <= 1 {
+            return None;
+        }
+        let index = self.canvas_count - 1;
         self.canvas_count -= 1;
+        let removed = self
+            .frames
+            .iter()
+            .filter(|frame| frame_on_canvas(frame, index))
+            .map(|frame| frame.id)
+            .collect();
+        self.frames.retain(|frame| !frame_on_canvas(frame, index));
+        Some(removed)
+    }
+
+    pub fn move_frame(&mut self, id: FrameId, steps: f32) -> bool {
+        let Some(frame) = self.frame_mut(id) else {
+            return false;
+        };
+        frame.x += steps;
         true
     }
 
@@ -429,6 +456,16 @@ pub fn cover_fit(frame: &Frame, canvas_ratio: f32) -> Option<CoverFit> {
         w: size.image_w,
         h: size.image_h,
     })
+}
+
+fn frame_on_canvas(frame: &Frame, index: usize) -> bool {
+    let x0 = index as f32;
+    let x1 = x0 + 1.0;
+    let ix0 = frame.x.max(x0);
+    let iy0 = frame.y.max(0.0);
+    let ix1 = (frame.x + frame.w).min(x1);
+    let iy1 = (frame.y + frame.h).min(1.0);
+    ix1 - ix0 > 1.0e-5 && iy1 - iy0 > 1.0e-5
 }
 
 #[must_use]

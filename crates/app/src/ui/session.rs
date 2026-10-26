@@ -79,6 +79,8 @@ impl PudduScrollApp {
             editor_zoom: DEFAULT_EDITOR_ZOOM,
             zoom_basis: (4, 5),
             strip_lead: egui::Vec2::ZERO,
+            strip_pad: egui::Vec2::ZERO,
+            reveal_canvas: None,
             pending_scroll: None,
             strip_wheel_pan: false,
             center_strip: true,
@@ -1130,18 +1132,15 @@ impl PudduScrollApp {
         self.note_geometry();
     }
 
-    pub(super) fn remove_frame(&mut self, id: FrameId) {
-        self.checkpoint();
+    pub(super) fn release_frame(&mut self, id: FrameId) {
         self.forget_load(id);
         if let Route::Carousel(carousel_id) = self.route {
             self.library.clear_photo(carousel_id, id);
         }
-        if let Some(layout) = self.layout_mut() {
-            layout.remove_frame(id);
-        }
         self.assets.remove(&id);
         if self.selected == Some(id) {
             self.selected = None;
+            self.edit_frame = false;
         }
         if self
             .crop_session
@@ -1149,6 +1148,17 @@ impl PudduScrollApp {
             .is_some_and(|session| session.id == id)
         {
             self.crop_session = None;
+        }
+        if self.drag.is_some_and(|drag| drag.id() == id) {
+            self.drag = None;
+        }
+    }
+
+    pub(super) fn remove_frame(&mut self, id: FrameId) {
+        self.checkpoint();
+        self.release_frame(id);
+        if let Some(layout) = self.layout_mut() {
+            layout.remove_frame(id);
         }
         self.drag = None;
         self.edit_frame = false;
@@ -1171,6 +1181,8 @@ impl PudduScrollApp {
         self.preview_job = None;
         self.editor_zoom = DEFAULT_EDITOR_ZOOM;
         self.strip_lead = egui::Vec2::ZERO;
+        self.strip_pad = egui::Vec2::ZERO;
+        self.reveal_canvas = None;
         self.pending_scroll = Some(egui::Vec2::ZERO);
         self.strip_wheel_pan = false;
         self.center_strip = true;
