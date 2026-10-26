@@ -178,32 +178,38 @@ impl PudduScrollApp {
                 {
                     self.remove_frame(id);
                 }
-                let move_left =
-                    ui.add_enabled(self.selected.is_some(), egui::Button::new("Move left"));
+                let can_move_left = self.selected.is_some_and(|id| {
+                    self.layout()
+                        .is_some_and(|layout| layout.adjacent_frame(id, false).is_some())
+                });
+                let move_left = ui.add_enabled(can_move_left, egui::Button::new("Move left"));
                 self.remember("move-frame-left", move_left.rect);
                 if move_left.clicked()
+                    && can_move_left
                     && let Some(id) = self.selected
-                    && self.layout().is_some()
                 {
                     self.checkpoint();
                     if self
                         .layout_mut()
-                        .is_some_and(|layout| layout.move_frame(id, -1.0))
+                        .is_some_and(|layout| layout.move_frame(id, false))
                     {
                         self.note_geometry();
                     }
                 }
-                let move_right =
-                    ui.add_enabled(self.selected.is_some(), egui::Button::new("Move right"));
+                let can_move_right = self.selected.is_some_and(|id| {
+                    self.layout()
+                        .is_some_and(|layout| layout.adjacent_frame(id, true).is_some())
+                });
+                let move_right = ui.add_enabled(can_move_right, egui::Button::new("Move right"));
                 self.remember("move-frame-right", move_right.rect);
                 if move_right.clicked()
+                    && can_move_right
                     && let Some(id) = self.selected
-                    && self.layout().is_some()
                 {
                     self.checkpoint();
                     if self
                         .layout_mut()
-                        .is_some_and(|layout| layout.move_frame(id, 1.0))
+                        .is_some_and(|layout| layout.move_frame(id, true))
                     {
                         self.note_geometry();
                     }

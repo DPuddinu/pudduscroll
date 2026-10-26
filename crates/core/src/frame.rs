@@ -114,11 +114,54 @@ impl Layout {
         Some(removed)
     }
 
-    pub fn move_frame(&mut self, id: FrameId, steps: f32) -> bool {
-        let Some(frame) = self.frame_mut(id) else {
+    #[must_use]
+    pub fn adjacent_frame(&self, id: FrameId, to_the_right: bool) -> Option<FrameId> {
+        let x = self.frame(id)?.x;
+        let neighbor = if to_the_right {
+            self.frames
+                .iter()
+                .filter(|other| other.id != id && other.x > x)
+                .min_by(|a, b| {
+                    a.x.total_cmp(&b.x)
+                        .then(b.z.cmp(&a.z))
+                        .then(a.id.0.cmp(&b.id.0))
+                })
+        } else {
+            self.frames
+                .iter()
+                .filter(|other| other.id != id && other.x < x)
+                .max_by(|a, b| {
+                    a.x.total_cmp(&b.x)
+                        .then(a.z.cmp(&b.z))
+                        .then(b.id.0.cmp(&a.id.0))
+                })
+        }?;
+        Some(neighbor.id)
+    }
+
+    pub fn move_frame(&mut self, id: FrameId, to_the_right: bool) -> bool {
+        let Some(neighbor_id) = self.adjacent_frame(id, to_the_right) else {
             return false;
         };
-        frame.x += steps;
+        let anchor = if to_the_right {
+            self.frame(id).map(|frame| frame.x)
+        } else {
+            self.frame(neighbor_id).map(|frame| frame.x)
+        };
+        let Some(anchor) = anchor else {
+            return false;
+        };
+        let new_left = if to_the_right { neighbor_id } else { id };
+        let new_right = if to_the_right { id } else { neighbor_id };
+        let Some(width) = self.frame(new_left).map(|frame| frame.w) else {
+            return false;
+        };
+        if let Some(frame) = self.frame_mut(new_left) {
+            frame.x = anchor;
+        }
+        if let Some(frame) = self.frame_mut(new_right) {
+            frame.x = anchor + width;
+        }
         true
     }
 

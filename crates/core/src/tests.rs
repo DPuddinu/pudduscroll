@@ -1486,15 +1486,43 @@ fn removing_a_canvas_deletes_frames_that_overlap_it() {
 }
 
 #[test]
-fn move_frame_shifts_by_one_canvas_and_can_leave_the_strip() {
+fn move_frame_swaps_order_with_the_neighbor_and_keeps_each_width() {
     let mut layout = Layout::new(AspectRatio::SQUARE);
-    let id = layout.add_frame();
-    assert!(layout.move_frame(id, 1.0));
-    assert!((layout.frame(id).unwrap().x - 1.0).abs() < 1e-6);
-    assert!(layout.move_frame(id, -1.0));
-    assert!(layout.move_frame(id, -1.0));
-    assert!((layout.frame(id).unwrap().x + 1.0).abs() < 1e-6);
-    assert!(!layout.move_frame(FrameId(99), 1.0));
+    let a = layout.add_frame();
+    let b = layout.add_frame();
+    layout.set_frame_rect(a, 0.0, 0.2, 1.0, 0.5);
+    layout.set_frame_rect(b, 1.0, 0.4, 2.0, 0.8);
+    assert!(layout.adjacent_frame(a, false).is_none());
+    assert!(!layout.move_frame(a, false));
+    assert!(layout.move_frame(b, false));
+    let moved = layout.frame(b).unwrap();
+    let other = layout.frame(a).unwrap();
+    assert!((moved.x - 0.0).abs() < 1e-6);
+    assert!((moved.w - 2.0).abs() < 1e-6);
+    assert!((moved.y - 0.4).abs() < 1e-6);
+    assert!((other.x - 2.0).abs() < 1e-6);
+    assert!((other.w - 1.0).abs() < 1e-6);
+    assert!((other.y - 0.2).abs() < 1e-6);
+
+    layout.set_frame_rect(a, 0.0, 0.2, 1.0, 0.5);
+    layout.set_frame_rect(b, 1.0, 0.4, 2.0, 0.8);
+    assert!(layout.move_frame(a, true));
+    assert!((layout.frame(b).unwrap().x - 0.0).abs() < 1e-6);
+    assert!((layout.frame(b).unwrap().w - 2.0).abs() < 1e-6);
+    assert!((layout.frame(a).unwrap().x - 2.0).abs() < 1e-6);
+    assert!((layout.frame(a).unwrap().w - 1.0).abs() < 1e-6);
+
+    let c = layout.add_frame();
+    layout.set_frame_rect(a, 0.0, 0.0, 1.0, 1.0);
+    layout.set_frame_rect(b, 1.0, 0.0, 2.0, 1.0);
+    layout.set_frame_rect(c, 4.0, 0.3, 1.0, 0.4);
+    assert!(layout.move_frame(b, false));
+    assert!((layout.frame(b).unwrap().x - 0.0).abs() < 1e-6);
+    assert!((layout.frame(a).unwrap().x - 2.0).abs() < 1e-6);
+    assert!((layout.frame(c).unwrap().x - 4.0).abs() < 1e-6);
+    assert!((layout.frame(c).unwrap().y - 0.3).abs() < 1e-6);
+    assert!(!layout.move_frame(b, false));
+    assert!(!layout.move_frame(FrameId(99), true));
 }
 
 fn png_bytes(image: &RgbaImage) -> Vec<u8> {
