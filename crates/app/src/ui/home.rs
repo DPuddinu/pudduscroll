@@ -5,7 +5,8 @@ use pudduscroll_core::{AspectRatio, CANVAS_PRESETS, FrameImages};
 
 use super::card::{self, CARD_INNER_W, Card};
 use super::draw::{
-    carousel_preview_image, counted, dialog_frame, fitted_rect, pick_image_path, short_name,
+    carousel_preview_image, counted, dialog_frame, fitted_rect, pick_image_path, section_scroll,
+    short_name,
 };
 use super::{
     ACCENT, BG, CANVAS_BG, DecodeTarget, HomeAction, IncomingPhoto, MUTED, PudduScrollApp, Route,
@@ -25,60 +26,62 @@ impl PudduScrollApp {
                 .max_rect(inner)
                 .layout(egui::Layout::top_down(egui::Align::Min)),
         );
+        if !self.status.is_empty() {
+            home.label(egui::RichText::new(&self.status).color(MUTED));
+            home.add_space(8.0);
+        }
+        let mut action = None;
         home.horizontal(|ui| {
-            ui.label(egui::RichText::new("PudduScroll").strong().size(22.0));
-            if !self.status.is_empty() {
-                ui.label(egui::RichText::new(&self.status).color(MUTED));
+            ui.heading("Templates");
+            let response = ui.button("New template");
+            self.remember("new-template", response.rect);
+            if response.clicked() {
+                self.create_name = "Template".to_string();
+                self.create_ratio = AspectRatio::FOUR_FIVE;
+                self.create_cover = None;
+                self.create_cover_texture = None;
+                self.cover_load = None;
+                self.create_open = true;
             }
         });
         home.add_space(8.0);
-        let mut action = None;
-        egui::ScrollArea::vertical()
-            .id_salt("home-scroll")
-            .auto_shrink([false, false])
-            .show(&mut home, |ui| {
-                ui.horizontal(|ui| {
-                    ui.heading("Templates");
-                    let response = ui.button("New template");
-                    self.remember("new-template", response.rect);
-                    if response.clicked() {
-                        self.create_name = "Template".to_string();
-                        self.create_ratio = AspectRatio::FOUR_FIVE;
-                        self.create_cover = None;
-                        self.create_cover_texture = None;
-                        self.cover_load = None;
-                        self.create_open = true;
-                    }
-                });
-                ui.add_space(8.0);
-                if self.library.templates.is_empty() {
-                    ui.label(egui::RichText::new("No templates yet.").color(MUTED));
+        if self.library.templates.is_empty() {
+            home.label(egui::RichText::new("No templates yet.").color(MUTED));
+        }
+        let template_count = self.library.templates.len();
+        home.horizontal_wrapped(|ui| {
+            ui.spacing_mut().item_spacing = egui::vec2(12.0, 12.0);
+            for index in 0..template_count {
+                if let Some(next) = self.template_card(ui, index) {
+                    action = Some(next);
                 }
-                let template_count = self.library.templates.len();
-                ui.horizontal_wrapped(|ui| {
-                    ui.spacing_mut().item_spacing = egui::vec2(12.0, 12.0);
-                    for index in 0..template_count {
-                        if let Some(next) = self.template_card(ui, index) {
-                            action = Some(next);
-                        }
+            }
+        });
+        home.add_space(18.0);
+        home.horizontal(|ui| {
+            ui.heading("Carousels");
+            let import = ui.add_enabled(!self.importing, egui::Button::new("Import"));
+            self.remember("import-carousel", import.rect);
+            if import.clicked() {
+                self.import_package();
+            }
+        });
+        home.add_space(8.0);
+        let carousel_count = self.library.carousels.len();
+        section_scroll(&mut home, "carousels").show(&mut home, |ui| {
+            if carousel_count == 0 {
+                ui.label(egui::RichText::new("No carousels yet.").color(MUTED));
+                return;
+            }
+            ui.horizontal_wrapped(|ui| {
+                ui.spacing_mut().item_spacing = egui::vec2(12.0, 12.0);
+                for index in 0..carousel_count {
+                    if let Some(next) = self.carousel_card(ui, index) {
+                        action = Some(next);
                     }
-                });
-                ui.add_space(18.0);
-                ui.heading("Carousels");
-                ui.add_space(8.0);
-                if self.library.carousels.is_empty() {
-                    ui.label(egui::RichText::new("No carousels yet.").color(MUTED));
                 }
-                let carousel_count = self.library.carousels.len();
-                ui.horizontal_wrapped(|ui| {
-                    ui.spacing_mut().item_spacing = egui::vec2(12.0, 12.0);
-                    for index in 0..carousel_count {
-                        if let Some(next) = self.carousel_card(ui, index) {
-                            action = Some(next);
-                        }
-                    }
-                });
             });
+        });
         if self.name_dirty {
             self.name_dirty = false;
             self.persist();
@@ -267,11 +270,11 @@ impl PudduScrollApp {
     pub(super) fn create_template(&mut self, ctx: &egui::Context) {
         let name = self.create_name.trim().to_string();
         if name.is_empty() {
-            self.status = "Name the template".to_string();
+            self.toast("Name the template");
             return;
         }
         let Some(cover) = self.create_cover.take() else {
-            self.status = "Choose a cover".to_string();
+            self.toast("Choose a cover");
             return;
         };
         let ratio = self.create_ratio;

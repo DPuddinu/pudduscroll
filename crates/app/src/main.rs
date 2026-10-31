@@ -2,7 +2,9 @@
 
 mod color;
 mod library;
+mod settings;
 mod ui;
+mod window_menu;
 
 use eframe::egui;
 use ui::PudduScrollApp;

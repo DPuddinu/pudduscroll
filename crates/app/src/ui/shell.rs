@@ -1,4 +1,5 @@
 use std::fmt::Write;
+use std::time::Duration;
 
 use eframe::egui;
 use pudduscroll_core::cover_contains_frame;
@@ -59,6 +60,7 @@ impl PudduScrollApp {
             "library {}",
             crate::library::library_directory().display()
         );
+        let _ = writeln!(text, "settings {}", u8::from(self.settings_open));
         match self.route {
             Route::Home => {
                 let _ = writeln!(text, "screen home");
@@ -90,6 +92,9 @@ impl PudduScrollApp {
         let _ = writeln!(text, "gesture {}", self.gesture);
         let _ = writeln!(text, "painted {}", self.painted);
         let _ = writeln!(text, "status {}", self.status.replace(['\n', '\r'], " "));
+        for message in self.toast_messages() {
+            let _ = writeln!(text, "toast {}", message.replace(['\n', '\r'], " "));
+        }
         let _ = writeln!(
             text,
             "cover_loading {}",
@@ -192,9 +197,11 @@ impl PudduScrollApp {
 impl eframe::App for PudduScrollApp {
     fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
         crate::color::note_display(frame);
+        crate::window_menu::install(frame);
         self.painted = self.painted.wrapping_add(1);
         let ctx = ui.ctx().clone();
         self.poll_jobs(&ctx);
+        self.refresh_paste_offer(&ctx);
         let full = ui.max_rect();
         if !self.library_ready {
             ui.painter().rect_filled(full, 0.0, BG);
@@ -205,27 +212,39 @@ impl eframe::App for PudduScrollApp {
                 egui::FontId::proportional(18.0),
                 TEXT,
             );
+            self.show_toasts(&ctx);
             self.write_probe(&ctx);
             return;
         }
+        self.apply_system_menu(&ctx);
         self.handle_keys(&ctx);
         self.widgets.clear();
         if full.width() < 900.0 || full.height() < 640.0 {
+            self.show_toasts(&ctx);
             self.write_probe(&ctx);
             return;
         }
-        let action = if self.route == Route::Home {
-            self.home_screen(ui, full)
+        if self.settings_open {
+            self.settings_screen(ui, full);
         } else {
-            self.editor_screen(ui, full);
-            None
-        };
-        if let Some(action) = action {
-            self.apply_home(&action, &ctx);
+            let action = if self.route == Route::Home {
+                self.home_screen(ui, full)
+            } else {
+                self.editor_screen(ui, full);
+                None
+            };
+            if let Some(action) = action {
+                self.apply_home(&action, &ctx);
+            }
+            self.create_modal(&ctx);
+            self.link_modal(&ctx);
+            self.export_modal(&ctx);
+            self.overwrite_modal(&ctx);
         }
-        self.create_modal(&ctx);
-        self.export_modal(&ctx);
-        self.overwrite_modal(&ctx);
+        if self.sharing || self.importing {
+            ctx.request_repaint_after(Duration::from_millis(100));
+        }
+        self.show_toasts(&ctx);
         self.write_probe(&ctx);
     }
 

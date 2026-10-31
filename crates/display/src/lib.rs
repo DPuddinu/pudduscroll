@@ -1,5 +1,9 @@
+mod menu;
+
 #[cfg(windows)]
 use std::path::{Path, PathBuf};
+
+pub use menu::{WindowMenuCommand, install_window_menu, take_window_menu};
 
 pub fn profile_bytes(device: Option<&str>) -> Option<Vec<u8>> {
     let bytes = platform_profile(device)?;

@@ -1,6 +1,6 @@
 [package]
 name = "pudduscroll"
-version = "0.1.0"
+version = "0.2.0"
 description = "PudduScroll desktop Instagram carousel composer"
 edition.workspace = true
 license.workspace = true
@@ -9,15 +9,22 @@ rust-version.workspace = true
 authors = ["Dario Puddinu"]
 
 [dependencies]
+arboard = "3.7"
 eframe = { workspace = true }
 image = { workspace = true, features = ["png", "jpeg", "webp"] }
 moxcms = "0.8.1"
 pudduscroll-core = { workspace = true }
-pudduscroll-display = { path = "../display", version = "0.1.0" }
+pudduscroll-display = { path = "../display", version = "0.2.0" }
 rfd = { workspace = true }
+ureq = { version = "2", default-features = false, features = ["rustls"] }
+zip = { version = "2", default-features = false, features = ["deflate"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 winit = "=0.30.13"
+
+[target.'cfg(windows)'.dependencies]
+clipboard-win = "5"
+raw-window-handle = "0.6"
 
 [lints]
 workspace = true

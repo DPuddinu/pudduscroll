@@ -1,8 +1,5 @@
 use eframe::egui;
-use pudduscroll_core::{
-    CANVAS_PRESETS, ExportFormat, MAX_CANVASES, Turn, canvas_file_name, layout_export_width,
-    quality_description,
-};
+use pudduscroll_core::{CANVAS_PRESETS, MAX_CANVASES, Turn, canvas_file_name, layout_export_width};
 
 use super::draw::{Glyph, dialog_frame, fitted_rect, icon_button, section_scroll, short_name};
 use super::history::HistoryKind;
@@ -34,14 +31,12 @@ impl PudduScrollApp {
                     self.export_open = true;
                     self.schedule_estimate();
                 }
-                if !self.status.is_empty() {
-                    let text = egui::RichText::new(&self.status);
-                    let text = if self.exporting {
-                        text.strong().color(TEXT)
-                    } else {
-                        text.color(MUTED)
-                    };
-                    ui.label(text);
+                if matches!(self.route, Route::Carousel(_)) {
+                    let share = ui.add_enabled(!self.sharing, egui::Button::new("Share"));
+                    self.remember("share", share.rect);
+                    if share.clicked() {
+                        self.share_carousel();
+                    }
                 }
             });
         });
@@ -88,23 +83,26 @@ impl PudduScrollApp {
                         .layout_mut()
                         .is_some_and(pudduscroll_core::Layout::add_canvas_left)
                     {
+                        for index in &mut self.selected_canvases {
+                            *index = index.saturating_add(1);
+                        }
                         self.reveal_canvas = Some(0);
                         self.note_geometry();
                     }
                 }
-                let can_remove = self.layout().is_some_and(|layout| layout.canvas_count > 1);
-                let remove = ui.add_enabled(can_remove, egui::Button::new("Remove"));
-                self.remember("remove-canvas", remove.rect);
-                if remove.clicked() && can_remove {
-                    self.checkpoint();
-                    if let Some(removed) = self
-                        .layout_mut()
-                        .and_then(pudduscroll_core::Layout::remove_canvas)
-                    {
-                        for id in removed {
-                            self.release_frame(id);
-                        }
-                        self.note_geometry();
+                let chosen = self.selected_canvases.clone();
+                let can_remove = self.layout().is_some_and(|layout| {
+                    let count = chosen
+                        .iter()
+                        .filter(|index| **index < layout.canvas_count)
+                        .count();
+                    count > 0 && count < layout.canvas_count
+                });
+                if can_remove {
+                    let remove = ui.button("Remove");
+                    self.remember("remove-canvas", remove.rect);
+                    if remove.clicked() {
+                        self.remove_selected_canvases(&chosen);
                     }
                 }
                 if let Some(layout) = self.layout() {
@@ -112,15 +110,8 @@ impl PudduScrollApp {
                 }
                 let add = ui.add_enabled(can_add, egui::Button::new("Add right"));
                 self.remember("add-canvas", add.rect);
-                if add.clicked() && can_add {
-                    self.checkpoint();
-                    let added = self
-                        .layout_mut()
-                        .is_some_and(pudduscroll_core::Layout::add_canvas);
-                    if added {
-                        self.reveal_canvas = self.layout().map(|layout| layout.canvas_count - 1);
-                        self.note_geometry();
-                    }
+                if add.clicked() {
+                    self.add_canvas_command();
                 }
             });
         });
@@ -153,14 +144,8 @@ impl PudduScrollApp {
                 ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Extend);
                 let add_frame = ui.button("Add frame");
                 self.remember("add-frame", add_frame.rect);
-                if add_frame.clicked() && self.layout().is_some() {
-                    self.checkpoint();
-                    let id = self.layout_mut().map(pudduscroll_core::Layout::add_frame);
-                    if let Some(id) = id {
-                        self.selected = Some(id);
-                        self.edit_frame = true;
-                        self.note_geometry();
-                    }
+                if add_frame.clicked() {
+                    self.add_frame_command();
                 }
                 let edit = ui.add_enabled(
                     self.selected.is_some(),
@@ -339,7 +324,7 @@ impl PudduScrollApp {
             } else {
                 egui::Popup::close_id(ui.ctx(), egui::Id::unique("pudduscroll-border-color"));
             }
-            ui.horizontal(|ui| {
+            ui.horizontal_wrapped(|ui| {
                 let ccw = icon_square(ui, "rotate-ccw", photo_ready, false, Glyph::RotateCcw)
                     .on_hover_text("CCW 90");
                 self.remember("rotate-ccw", ccw.rect);
@@ -399,8 +384,84 @@ impl PudduScrollApp {
                 {
                     self.remove_photo(id);
                 }
+                if let Route::Carousel(carousel_id) = self.route {
+                    let busy = self
+                        .selected
+                        .is_some_and(|id| self.loading.contains_key(&(carousel_id, id)));
+                    let from_link = ui.add_enabled(
+                        self.selected.is_some() && !busy,
+                        egui::Button::new("From link"),
+                    );
+                    self.remember("from-link", from_link.rect);
+                    if from_link.clicked() {
+                        self.link_url.clear();
+                        self.link_open = true;
+                    }
+                    if self.paste_ready() {
+                        let paste = ui.button("Paste image");
+                        self.remember("paste-image", paste.rect);
+                        if paste.clicked() {
+                            self.paste_clipboard(ui.ctx());
+                        }
+                    }
+                }
             });
         });
+    }
+
+    pub(super) fn link_modal(&mut self, ctx: &egui::Context) {
+        if !self.link_open {
+            return;
+        }
+        let modal_id = egui::Id::unique("photo-link");
+        let response = egui::Modal::new(modal_id)
+            .area(egui::Modal::default_area(modal_id).order(egui::Order::Debug))
+            .frame(dialog_frame())
+            .show(ctx, |ui| {
+                ui.set_min_width(420.0);
+                ui.heading("Photo from link");
+                ui.add_space(6.0);
+                ui.label("Image link");
+                let field = ui.add(
+                    egui::TextEdit::singleline(&mut self.link_url)
+                        .id_salt("photo-link")
+                        .hint_text("https://")
+                        .desired_width(360.0),
+                );
+                self.remember("photo-link", field.rect);
+                ui.add_space(12.0);
+                ui.horizontal(|ui| {
+                    let cancel = ui.button("Cancel");
+                    self.remember("cancel-link", cancel.rect);
+                    if cancel.clicked() {
+                        self.link_open = false;
+                    }
+                    let ready = !self.link_url.trim().is_empty();
+                    let add = ui.add_enabled(
+                        ready,
+                        egui::Button::new(egui::RichText::new("Add").color(egui::Color32::BLACK))
+                            .fill(ACCENT),
+                    );
+                    self.remember("add-link", add.rect);
+                    let submit = add.clicked()
+                        || (ready
+                            && field.lost_focus()
+                            && ui.input(|input| input.key_pressed(egui::Key::Enter)));
+                    if submit {
+                        let url = self.link_url.trim().to_string();
+                        let frame_id = self.selected;
+                        if let Some(frame_id) = frame_id {
+                            self.spawn_link(ctx, frame_id, url);
+                        } else {
+                            self.toast("Select a frame");
+                        }
+                    }
+                });
+            });
+        ctx.move_to_top(egui::LayerId::new(egui::Order::Debug, modal_id));
+        if response.should_close() {
+            self.link_open = false;
+        }
     }
 
     pub(super) fn export_modal(&mut self, ctx: &egui::Context) {
@@ -425,7 +486,7 @@ impl PudduScrollApp {
                 ui.add_space(8.0);
                 if let Some(layout) = self.layout() {
                     let (width, height) = layout.ratio.export_size(layout_export_width(layout));
-                    let sample = canvas_file_name(&self.item_name(), 0, self.format);
+                    let sample = canvas_file_name(&self.item_name(), 0, self.settings.format);
                     ui.label(format!(
                         "{} canvases · {width}×{height}",
                         layout.canvas_count
@@ -433,47 +494,15 @@ impl PudduScrollApp {
                     ui.label(egui::RichText::new(format!("Files {sample} and on")).color(MUTED));
                 }
                 ui.add_space(8.0);
-                ui.label("Format");
-                ui.horizontal(|ui| {
-                    let jpeg = ui.selectable_label(self.format == ExportFormat::Jpeg, "JPEG");
-                    if jpeg.clicked() && self.format != ExportFormat::Jpeg {
-                        self.format = ExportFormat::Jpeg;
-                        self.schedule_estimate();
-                    }
-                    let png = ui.selectable_label(self.format == ExportFormat::Png, "PNG");
-                    if png.clicked() && self.format != ExportFormat::Png {
-                        self.format = ExportFormat::Png;
-                        self.schedule_estimate();
-                    }
-                });
-                ui.add_space(8.0);
-                if self.format == ExportFormat::Jpeg {
-                    ui.label("Quality");
-                    let slider = ui.add(
-                        egui::Slider::new(&mut self.quality, 0..=100)
-                            .show_value(false)
-                            .trailing_fill(true),
-                    );
-                    if slider.changed() {
-                        self.schedule_estimate();
-                    }
-                    ui.label(quality_description(self.quality, self.format));
-                    if self.quality >= 100 {
-                        ui.label(egui::RichText::new("Highest JPEG quality.").color(MUTED));
-                    } else {
-                        ui.label(
-                            egui::RichText::new("Stronger compression toward the left.")
-                                .color(MUTED),
-                        );
-                    }
-                } else {
-                    ui.label(quality_description(self.quality, self.format));
-                    ui.label(
-                        egui::RichText::new("No extra loss beyond the source. PNG.").color(MUTED),
-                    );
-                }
+                self.export_default_controls(ui, "export");
                 ui.add_space(4.0);
-                if self.estimate_for == Some((self.geometry_revision, self.quality, self.format)) {
+                if self.estimate_for
+                    == Some((
+                        self.geometry_revision,
+                        self.settings.quality,
+                        self.settings.format,
+                    ))
+                {
                     if let Some(mb) = self.estimate_mb {
                         ui.label(
                             egui::RichText::new(format!("About {mb:.2} MB for the carousel"))
@@ -489,20 +518,40 @@ impl PudduScrollApp {
                     ui.label(egui::RichText::new(label).color(MUTED));
                 }
                 ui.add_space(12.0);
+                if let Some(folder) = &self.settings.folder {
+                    ui.label(
+                        egui::RichText::new(folder.display().to_string())
+                            .color(MUTED)
+                            .size(13.0),
+                    );
+                }
                 ui.horizontal(|ui| {
                     if ui.button("Cancel").clicked() {
                         self.export_open = false;
                     }
+                    let saved = self.settings.folder.is_some();
+                    if saved {
+                        let choose = ui.button("Choose folder");
+                        self.remember("export-choose", choose.rect);
+                        if choose.clicked() {
+                            self.export_open = false;
+                            self.start_export();
+                        }
+                    }
+                    let label = if saved { "Export" } else { "Choose folder" };
                     let confirm = ui.add_enabled(
                         !self.exporting,
-                        egui::Button::new(
-                            egui::RichText::new("Choose folder").color(egui::Color32::BLACK),
-                        )
-                        .fill(ACCENT),
+                        egui::Button::new(egui::RichText::new(label).color(egui::Color32::BLACK))
+                            .fill(ACCENT),
                     );
+                    self.remember("export-go", confirm.rect);
                     if confirm.clicked() {
                         self.export_open = false;
-                        self.start_export();
+                        if saved {
+                            self.export_saved_folder();
+                        } else {
+                            self.start_export();
+                        }
                     }
                 });
             });

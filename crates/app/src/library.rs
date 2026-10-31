@@ -1,8 +1,10 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fmt::Write;
+use std::io::{Cursor, Read, Write as IoWrite};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::mpsc::Sender;
+use std::time::Duration;
 
 use std::sync::Mutex;
 
@@ -15,9 +17,27 @@ use pudduscroll_core::{
 pub(crate) const MIN_GRID_CELLS: i32 = 2;
 pub(crate) const MAX_GRID_CELLS: i32 = 16;
 pub(crate) const DEFAULT_GRID_CELLS: i32 = CANVAS_GRID as i32;
+const MAX_LINK_BYTES: u64 = 32 * 1024 * 1024;
+const MAX_PASTE_BYTES: usize = 128 * 1024 * 1024;
+const MAX_PACKAGE_TEXT: u64 = 2 * 1024 * 1024;
+const LINK_TIMEOUT: Duration = Duration::from_secs(20);
 
 pub(crate) fn clamp_grid_cells(cells: i32) -> i32 {
     cells.clamp(MIN_GRID_CELLS, MAX_GRID_CELLS)
+}
+
+fn fresh_carousel_name(carousels: &[Carousel]) -> String {
+    let taken = |name: &str| carousels.iter().any(|carousel| carousel.name == name);
+    if !taken("Carousel") {
+        return "Carousel".to_string();
+    }
+    for index in 2..10_000 {
+        let name = format!("Carousel {index}");
+        if !taken(&name) {
+            return name;
+        }
+    }
+    format!("Carousel {}", carousels.len() + 1)
 }
 
 #[derive(Clone)]
@@ -30,6 +50,7 @@ pub struct Blob {
     pub proxy: Arc<RgbaImage>,
     profile: Option<Arc<[u8]>>,
     screen_cache: Arc<Mutex<Option<Arc<RgbaImage>>>>,
+    pub source: Option<String>,
 }
 
 impl Blob {
@@ -156,6 +177,14 @@ impl Library {
         Some(new_id)
     }
 
+    pub fn import_carousel(&mut self, mut carousel: Carousel) -> u64 {
+        let id = self.alloc();
+        carousel.id = id;
+        self.carousels.push(carousel);
+        self.touch_images();
+        id
+    }
+
     pub fn delete_carousel(&mut self, id: u64) -> bool {
         let before = self.carousels.len();
         self.carousels.retain(|carousel| carousel.id != id);
@@ -164,6 +193,21 @@ impl Library {
             self.touch_images();
         }
         removed
+    }
+
+    pub fn create_carousel(&mut self) -> u64 {
+        let name = fresh_carousel_name(&self.carousels);
+        let id = self.alloc();
+        let mut layout = Layout::new(AspectRatio::FOUR_FIVE);
+        layout.add_frame();
+        self.carousels.push(Carousel {
+            id,
+            name,
+            layout,
+            photos: HashMap::new(),
+            grid_cells: DEFAULT_GRID_CELLS,
+        });
+        id
     }
 
     pub fn instantiate(&mut self, template_id: u64) -> Option<u64> {
@@ -314,6 +358,7 @@ fn decode_blob(path: &Path, bytes: Vec<u8>) -> Result<Blob, String> {
         proxy: Arc::new(raster.proxy),
         profile,
         screen_cache: Arc::new(Mutex::new(None)),
+        source: None,
     })
 }
 
@@ -390,20 +435,32 @@ fn serialize(library: &Library) -> String {
         push_frames(&mut out, &template.layout, None);
     }
     for carousel in &library.carousels {
-        let _ = writeln!(out, "carousel {}", carousel.id);
-        out.push_str("name ");
-        push_quoted(&mut out, &carousel.name);
-        out.push('\n');
-        let _ = writeln!(
-            out,
-            "ratio {} {}",
-            carousel.layout.ratio.width, carousel.layout.ratio.height
-        );
-        let _ = writeln!(out, "canvases {}", carousel.layout.canvas_count);
-        let _ = writeln!(out, "squares {}", clamp_grid_cells(carousel.grid_cells));
-        push_frames(&mut out, &carousel.layout, Some(carousel));
+        push_carousel(&mut out, carousel);
     }
     out
+}
+
+fn package_text(carousel: &Carousel) -> String {
+    let mut out = String::new();
+    out.push_str("pudduscroll 1\n");
+    let _ = writeln!(out, "next {}", carousel.id.saturating_add(1).max(1));
+    push_carousel(&mut out, carousel);
+    out
+}
+
+fn push_carousel(out: &mut String, carousel: &Carousel) {
+    let _ = writeln!(out, "carousel {}", carousel.id);
+    out.push_str("name ");
+    push_quoted(out, &carousel.name);
+    out.push('\n');
+    let _ = writeln!(
+        out,
+        "ratio {} {}",
+        carousel.layout.ratio.width, carousel.layout.ratio.height
+    );
+    let _ = writeln!(out, "canvases {}", carousel.layout.canvas_count);
+    let _ = writeln!(out, "squares {}", clamp_grid_cells(carousel.grid_cells));
+    push_frames(out, &carousel.layout, Some(carousel));
 }
 
 fn push_frames(out: &mut String, layout: &Layout, carousel: Option<&Carousel>) {
@@ -449,6 +506,11 @@ fn push_frames(out: &mut String, layout: &Layout, carousel: Option<&Carousel>) {
             photo.rotation,
             photo.zoom
         );
+        if let Some(source) = blob.source.as_deref().filter(|source| !source.is_empty()) {
+            out.push_str("source ");
+            push_quoted(out, source);
+            out.push('\n');
+        }
     }
 }
 
@@ -575,6 +637,17 @@ fn parse_library(text: &str, root: &Path) -> Result<Library, String> {
                 };
                 frame.photo = Some(photo);
             }
+            "source" => {
+                let source = parse_quoted(rest, place)?;
+                let build = carousel_mut(&mut carousel, place)?;
+                let Some(frame) = build.frames.last_mut() else {
+                    return Err(format!("line {place}: source without a frame"));
+                };
+                let Some(photo) = frame.photo.as_mut() else {
+                    return Err(format!("line {place}: source without a photo"));
+                };
+                photo.source = Some(source);
+            }
             _ => return Err(format!("line {place}: unknown {word}")),
         }
     }
@@ -635,6 +708,7 @@ struct PhotoBuild {
     ext: String,
     rotation: f32,
     zoom: f32,
+    source: Option<String>,
 }
 
 struct TemplateBuild {
@@ -728,6 +802,7 @@ fn push_loaded_frames(
                 .join(photo_file(*carousel_id, source.id, &photo.ext));
             let mut blob = load_blob(&path)?;
             blob.name.clone_from(&photo.name);
+            blob.source.clone_from(&photo.source);
             frame.photo = Some(FramePhoto {
                 name: photo.name.clone(),
                 image_width: blob.width.max(1),
@@ -933,6 +1008,7 @@ fn parse_photo(text: &str, line: usize) -> Result<PhotoBuild, String> {
         ext,
         rotation,
         zoom,
+        source: None,
     })
 }
 
@@ -981,6 +1057,372 @@ fn preset_from(token: &str) -> Option<CropPreset> {
         "freehand" => CropPreset::Freehand,
         _ => return None,
     })
+}
+
+pub(crate) fn direct_image_url(url: &str) -> Result<(), String> {
+    let url = url.trim();
+    let Some((scheme, rest)) = url.split_once("://") else {
+        return Err("Enter an http or https image link".to_string());
+    };
+    if !matches!(scheme.to_ascii_lowercase().as_str(), "http" | "https") {
+        return Err("Enter an http or https image link".to_string());
+    }
+    if rest.is_empty()
+        || rest
+            .chars()
+            .any(|ch| ch.is_whitespace() || ch.is_control() || ch == '\\')
+    {
+        return Err("Enter an http or https image link".to_string());
+    }
+    let authority = rest.split(['/', '?', '#']).next().unwrap_or("");
+    let host = authority
+        .rsplit_once('@')
+        .map_or(authority, |(_, host)| host);
+    if host.is_empty() || host.starts_with(':') {
+        return Err("Enter an http or https image link".to_string());
+    }
+    Ok(())
+}
+
+pub(crate) fn linked_image(url: &str, bytes: Vec<u8>) -> Result<Blob, String> {
+    direct_image_url(url)?;
+    let mut blob = blob_from_bytes(&link_name(url), bytes)?;
+    blob.source = Some(url.trim().to_string());
+    Ok(blob)
+}
+
+pub(crate) fn fetch_linked_image(url: &str) -> Result<Blob, String> {
+    let bytes = download_image(url)?;
+    linked_image(url, bytes)
+}
+
+pub(crate) fn carousel_package(carousel: &Carousel) -> Result<Vec<u8>, String> {
+    let mut writer = zip::ZipWriter::new(Cursor::new(Vec::new()));
+    let options = zip::write::SimpleFileOptions::default();
+    writer
+        .start_file("library.txt", options)
+        .map_err(|error| format!("Could not share the carousel: {error}"))?;
+    writer
+        .write_all(package_text(carousel).as_bytes())
+        .map_err(|error| error.to_string())?;
+    for (frame_id, blob) in &carousel.photos {
+        let name = format!("images/{}", photo_file(carousel.id, *frame_id, &blob.ext));
+        writer
+            .start_file(name, options)
+            .map_err(|error| format!("Could not share the carousel: {error}"))?;
+        writer
+            .write_all(blob.bytes.as_ref())
+            .map_err(|error| error.to_string())?;
+    }
+    writer
+        .finish()
+        .map_err(|error| format!("Could not share the carousel: {error}"))
+        .map(Cursor::into_inner)
+}
+
+pub(crate) fn read_carousel_package(bytes: &[u8]) -> Result<Carousel, String> {
+    let package = read_package(bytes)?;
+    let root = std::env::temp_dir().join(format!(
+        "pudduscroll-package-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |duration| duration.as_nanos())
+    ));
+    let outcome = (|| {
+        std::fs::create_dir_all(root.join("images")).map_err(|error| error.to_string())?;
+        std::fs::write(root.join("library.txt"), &package.text)
+            .map_err(|error| error.to_string())?;
+        for (name, bytes) in &package.images {
+            std::fs::write(root.join("images").join(name), bytes)
+                .map_err(|error| error.to_string())?;
+        }
+        let library = parse_library(&package.text, &root)?;
+        if !library.templates.is_empty() || library.carousels.len() != 1 {
+            return Err("A share file holds one carousel".to_string());
+        }
+        let carousel = library
+            .carousels
+            .into_iter()
+            .next()
+            .ok_or_else(|| "A share file holds one carousel".to_string())?;
+        let expected = photo_names(&carousel);
+        let stored = package
+            .images
+            .iter()
+            .map(|(name, _)| name.clone())
+            .collect::<HashSet<_>>();
+        if expected != stored {
+            return Err("Share file photos do not match the carousel".to_string());
+        }
+        Ok(carousel)
+    })();
+    let _ = std::fs::remove_dir_all(&root);
+    outcome
+}
+
+fn download_image(url: &str) -> Result<Vec<u8>, String> {
+    direct_image_url(url)?;
+    let agent = ureq::AgentBuilder::new()
+        .timeout_connect(LINK_TIMEOUT)
+        .timeout(LINK_TIMEOUT)
+        .build();
+    let response = agent
+        .get(url.trim())
+        .call()
+        .map_err(|error| format!("Could not download the photo: {error}"))?;
+    if direct_image_url(response.get_url()).is_err() {
+        return Err("Could not download the photo".to_string());
+    }
+    if let Some(length) = response
+        .header("Content-Length")
+        .and_then(|value| value.parse::<u64>().ok())
+        && length > MAX_LINK_BYTES
+    {
+        return Err("Photo is larger than 32 MB".to_string());
+    }
+    let mut bytes = Vec::new();
+    response
+        .into_reader()
+        .take(MAX_LINK_BYTES.saturating_add(1))
+        .read_to_end(&mut bytes)
+        .map_err(|error| format!("Could not download the photo: {error}"))?;
+    if bytes.len() as u64 > MAX_LINK_BYTES {
+        return Err("Photo is larger than 32 MB".to_string());
+    }
+    Ok(bytes)
+}
+
+fn blob_from_bytes(name: &str, bytes: Vec<u8>) -> Result<Blob, String> {
+    let format = image::guess_format(&bytes)
+        .map_err(|_error| "Photo must be a png, jpeg, or webp".to_string())?;
+    let ext = match format {
+        image::ImageFormat::Png => "png",
+        image::ImageFormat::Jpeg => "jpg",
+        image::ImageFormat::WebP => "webp",
+        _ => return Err("Photo must be a png, jpeg, or webp".to_string()),
+    };
+    let raster = raster_from_bytes(&bytes)
+        .map_err(|error| format!("Could not decode the photo: {error}"))?;
+    let profile = crate::color::embedded_profile(&bytes).map(Arc::from);
+    Ok(Blob {
+        name: name.to_string(),
+        ext: ext.to_string(),
+        width: raster.width.max(1),
+        height: raster.height.max(1),
+        bytes: Arc::from(bytes),
+        proxy: Arc::new(raster.proxy),
+        profile,
+        screen_cache: Arc::new(Mutex::new(None)),
+        source: None,
+    })
+}
+
+pub(crate) fn pasted_image(width: usize, height: usize, rgba: &[u8]) -> Result<Blob, String> {
+    let width = u32::try_from(width).map_err(|_error| "Clipboard has no image".to_string())?;
+    let height = u32::try_from(height).map_err(|_error| "Clipboard has no image".to_string())?;
+    if width == 0 || height == 0 {
+        return Err("Clipboard has no image".to_string());
+    }
+    let expected = (width as usize)
+        .checked_mul(height as usize)
+        .and_then(|pixels| pixels.checked_mul(4))
+        .ok_or_else(|| "Photo is too large".to_string())?;
+    if expected > MAX_PASTE_BYTES {
+        return Err("Photo is too large".to_string());
+    }
+    if rgba.len() != expected {
+        return Err("Clipboard has no image".to_string());
+    }
+    let image = image::RgbaImage::from_raw(width, height, rgba.to_vec())
+        .ok_or_else(|| "Clipboard has no image".to_string())?;
+    let mut bytes = Vec::new();
+    image::DynamicImage::ImageRgba8(image)
+        .write_to(&mut Cursor::new(&mut bytes), image::ImageFormat::Png)
+        .map_err(|error| format!("Could not read the clipboard: {error}"))?;
+    blob_from_bytes("Pasted.png", bytes)
+}
+
+pub(crate) fn clipboard_image() -> Result<Blob, String> {
+    let mut clipboard = arboard::Clipboard::new()
+        .map_err(|error| format!("Could not read the clipboard: {error}"))?;
+    let image = clipboard
+        .get_image()
+        .map_err(|_error| "Clipboard has no image".to_string())?;
+    pasted_image(image.width, image.height, image.bytes.as_ref())
+}
+
+pub(crate) fn clipboard_image_stamp() -> Option<u64> {
+    #[cfg(windows)]
+    {
+        windows_clipboard_stamp()
+    }
+    #[cfg(not(windows))]
+    {
+        None
+    }
+}
+
+pub(crate) fn clipboard_has_image() -> bool {
+    #[cfg(windows)]
+    {
+        clipboard_image_stamp().is_some()
+    }
+    #[cfg(not(windows))]
+    {
+        arboard::Clipboard::new()
+            .ok()
+            .and_then(|mut clipboard| clipboard.get_image().ok())
+            .is_some()
+    }
+}
+
+#[cfg(windows)]
+fn windows_clipboard_stamp() -> Option<u64> {
+    let seq = clipboard_win::raw::seq_num()?;
+    let png = clipboard_win::raw::register_format("PNG")
+        .is_some_and(|format| clipboard_win::raw::is_format_avail(format.get()));
+    let bitmap = clipboard_win::raw::is_format_avail(clipboard_win::formats::CF_DIB)
+        || clipboard_win::raw::is_format_avail(clipboard_win::formats::CF_DIBV5)
+        || clipboard_win::raw::is_format_avail(clipboard_win::formats::CF_BITMAP);
+    (png || bitmap).then_some(u64::from(seq.get()))
+}
+
+fn link_name(url: &str) -> String {
+    let path = url.trim().split(['?', '#']).next().unwrap_or("");
+    let segment = path.rsplit('/').next().unwrap_or("").trim();
+    let name: String = segment
+        .chars()
+        .filter(|ch| !ch.is_control() && *ch != '\\' && *ch != '"')
+        .take(80)
+        .collect();
+    if name.is_empty() {
+        "photo".to_string()
+    } else {
+        name
+    }
+}
+
+struct PackageFiles {
+    text: String,
+    images: Vec<(String, Vec<u8>)>,
+}
+
+fn read_package(bytes: &[u8]) -> Result<PackageFiles, String> {
+    let mut archive = zip::ZipArchive::new(Cursor::new(bytes))
+        .map_err(|error| format!("Could not read the share file: {error}"))?;
+    let mut text = None;
+    let mut images = Vec::new();
+    for index in 0..archive.len() {
+        let mut file = archive
+            .by_index(index)
+            .map_err(|error| format!("Could not read the share file: {error}"))?;
+        let raw = file.name().replace('\\', "/");
+        if raw.split('/').any(|part| part == "..") || raw.starts_with('/') || raw.contains(':') {
+            return Err("Share file has a path outside the carousel".to_string());
+        }
+        if file.is_dir() {
+            if raw.trim_end_matches('/') == "images" {
+                continue;
+            }
+            return Err("Share file has an unexpected file".to_string());
+        }
+        match package_entry(&raw)? {
+            PackageKind::Text => {
+                if text.is_some() {
+                    return Err("A share file holds one carousel".to_string());
+                }
+                let bytes = read_capped(&mut file, MAX_PACKAGE_TEXT)?;
+                text = Some(
+                    String::from_utf8(bytes)
+                        .map_err(|_error| "Share file text is not readable".to_string())?,
+                );
+            }
+            PackageKind::Image(name) => {
+                if images.iter().any(|(have, _)| have == &name) {
+                    return Err("Share file has an unexpected file".to_string());
+                }
+                images.push((name, read_capped(&mut file, MAX_LINK_BYTES)?));
+            }
+        }
+    }
+    let text = text.ok_or_else(|| "A share file holds one carousel".to_string())?;
+    package_shape(&text)?;
+    Ok(PackageFiles { text, images })
+}
+
+enum PackageKind {
+    Text,
+    Image(String),
+}
+
+fn package_entry(name: &str) -> Result<PackageKind, String> {
+    let parts: Vec<&str> = name.split('/').filter(|part| !part.is_empty()).collect();
+    match parts.as_slice() {
+        ["library.txt"] => Ok(PackageKind::Text),
+        ["images", file] if image_file_name(file) => Ok(PackageKind::Image((*file).to_string())),
+        _ => Err("Share file has an unexpected file".to_string()),
+    }
+}
+
+fn image_file_name(name: &str) -> bool {
+    let Some((stem, ext)) = name.rsplit_once('.') else {
+        return false;
+    };
+    if !matches!(ext, "png" | "jpg" | "webp") {
+        return false;
+    }
+    let Some((carousel, frame)) = stem.split_once("-f") else {
+        return false;
+    };
+    let Some(carousel) = carousel.strip_prefix('c') else {
+        return false;
+    };
+    !carousel.is_empty()
+        && carousel.chars().all(|ch| ch.is_ascii_digit())
+        && !frame.is_empty()
+        && frame.chars().all(|ch| ch.is_ascii_digit())
+}
+
+fn package_shape(text: &str) -> Result<(), String> {
+    let mut header = false;
+    let mut templates = 0;
+    let mut carousels = 0;
+    for line in text.lines() {
+        let (word, rest) = split_word(line.trim());
+        match word {
+            "pudduscroll" if rest == "1" => header = true,
+            "template" => templates += 1,
+            "carousel" => carousels += 1,
+            _ => {}
+        }
+    }
+    if header && templates == 0 && carousels == 1 {
+        Ok(())
+    } else {
+        Err("A share file holds one carousel".to_string())
+    }
+}
+
+fn photo_names(carousel: &Carousel) -> HashSet<String> {
+    carousel
+        .photos
+        .iter()
+        .map(|(frame_id, blob)| photo_file(carousel.id, *frame_id, &blob.ext))
+        .collect()
+}
+
+fn read_capped(reader: &mut impl Read, max: u64) -> Result<Vec<u8>, String> {
+    let mut bytes = Vec::new();
+    reader
+        .take(max.saturating_add(1))
+        .read_to_end(&mut bytes)
+        .map_err(|error| error.to_string())?;
+    if bytes.len() as u64 > max {
+        Err("Share file is too large".to_string())
+    } else {
+        Ok(bytes)
+    }
 }
 
 #[cfg(test)]
@@ -1080,6 +1522,7 @@ mod tests {
         assert!((frame.border - 0.35).abs() < 1e-4);
         assert_eq!(frame.border_color, [12, 34, 56, 255]);
         assert!(carousel.photos.contains_key(&frame.id));
+        assert!(carousel.photos[&frame.id].source.is_none());
         let _ = std::fs::remove_dir_all(&root);
     }
 
@@ -1228,6 +1671,279 @@ squares 99
             proxy: Arc::new(image),
             profile: None,
             screen_cache: Arc::new(Mutex::new(None)),
+            source: None,
         }
+    }
+
+    #[test]
+    fn share_zip_roundtrip_keeps_frames_photos_and_source() {
+        let mut library = Library::empty();
+        let template_id = library.create_template(
+            "Sea".to_string(),
+            AspectRatio::FOUR_FIVE,
+            sample_blob("dune.png"),
+        );
+        let carousel_id = library.instantiate(template_id).unwrap();
+        let layout = &mut library
+            .carousels
+            .iter_mut()
+            .find(|carousel| carousel.id == carousel_id)
+            .unwrap()
+            .layout;
+        layout.set_ratio(AspectRatio::SQUARE);
+        layout.add_canvas();
+        let linked_frame = layout.add_frame();
+        layout.set_frame_rect(linked_frame, 0.15, 0.2, 1.4, 0.7);
+        let empty_frame = layout.add_frame();
+        layout.set_frame_rect(empty_frame, 1.1, 0.1, 0.6, 0.5);
+        let disk_frame = layout.add_frame();
+        layout.set_frame_rect(disk_frame, 0.4, 0.35, 0.8, 0.45);
+        library
+            .carousels
+            .iter_mut()
+            .find(|carousel| carousel.id == carousel_id)
+            .unwrap()
+            .grid_cells = 9;
+        let mut linked = sample_blob("night.png");
+        linked.source = Some("https://cdn.example.com/night.png?v=1".to_string());
+        library.set_photo(carousel_id, linked_frame, linked);
+        library.set_photo(carousel_id, disk_frame, sample_blob("day.png"));
+        let carousel = library
+            .carousels
+            .iter_mut()
+            .find(|carousel| carousel.id == carousel_id)
+            .unwrap();
+        carousel.name = "Harbor \"east\"".to_string();
+        carousel.layout.set_border(linked_frame, 0.2);
+        carousel
+            .layout
+            .set_border_color(linked_frame, [9, 8, 7, 255]);
+        carousel.layout.set_pan(linked_frame, 0.25, 0.8);
+        carousel.layout.set_rotation(disk_frame, 0.6);
+        carousel
+            .layout
+            .frame_mut(disk_frame)
+            .unwrap()
+            .photo
+            .as_mut()
+            .unwrap()
+            .zoom = 1.5;
+        let original_bytes = Arc::clone(&carousel.photos[&linked_frame].bytes);
+        let disk_bytes = Arc::clone(&carousel.photos[&disk_frame].bytes);
+        let packaged = carousel_package(carousel).unwrap();
+
+        let mut home = Library::empty();
+        let home_template = home.create_template(
+            "Kept".to_string(),
+            AspectRatio::FOUR_FIVE,
+            sample_blob("dune.png"),
+        );
+        let kept = home.instantiate(home_template).unwrap();
+        assert_eq!(kept, carousel_id);
+        let imported = read_carousel_package(&packaged).unwrap();
+        let new_id = home.import_carousel(imported);
+        assert_ne!(new_id, kept);
+        assert_eq!(home.carousels.len(), 2);
+        let carousel = home
+            .carousels
+            .iter()
+            .find(|carousel| carousel.id == new_id)
+            .unwrap();
+        assert_eq!(carousel.name, "Harbor \"east\"");
+        assert_eq!(carousel.layout.ratio, AspectRatio::SQUARE);
+        assert_eq!(carousel.layout.canvas_count, 2);
+        assert_eq!(carousel.grid_cells, 9);
+        assert_eq!(carousel.layout.frames.len(), 3);
+        assert!(carousel.layout.frame(empty_frame).unwrap().photo.is_none());
+        assert!(!carousel.photos.contains_key(&empty_frame));
+        let linked_photo = carousel
+            .layout
+            .frame(linked_frame)
+            .unwrap()
+            .photo
+            .as_ref()
+            .unwrap();
+        assert_eq!(linked_photo.name, "night.png");
+        assert!((linked_photo.pan_x - 0.25).abs() < 1e-4);
+        assert!((linked_photo.pan_y - 0.8).abs() < 1e-4);
+        let linked_frame_rect = carousel.layout.frame(linked_frame).unwrap();
+        assert!((linked_frame_rect.x - 0.15).abs() < 1e-4);
+        assert!((linked_frame_rect.w - 1.4).abs() < 1e-4);
+        assert!((linked_frame_rect.border - 0.2).abs() < 1e-4);
+        assert_eq!(linked_frame_rect.border_color, [9, 8, 7, 255]);
+        assert_eq!(
+            carousel.photos[&linked_frame].source.as_deref(),
+            Some("https://cdn.example.com/night.png?v=1")
+        );
+        assert_eq!(carousel.photos[&linked_frame].bytes, original_bytes);
+        let disk_photo = carousel
+            .layout
+            .frame(disk_frame)
+            .unwrap()
+            .photo
+            .as_ref()
+            .unwrap();
+        assert!((disk_photo.rotation - 0.6).abs() < 1e-4);
+        assert!((disk_photo.zoom - 1.5).abs() < 1e-4);
+        assert!(carousel.photos[&disk_frame].source.is_none());
+        assert_eq!(carousel.photos[&disk_frame].bytes, disk_bytes);
+        assert_eq!(
+            home.carousels
+                .iter()
+                .find(|carousel| carousel.id == kept)
+                .unwrap()
+                .photos
+                .len(),
+            0
+        );
+    }
+
+    #[test]
+    fn share_zip_rejects_a_library_a_missing_photo_and_a_path_escape() {
+        let mut library = Library::empty();
+        let template_id = library.create_template(
+            "Sea".to_string(),
+            AspectRatio::FOUR_FIVE,
+            sample_blob("dune.png"),
+        );
+        let carousel_id = library.instantiate(template_id).unwrap();
+        let frame = library
+            .carousels
+            .iter_mut()
+            .find(|carousel| carousel.id == carousel_id)
+            .unwrap()
+            .layout
+            .add_frame();
+        library.set_photo(carousel_id, frame, sample_blob("night.png"));
+        let carousel = library
+            .carousels
+            .iter()
+            .find(|carousel| carousel.id == carousel_id)
+            .unwrap();
+        let packed = carousel_package(carousel).unwrap();
+        let text = package_text(carousel);
+        assert!(read_carousel_package(&zip_bytes(&[("library.txt", text.as_bytes())])).is_err());
+        assert!(
+            read_carousel_package(&zip_bytes(&[(
+                "library.txt",
+                b"pudduscroll 1\nnext 2\ntemplate 1\ncarousel 2\n"
+            )]))
+            .is_err()
+        );
+        assert!(
+            read_carousel_package(&zip_bytes(&[(
+                "library.txt",
+                b"pudduscroll 1\nnext 3\ncarousel 1\ncarousel 2\n"
+            )]))
+            .is_err()
+        );
+        assert!(
+            read_carousel_package(&zip_bytes(&[
+                ("library.txt", text.as_bytes()),
+                ("../secret.txt", b"no"),
+            ]))
+            .is_err()
+        );
+        assert!(
+            read_carousel_package(&zip_bytes(&[
+                ("library.txt", text.as_bytes()),
+                ("notes.txt", b"no"),
+            ]))
+            .is_err()
+        );
+        let mut extra = Vec::new();
+        let mut archive = zip::ZipArchive::new(Cursor::new(packed)).unwrap();
+        for index in 0..archive.len() {
+            let mut file = archive.by_index(index).unwrap();
+            let name = file.name().to_string();
+            let mut bytes = Vec::new();
+            file.read_to_end(&mut bytes).unwrap();
+            extra.push((name, bytes));
+        }
+        extra.push((
+            "images/c9-f9.png".to_string(),
+            sample_blob("day.png").bytes.to_vec(),
+        ));
+        let extra = zip_owned(&extra);
+        assert!(read_carousel_package(&extra).is_err());
+    }
+
+    #[test]
+    fn linked_image_rejects_a_page_and_a_bad_url() {
+        let photo = sample_blob("photo.png");
+        let linked = linked_image(
+            "https://example.com/photo.png",
+            photo.bytes.as_ref().to_vec(),
+        )
+        .unwrap();
+        assert_eq!(
+            linked.source.as_deref(),
+            Some("https://example.com/photo.png")
+        );
+        assert_eq!(linked.ext, "png");
+        assert_eq!(linked.bytes, photo.bytes);
+        assert!(linked_image("ftp://example.com/a.png", photo.bytes.as_ref().to_vec()).is_err());
+        assert!(direct_image_url("javascript:alert(1)").is_err());
+        assert!(direct_image_url("https:///missing-host/a.png").is_err());
+        assert!(linked_image("https://example.com/a.png", b"<html></html>".to_vec()).is_err());
+    }
+
+    #[test]
+    fn create_carousel_starts_blank_at_four_five() {
+        let mut library = Library::empty();
+        let id = library.create_carousel();
+        let carousel = library
+            .carousels
+            .iter()
+            .find(|carousel| carousel.id == id)
+            .unwrap();
+        assert_eq!(carousel.name, "Carousel");
+        assert!(carousel.photos.is_empty());
+        assert_eq!(carousel.layout.ratio, AspectRatio::FOUR_FIVE);
+        assert_eq!(carousel.layout.canvas_count, 1);
+        assert_eq!(carousel.layout.frames.len(), 1);
+        assert!(carousel.layout.frames[0].photo.is_none());
+        let second = library.create_carousel();
+        let name = library
+            .carousels
+            .iter()
+            .find(|carousel| carousel.id == second)
+            .unwrap()
+            .name
+            .clone();
+        assert_eq!(name, "Carousel 2");
+    }
+
+    #[test]
+    fn pasted_image_keeps_pixels_without_a_source() {
+        let rgba = [10, 20, 30, 255, 40, 50, 60, 255];
+        let blob = pasted_image(2, 1, &rgba).unwrap();
+        assert!(blob.source.is_none());
+        assert_eq!(blob.name, "Pasted.png");
+        assert_eq!(blob.ext, "png");
+        assert_eq!(blob.width, 2);
+        assert_eq!(blob.height, 1);
+        let decoded = image::load_from_memory(&blob.bytes).unwrap().to_rgba8();
+        assert_eq!(decoded.as_raw(), &rgba);
+        assert!(pasted_image(2, 1, &[0, 0, 0, 255]).is_err());
+        assert!(pasted_image(0, 1, &[]).is_err());
+    }
+
+    fn zip_bytes(files: &[(&str, &[u8])]) -> Vec<u8> {
+        let owned: Vec<(String, Vec<u8>)> = files
+            .iter()
+            .map(|(name, bytes)| ((*name).to_string(), bytes.to_vec()))
+            .collect();
+        zip_owned(&owned)
+    }
+
+    fn zip_owned(files: &[(String, Vec<u8>)]) -> Vec<u8> {
+        let mut writer = zip::ZipWriter::new(Cursor::new(Vec::new()));
+        let options = zip::write::SimpleFileOptions::default();
+        for (name, bytes) in files {
+            writer.start_file(name, options).unwrap();
+            writer.write_all(bytes).unwrap();
+        }
+        writer.finish().unwrap().into_inner()
     }
 }

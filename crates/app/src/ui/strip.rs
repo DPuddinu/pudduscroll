@@ -1,7 +1,7 @@
 use eframe::egui;
 use pudduscroll_core::{
-    FrameId, FrameRect, Handle, cover_fit, pan_for_origin, photo_local, resize_frame,
-    rotation_from_pointer, snap_frame, snap_frame_resize,
+    FrameId, FrameRect, Handle, canvas_at, canvases_touched, cover_fit, pan_for_origin,
+    photo_local, resize_frame, rotation_from_pointer, snap_frame, snap_frame_resize,
 };
 
 use super::draw::{
@@ -12,8 +12,11 @@ use super::draw::{
     screen_to_norm,
 };
 use super::{
-    ACCENT, CANVAS_BG, Drag, EDITOR_ZOOM_SPEED, OUTSIDE_FRAME_ALPHA, PudduScrollApp, Route,
+    ACCENT, CANVAS_BG, CanvasSelect, Drag, EDITOR_ZOOM_SPEED, OUTSIDE_FRAME_ALPHA, PudduScrollApp,
+    Route,
 };
+
+const CANVAS_SELECT_DRAG: f32 = 4.0;
 
 impl PudduScrollApp {
     pub(super) fn sync_zoom_basis(&mut self) {
@@ -376,6 +379,7 @@ impl PudduScrollApp {
         let clip = bounds.intersect(ui.clip_rect());
         let painter = ui.painter().with_clip_rect(clip);
         self.draw_strip(ui, &painter, rect, clip);
+        self.paint_canvas_marquee(&painter, clip);
         self.paint_crop_handles(&painter, rect, clip);
         self.paint_frame_handles(&painter, rect, clip);
         self.paint_rotate_handle(&painter, rect, clip);
@@ -403,16 +407,17 @@ impl PudduScrollApp {
         if self.crop_session.is_some() || self.export_open || self.overwrite_dir.is_some() {
             return false;
         }
-        if self.drag.is_some() {
+        if self.drag.is_some() || self.canvas_marquee.is_some() {
             return true;
         }
         let Some(strip) = self.strip_rect else {
             return false;
         };
-        let (down, pos) = ctx.input(|input| {
+        let (down, select, pos) = ctx.input(|input| {
             let pointer = &input.pointer;
             (
                 pointer.primary_down(),
+                input.modifiers.command || input.modifiers.ctrl,
                 pointer
                     .press_origin()
                     .or(pointer.interact_pos())
@@ -422,6 +427,9 @@ impl PudduScrollApp {
         let Some(pos) = pos else {
             return false;
         };
+        if down && select && editor.contains(pos) {
+            return true;
+        }
         down && editor.contains(pos) && self.hits_frame_or_handle(strip, pos)
     }
 
@@ -498,6 +506,7 @@ impl PudduScrollApp {
         layer: egui::LayerId,
     ) {
         if self.export_open || self.overwrite_dir.is_some() {
+            self.canvas_marquee = None;
             return;
         }
         let (pressed, down, released, press, interact, latest) = ctx.input(|input| {
@@ -511,15 +520,34 @@ impl PudduScrollApp {
                 pointer.latest_pos(),
             )
         });
-        if self.drag.is_none() && pressed && !Self::space_held(ctx) {
+        if self.drag.is_none() && self.canvas_marquee.is_none() && pressed && !Self::space_held(ctx)
+        {
             if let Some(origin) = press.or(interact).or(latest) {
-                if editor.contains(origin)
-                    && !self.plus_hit(origin)
-                    && ctx.layer_id_at(origin).is_none_or(|hit| hit == layer)
+                if editor.contains(origin) && ctx.layer_id_at(origin).is_none_or(|hit| hit == layer)
                 {
-                    self.begin_drag(rect, origin);
+                    if Self::canvas_modifier(ctx) {
+                        self.begin_canvas_select(origin);
+                    } else if !self.plus_hit(origin) {
+                        self.selected_canvases.clear();
+                        self.begin_drag(rect, origin);
+                    }
                 }
             }
+        }
+        if let Some(select) = self.canvas_marquee.as_mut()
+            && let Some(pos) = interact.or(latest).or(press)
+        {
+            select.current = pos;
+        }
+        if released && self.canvas_marquee.is_some() {
+            self.commit_canvas_select(rect);
+        }
+        if self.canvas_marquee.is_some() {
+            ctx.set_cursor_icon(egui::CursorIcon::Crosshair);
+            if down {
+                ctx.set_dragged_id(egui::Id::unique("canvas-select"));
+            }
+            return;
         }
         if self.drag.is_some() && (down || released) {
             if let Some(pos) = interact.or(latest).or(press) {
@@ -832,7 +860,10 @@ impl PudduScrollApp {
                 paint_plus(painter, center, radius);
                 let response = ui.allocate_rect(hit, egui::Sense::click());
                 self.remember(format!("plus-{}", frame.id.0), response.rect);
-                if response.clicked() && !Self::space_held(ui.ctx()) {
+                if response.clicked()
+                    && !Self::space_held(ui.ctx())
+                    && !Self::canvas_modifier(ui.ctx())
+                {
                     let id = frame.id;
                     self.fill_frame(ui.ctx(), id);
                 }
@@ -841,6 +872,7 @@ impl PudduScrollApp {
         if self.crop_session.is_some() {
             self.paint_session_crop(painter, rect, clip);
         }
+        self.paint_canvas_selection(painter, rect, clip, count);
     }
 
     pub(super) fn paint_frame_handles(
@@ -898,6 +930,12 @@ impl PudduScrollApp {
     }
 
     pub(super) fn strip_cursor(&self, response: &egui::Response, rect: egui::Rect) {
+        if self.canvas_marquee.is_some() {
+            response
+                .clone()
+                .on_hover_cursor(egui::CursorIcon::Crosshair);
+            return;
+        }
         let cropping = self
             .crop_session
             .as_ref()
@@ -970,6 +1008,94 @@ impl PudduScrollApp {
         } else {
             Some(egui::CursorIcon::PointingHand)
         }
+    }
+
+    fn canvas_modifier(ctx: &egui::Context) -> bool {
+        ctx.input(|input| input.modifiers.command || input.modifiers.ctrl)
+    }
+
+    fn begin_canvas_select(&mut self, origin: egui::Pos2) {
+        self.canvas_marquee = Some(CanvasSelect {
+            origin,
+            current: origin,
+        });
+    }
+
+    fn commit_canvas_select(&mut self, strip: egui::Rect) {
+        let Some(select) = self.canvas_marquee.take() else {
+            return;
+        };
+        let count = self.metrics().map_or(0, |(_, count)| count);
+        if count == 0 {
+            return;
+        }
+        if select.origin.distance(select.current) <= CANVAS_SELECT_DRAG {
+            let (x, y) = screen_to_norm(strip, count, select.origin);
+            let Some(index) = canvas_at(count, x, y) else {
+                return;
+            };
+            if let Some(pos) = self
+                .selected_canvases
+                .iter()
+                .position(|item| *item == index)
+            {
+                self.selected_canvases.remove(pos);
+            } else {
+                self.selected_canvases.push(index);
+                self.selected_canvases.sort_unstable();
+            }
+            return;
+        }
+        let (x0, y0) = screen_to_norm(strip, count, select.origin);
+        let (x1, y1) = screen_to_norm(strip, count, select.current);
+        self.selected_canvases = canvases_touched(count, x0, y0, x1, y1);
+    }
+
+    fn highlighted_canvases(&self, strip: egui::Rect, count: usize) -> Vec<usize> {
+        let Some(select) = self.canvas_marquee else {
+            return self.selected_canvases.clone();
+        };
+        if select.origin.distance(select.current) <= CANVAS_SELECT_DRAG {
+            return self.selected_canvases.clone();
+        }
+        let (x0, y0) = screen_to_norm(strip, count, select.origin);
+        let (x1, y1) = screen_to_norm(strip, count, select.current);
+        canvases_touched(count, x0, y0, x1, y1)
+    }
+
+    fn paint_canvas_selection(
+        &self,
+        painter: &egui::Painter,
+        rect: egui::Rect,
+        clip: egui::Rect,
+        count: usize,
+    ) {
+        let canvas_w = rect.width() / count.max(1) as f32;
+        for index in self.highlighted_canvases(rect, count) {
+            if index >= count {
+                continue;
+            }
+            let canvas = egui::Rect::from_min_size(
+                egui::pos2(rect.min.x + index as f32 * canvas_w, rect.min.y),
+                egui::vec2(canvas_w, rect.height()),
+            );
+            paint_frame(painter, canvas, clip, 2.0, ACCENT);
+        }
+    }
+
+    fn paint_canvas_marquee(&self, painter: &egui::Painter, clip: egui::Rect) {
+        let Some(select) = self.canvas_marquee else {
+            return;
+        };
+        let area = egui::Rect::from_two_pos(select.origin, select.current);
+        let painter = painter.with_clip_rect(clip);
+        painter.rect_filled(area, 0.0, ACCENT.gamma_multiply(0.28));
+        painter.rect_stroke(
+            area,
+            0.0,
+            egui::Stroke::new(1.0, ACCENT),
+            egui::StrokeKind::Inside,
+        );
     }
 }
 

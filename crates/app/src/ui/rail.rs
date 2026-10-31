@@ -6,10 +6,12 @@ use pudduscroll_core::{CROP_PRESETS, Crop, CropPreset, FrameId, LayerMove, rende
 const EXPORT_PREVIEW_WIDTH: u32 = 1280;
 
 use super::draw::{
-    Glyph, apply_rail_drag, counted, icon_button, rail_heights, rail_section, rail_splitter,
-    section_scroll, short_name,
+    Glyph, apply_rail_drag, counted, icon_button, rail_at_default, rail_bar, rail_fit_body,
+    rail_scroll_to, rail_section, rail_splitter, section_scroll, short_name,
 };
-use super::{ACCENT, IncomingPhoto, MUTED, PANEL, PudduScrollApp, Route, SELECT_BG, TEXT};
+use super::{
+    ACCENT, IncomingPhoto, MUTED, PANEL, PudduScrollApp, RAIL_SECTIONS, Route, SELECT_BG, TEXT,
+};
 
 impl PudduScrollApp {
     pub(super) fn layer_panel(&mut self, ui: &mut egui::Ui) {
@@ -250,17 +252,40 @@ impl PudduScrollApp {
             egui::pos2(rail_rect.left() + 12.0, rail_rect.top() + 8.0),
             egui::pos2(rail_rect.right() - 12.0, rail_rect.bottom() - 8.0),
         );
+        let fitting = rail_at_default(self.rail_weights);
+        let scroll_id = rail_ui.scope_id().with("rail-scroll");
+        let extent_id = rail_ui.scope_id().with("rail-extent");
+        let stored_extent = rail_ui
+            .ctx()
+            .data(|data| data.get_temp::<f32>(extent_id))
+            .unwrap_or(0.0);
+        let stored_scroll = rail_ui
+            .ctx()
+            .data(|data| data.get_temp::<f32>(scroll_id))
+            .unwrap_or(0.0);
+        let wheel = if rail_ui.rect_contains_pointer(rail_rect) {
+            rail_ui.input(|input| input.smooth_scroll_delta().y)
+        } else {
+            0.0
+        };
+        let mut scroll = rail_scroll_to(stored_extent, inner.height(), stored_scroll, wheel);
+        if (scroll - stored_scroll).abs() > 0.1 {
+            rail_ui.ctx().request_repaint();
+        }
         let mut content = rail_ui.new_child(
             egui::UiBuilder::new()
                 .id_salt("rail-content")
-                .max_rect(inner)
+                .max_rect(rail_fit_body(inner, scroll))
                 .layout(egui::Layout::top_down(egui::Align::Min)),
         );
         content.set_clip_rect(inner);
-        let total = content.available_height();
-        let heights = rail_heights(total, self.rail_weights);
+        let mut heights = if fitting {
+            [0.0; RAIL_SECTIONS]
+        } else {
+            self.rail_weights
+        };
         let mut drag = None;
-        rail_section(&mut content, heights[0], "canvas", false, |ui| {
+        heights[0] = rail_section(&mut content, heights[0], fitting, "canvas", false, |ui| {
             self.canvas_panel(ui);
         });
         if let Some(delta) = rail_splitter(&mut content)
@@ -268,7 +293,7 @@ impl PudduScrollApp {
         {
             drag = Some((0, delta));
         }
-        rail_section(&mut content, heights[1], "frame", false, |ui| {
+        heights[1] = rail_section(&mut content, heights[1], fitting, "frame", false, |ui| {
             self.frame_panel(ui);
         });
         if let Some(delta) = rail_splitter(&mut content)
@@ -276,7 +301,7 @@ impl PudduScrollApp {
         {
             drag = Some((1, delta));
         }
-        rail_section(&mut content, heights[2], "photo", false, |ui| {
+        heights[2] = rail_section(&mut content, heights[2], fitting, "photo", false, |ui| {
             self.photo_panel(ui);
         });
         if let Some(delta) = rail_splitter(&mut content)
@@ -284,7 +309,7 @@ impl PudduScrollApp {
         {
             drag = Some((2, delta));
         }
-        rail_section(&mut content, heights[3], "crop", false, |ui| {
+        heights[3] = rail_section(&mut content, heights[3], fitting, "crop", false, |ui| {
             self.crop_panel(ui);
         });
         if let Some(delta) = rail_splitter(&mut content)
@@ -292,11 +317,26 @@ impl PudduScrollApp {
         {
             drag = Some((3, delta));
         }
-        rail_section(&mut content, heights[4], "layers", false, |ui| {
+        heights[4] = rail_section(&mut content, heights[4], fitting, "layers", false, |ui| {
             self.layer_panel(ui);
         });
+        let measured = content.min_rect();
+        let extent = if measured.max.y.is_finite() {
+            (measured.max.y - (inner.top() - scroll)).max(0.0)
+        } else {
+            0.0
+        };
+        let gutter = egui::Rect::from_min_max(
+            egui::pos2(inner.right(), inner.top()),
+            egui::pos2(rail_rect.right(), inner.bottom()),
+        );
+        scroll = rail_bar(&mut rail_ui, gutter, inner.height(), extent, scroll);
+        rail_ui.ctx().data_mut(|data| {
+            data.insert_temp(scroll_id, scroll);
+            data.insert_temp(extent_id, extent);
+        });
         if let Some((index, delta)) = drag {
-            self.rail_weights = apply_rail_drag(heights, index, delta, total);
+            self.rail_weights = apply_rail_drag(heights, index, delta, inner.height());
         }
     }
 }

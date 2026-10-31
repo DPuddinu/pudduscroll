@@ -10,9 +10,9 @@ use pudduscroll_core::{
 };
 
 use super::{
-    ACCENT, BG, CROP_HANDLE_HIT, EDITOR_ZOOM_SPEED, MAX_EDITOR_ZOOM, MAX_GRID_CELLS,
-    MIN_EDITOR_ZOOM, MIN_GRID_CELLS, OUTSIDE_FRAME_ALPHA, PANEL, RAIL_SECTION_MIN, RAIL_SECTIONS,
-    RAIL_SPLIT, TEXT,
+    ACCENT, BG, CROP_HANDLE_HIT, DEFAULT_RAIL_WEIGHTS, EDITOR_ZOOM_SPEED, MAX_EDITOR_ZOOM,
+    MAX_GRID_CELLS, MIN_EDITOR_ZOOM, MIN_GRID_CELLS, MUTED, OUTSIDE_FRAME_ALPHA, PANEL,
+    RAIL_SECTION_MIN, RAIL_SECTIONS, RAIL_SPLIT, TEXT,
 };
 
 pub(super) fn counted(count: usize, one: &str, many: &str) -> String {
@@ -159,39 +159,33 @@ const fn rail_min(room: f32) -> f32 {
     }
 }
 
-pub(super) fn rail_heights(total: f32, weights: [f32; RAIL_SECTIONS]) -> [f32; RAIL_SECTIONS] {
-    let room = rail_room(total);
-    let min = rail_min(room);
-    let sum = weights.into_iter().sum::<f32>().max(f32::EPSILON);
-    let mut heights = weights.map(|weight| room * (weight / sum));
-    for _ in 0..RAIL_SECTIONS {
-        let mut deficit = 0.0;
-        let mut spare = 0.0;
-        for height in &heights {
-            if *height < min {
-                deficit += min - *height;
-            } else {
-                spare += *height - min;
-            }
+const RAIL_PROBE: f32 = 4096.0;
+
+pub(super) const fn rail_at_default(weights: [f32; RAIL_SECTIONS]) -> bool {
+    let mut index = 0;
+    while index < RAIL_SECTIONS {
+        if (weights[index] - DEFAULT_RAIL_WEIGHTS[index]).abs() > f32::EPSILON {
+            return false;
         }
-        if deficit <= 0.01 || spare <= 0.01 {
-            break;
-        }
-        for height in &mut heights {
-            if *height < min {
-                *height = min;
-            } else {
-                let extra = *height - min;
-                *height -= deficit * (extra / spare);
-            }
-        }
+        index += 1;
     }
-    for height in &mut heights {
-        if *height < min {
-            *height = min;
-        }
+    true
+}
+
+pub(super) fn rail_fit_body(inner: egui::Rect, scroll: f32) -> egui::Rect {
+    egui::Rect::from_min_size(
+        egui::pos2(inner.left(), inner.top() - scroll),
+        egui::vec2(inner.width(), RAIL_PROBE * (RAIL_SECTIONS as f32 + 1.0)),
+    )
+}
+
+pub(super) const fn rail_scroll_to(extent: f32, viewport_h: f32, scroll: f32, wheel: f32) -> f32 {
+    let max_scroll = (extent - viewport_h).max(0.0);
+    if max_scroll <= 1.0 {
+        0.0
+    } else {
+        (scroll - wheel).clamp(0.0, max_scroll)
     }
-    heights
 }
 
 pub(super) fn apply_rail_drag(
@@ -237,15 +231,13 @@ pub(super) fn rail_splitter(ui: &mut egui::Ui) -> Option<f32> {
     response.dragged().then_some(delta)
 }
 
-pub(super) fn rail_section(
+fn place_rail_section(
     ui: &mut egui::Ui,
-    height: f32,
+    rect: egui::Rect,
     id: &str,
     divider: bool,
     add: impl FnOnce(&mut egui::Ui),
-) {
-    let width = ui.available_width();
-    let (_space_id, rect) = ui.allocate_space(egui::vec2(width, height.max(0.0)));
+) -> f32 {
     let clip = rect.intersect(ui.clip_rect());
     let mut child = ui.new_child(
         egui::UiBuilder::new()
@@ -262,6 +254,71 @@ pub(super) fn rail_section(
         );
     }
     add(&mut child);
+    let measured = child.min_rect();
+    if measured.max.y.is_finite() {
+        (measured.max.y - rect.top()).max(0.0)
+    } else {
+        0.0
+    }
+}
+
+pub(super) fn rail_section(
+    ui: &mut egui::Ui,
+    height: f32,
+    fit: bool,
+    id: &str,
+    divider: bool,
+    add: impl FnOnce(&mut egui::Ui),
+) -> f32 {
+    let width = ui.available_width();
+    if fit {
+        let origin = ui.available_rect_before_wrap().min;
+        let probe = egui::Rect::from_min_size(origin, egui::vec2(width, RAIL_PROBE));
+        let used = place_rail_section(ui, probe, id, divider, add);
+        ui.advance_cursor_after_rect(egui::Rect::from_min_size(origin, egui::vec2(width, used)));
+        return used;
+    }
+    let (_space_id, rect) = ui.allocate_space(egui::vec2(width, height.max(0.0)));
+    place_rail_section(ui, rect, id, divider, add);
+    height.max(0.0)
+}
+
+pub(super) fn rail_bar(
+    ui: &mut egui::Ui,
+    gutter: egui::Rect,
+    viewport_h: f32,
+    extent: f32,
+    mut scroll: f32,
+) -> f32 {
+    let max_scroll = (extent - viewport_h).max(0.0);
+    if max_scroll <= 1.0 || gutter.width() < 4.0 || gutter.height() < 8.0 {
+        return 0.0;
+    }
+    let response = ui.interact(gutter, ui.scope_id().with("rail-bar"), egui::Sense::drag());
+    if response.hovered() || response.dragged() {
+        ui.ctx().set_cursor_icon(if response.dragged() {
+            egui::CursorIcon::Grabbing
+        } else {
+            egui::CursorIcon::Grab
+        });
+    }
+    let track = gutter.shrink2(egui::vec2(4.0, 6.0));
+    let handle_h = (viewport_h / extent.max(1.0) * track.height()).clamp(28.0, track.height());
+    let travel = (track.height() - handle_h).max(1.0);
+    scroll = scroll.clamp(0.0, max_scroll);
+    if response.dragged() {
+        let next = (scroll + response.drag_delta().y * max_scroll / travel).clamp(0.0, max_scroll);
+        if (next - scroll).abs() > 0.1 {
+            ui.ctx().request_repaint();
+        }
+        scroll = next;
+    }
+    let handle = egui::Rect::from_min_size(
+        egui::pos2(track.left(), track.top() + scroll / max_scroll * travel),
+        egui::vec2(track.width(), handle_h),
+    );
+    ui.painter().rect_filled(handle, 2.0, MUTED);
+    scroll
 }
 
 pub(super) fn paint_frame(
@@ -597,6 +654,38 @@ pub(super) fn pick_image_path(title: &str) -> Option<PathBuf> {
         .set_title(title)
         .add_filter("Images", &["png", "jpg", "jpeg", "webp"])
         .pick_file()
+}
+
+pub(super) fn pick_zip_path() -> Option<PathBuf> {
+    rfd::FileDialog::new()
+        .set_title("Import carousel")
+        .add_filter("Carousel", &["zip"])
+        .pick_file()
+}
+
+pub(super) fn save_zip_path(file_name: &str) -> Option<PathBuf> {
+    rfd::FileDialog::new()
+        .set_title("Share carousel")
+        .add_filter("Carousel", &["zip"])
+        .set_file_name(file_name)
+        .save_file()
+}
+
+pub(super) fn zip_file_name(name: &str) -> String {
+    let mut file = String::new();
+    for ch in name.chars() {
+        if matches!(ch, '<' | '>' | ':' | '"' | '/' | '\\' | '|' | '?' | '*') || ch.is_control() {
+            file.push('-');
+        } else {
+            file.push(ch);
+        }
+    }
+    let file = file.trim().trim_end_matches(['.', ' ']);
+    if file.is_empty() {
+        "carousel.zip".to_string()
+    } else {
+        format!("{file}.zip")
+    }
 }
 
 pub(super) fn texture_from_preview(
@@ -977,7 +1066,7 @@ pub(super) fn section_scroll(ui: &mut egui::Ui, salt: &str) -> egui::ScrollArea 
     ui.spacing_mut().scroll = scroll;
     egui::ScrollArea::vertical()
         .id_salt(salt)
-        .auto_shrink([false, false])
+        .auto_shrink([false, true])
         .content_margin(0.0)
         .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::VisibleWhenNeeded)
 }

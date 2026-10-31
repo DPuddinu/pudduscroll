@@ -1,6 +1,6 @@
 [package]
 name = "pudduscroll-display"
-version = "0.1.0"
+version = "0.2.0"
 description = "Read the operating system display color profile"
 edition.workspace = true
 license.workspace = true
@@ -12,6 +12,7 @@ windows = { version = "0.62.2", features = [
     "Win32_Devices_Display",
     "Win32_Graphics_Gdi",
     "Win32_UI_ColorSystem",
+    "Win32_UI_WindowsAndMessaging",
 ] }
 
 [target.'cfg(all(unix, not(any(target_os = "macos", target_os = "ios", target_os = "android"))))'.dependencies]

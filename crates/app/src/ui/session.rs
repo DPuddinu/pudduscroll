@@ -7,16 +7,20 @@ use std::time::{Duration, Instant};
 
 use eframe::egui;
 use pudduscroll_core::{
-    AspectRatio, ExportFormat, ExportSettings, FrameId, FrameImages, Layout, decode_frame_images,
+    AspectRatio, ExportSettings, FrameId, FrameImages, Layout, decode_frame_images,
     existing_export_files, export_layout_canvases_with, layout_export_width,
 };
 
 use crate::library::{
-    DEFAULT_GRID_CELLS, Library, SaveRequest, clamp_grid_cells, library_directory, load_blob,
-    write_snapshot,
+    Carousel, DEFAULT_GRID_CELLS, Library, SaveRequest, carousel_package, clamp_grid_cells,
+    clipboard_has_image, clipboard_image, clipboard_image_stamp, direct_image_url,
+    fetch_linked_image, library_directory, load_blob, read_carousel_package, write_snapshot,
 };
 
-use super::draw::{apply_style, export_folder, pick_image_path, save_folder, texture_from_preview};
+use super::draw::{
+    apply_style, export_folder, pick_image_path, pick_zip_path, save_folder, save_zip_path,
+    texture_from_preview, zip_file_name,
+};
 use super::history::{Edit, EditHistory, HISTORY_WINDOW, HistoryKind, photo_stamp};
 use super::{
     DEFAULT_EDITOR_ZOOM, DEFAULT_RAIL_WEIGHTS, DecodeTarget, EstimateMsg, EstimateUpdate,
@@ -41,10 +45,13 @@ impl PudduScrollApp {
             cover_textures: HashMap::new(),
             card_previews: HashMap::new(),
             selected: None,
+            selected_canvases: Vec::new(),
+            canvas_marquee: None,
             edit_frame: false,
             free_rotate: false,
-            quality: 90,
-            format: ExportFormat::Jpeg,
+            settings: crate::settings::AppSettings::load(),
+            settings_open: false,
+            rebind: None,
             preview_index: 0,
             preview_texture: None,
             preview_key: None,
@@ -54,6 +61,7 @@ impl PudduScrollApp {
             drag: None,
             gesture: "none".to_string(),
             status: "Opening library…".to_string(),
+            toaster: super::toast::Toaster::default(),
             estimate_mb: None,
             estimate_for: None,
             estimate_canvases: None,
@@ -95,6 +103,15 @@ impl PudduScrollApp {
             grid_cells: DEFAULT_GRID_CELLS,
             rail_weights: DEFAULT_RAIL_WEIGHTS,
             create_open: false,
+            link_open: false,
+            link_url: String::new(),
+            sharing: false,
+            importing: false,
+            paste_stamp: None,
+            paste_mark: None,
+            paste_job: None,
+            paste_focused: false,
+            paste_look: 0,
             create_name: "Template".to_string(),
             create_ratio: AspectRatio::FOUR_FIVE,
             create_cover: None,
@@ -229,7 +246,7 @@ impl PudduScrollApp {
             .is_ok()
             && let Ok(Err(error)) = rx.recv()
         {
-            self.status = error;
+            self.toast(error);
         }
     }
 
@@ -248,6 +265,7 @@ impl PudduScrollApp {
             return;
         };
         self.history.checkpoint(edit);
+        self.dismiss_undo_toasts();
     }
 
     pub(super) fn edit_coalesced(&mut self, kind: HistoryKind) {
@@ -360,6 +378,8 @@ impl PudduScrollApp {
             self.selected = None;
             self.edit_frame = false;
         }
+        self.selected_canvases.clear();
+        self.canvas_marquee = None;
         self.drag = None;
         self.drag_origin = None;
         self.crop_session = None;
@@ -391,6 +411,7 @@ impl PudduScrollApp {
         let Some(previous) = self.history.take_undo(current) else {
             return;
         };
+        self.dismiss_undo_toasts();
         self.restore_edit(previous, ctx);
         self.status = "Undone".to_string();
     }
@@ -403,6 +424,7 @@ impl PudduScrollApp {
         let Some(next) = self.history.take_redo(current) else {
             return;
         };
+        self.dismiss_undo_toasts();
         self.restore_edit(next, ctx);
         self.status = "Redone".to_string();
     }
@@ -458,8 +480,8 @@ impl PudduScrollApp {
         let estimate_msg = self.poll_estimate();
         if let Some(msg) = estimate_msg {
             if msg.geometry == self.geometry_revision
-                && msg.quality == self.quality
-                && msg.format == self.format
+                && msg.quality == self.settings.quality
+                && msg.format == self.settings.format
             {
                 match msg.result {
                     Ok(canvases) => {
@@ -469,15 +491,19 @@ impl PudduScrollApp {
                         self.estimate_canvases = Some(canvases);
                     }
                     Err(error) => {
-                        self.status = error;
+                        self.toast(error);
                         self.estimate_mb = None;
                         self.estimate_canvases = None;
                     }
                 }
             }
         }
-        let estimate_current =
-            self.estimate_for == Some((self.geometry_revision, self.quality, self.format));
+        let estimate_current = self.estimate_for
+            == Some((
+                self.geometry_revision,
+                self.settings.quality,
+                self.settings.format,
+            ));
         if self.export_open && self.estimate_rx.is_none() && !estimate_current {
             match self.estimate_after {
                 Some(at) if Instant::now() >= at => self.spawn_estimate(),
@@ -581,10 +607,13 @@ impl PudduScrollApp {
         if let Some(result) = finished {
             self.export_rx = None;
             self.exporting = false;
-            self.status = match result {
-                Ok(message) => message,
-                Err(error) => error,
-            };
+            match result {
+                Ok(message) => self.status = message,
+                Err(error) => {
+                    self.status.clear();
+                    self.toast(error);
+                }
+            }
         }
     }
 
@@ -659,8 +688,33 @@ impl PudduScrollApp {
             }
             IncomingPhoto::Saved { generation, result } => match result {
                 Ok(()) => self.library.stored_generation(generation),
-                Err(error) => self.status = error,
+                Err(error) => self.toast(error),
             },
+            IncomingPhoto::Shared(result) => {
+                self.sharing = false;
+                match result {
+                    Ok(message) => self.status = message,
+                    Err(error) => {
+                        self.status.clear();
+                        self.toast(error);
+                    }
+                }
+            }
+            IncomingPhoto::Imported(result) => {
+                self.importing = false;
+                match result {
+                    Ok(carousel) => {
+                        let name = carousel.name.clone();
+                        self.library.import_carousel(carousel);
+                        self.note_geometry();
+                        self.status = format!("{name} imported");
+                    }
+                    Err(error) => {
+                        self.status.clear();
+                        self.toast(error);
+                    }
+                }
+            }
         }
     }
 
@@ -676,7 +730,8 @@ impl PudduScrollApp {
             }
             Err(error) => {
                 self.can_store = false;
-                self.status = error;
+                self.status.clear();
+                self.toast_persist(error);
             }
         }
         self.library_ready = true;
@@ -698,13 +753,17 @@ impl PudduScrollApp {
                 }
                 match result {
                     Ok(blob) => {
-                        if !self.finish_frame_photo(carousel_id, frame_id, token, blob) {
+                        let placed = self.finish_frame_photo(carousel_id, frame_id, token, blob);
+                        if !placed {
                             self.loading.remove(&(carousel_id, frame_id));
                         }
+                        self.finish_paste_job(token, frame_id, placed);
                     }
                     Err(error) => {
                         self.loading.remove(&(carousel_id, frame_id));
-                        self.status = error;
+                        self.status.clear();
+                        self.toast(error);
+                        self.finish_paste_job(token, frame_id, false);
                     }
                 }
             }
@@ -723,7 +782,8 @@ impl PudduScrollApp {
                     }
                     Err(error) => {
                         self.cover_load = None;
-                        self.status = error;
+                        self.status.clear();
+                        self.toast(error);
                     }
                 }
             }
@@ -781,8 +841,8 @@ impl PudduScrollApp {
             return;
         };
         let encoded = self.original_bytes();
-        let quality = self.quality;
-        let format = self.format;
+        let quality = self.settings.quality;
+        let format = self.settings.format;
         let geometry = self.geometry_revision;
         let (tx, rx) = mpsc::channel();
         let progress = tx.clone();
@@ -822,6 +882,9 @@ impl PudduScrollApp {
     }
 
     pub(super) fn handle_keys(&mut self, ctx: &egui::Context) {
+        if self.capture_rebind(ctx) {
+            return;
+        }
         if self.overwrite_dir.is_some() {
             return;
         }
@@ -842,41 +905,28 @@ impl PudduScrollApp {
                 return;
             }
         }
+        let paste = matches!(self.route, Route::Carousel(_))
+            && self.selected.is_some()
+            && self.crop_session.is_none()
+            && !self.export_open
+            && !self.link_open
+            && !self.create_open
+            && !self.settings_open
+            && !ctx.text_edit_focused();
+        if paste && ctx.input_mut(|input| take_frame_paste(input, self.paste_stamp.is_some())) {
+            self.paste_clipboard(ctx);
+            return;
+        }
         if ctx.egui_wants_keyboard_input() {
             return;
         }
-        if !matches!(self.route, Route::Home) {
-            let redo = ctx.input_mut(|input| {
-                input.consume_key(
-                    egui::Modifiers::COMMAND | egui::Modifiers::SHIFT,
-                    egui::Key::Z,
-                ) || input.consume_key(egui::Modifiers::COMMAND, egui::Key::Y)
-            });
-            let undo =
-                ctx.input_mut(|input| input.consume_key(egui::Modifiers::COMMAND, egui::Key::Z));
-            if redo {
-                self.crop_session = None;
-                self.crop_press = None;
-                self.redo_edit(ctx);
-                return;
-            }
-            if undo {
-                if self.crop_session.take().is_some() {
-                    self.crop_press = None;
-                    self.status = "Crop canceled".to_string();
-                    return;
-                }
-                self.undo_edit(ctx);
-                return;
-            }
+        let ran = self.dispatch_shortcuts(ctx);
+        if !matches!(self.route, Route::Home) && !self.settings_open {
             ctx.input_mut(|input| {
                 input.consume_key(egui::Modifiers::NONE, egui::Key::Space);
             });
         }
-        if ctx.input(|input| input.key_pressed(egui::Key::Delete)) {
-            self.delete_selection();
-        }
-        if !self.export_open {
+        if ran || !self.export_open {
             return;
         }
         let Some((_, count)) = self.metrics() else {
@@ -1112,6 +1162,161 @@ impl PudduScrollApp {
         ctx.request_repaint();
     }
 
+    pub(super) fn spawn_link(&mut self, ctx: &egui::Context, frame_id: FrameId, url: String) {
+        let Route::Carousel(carousel_id) = self.route else {
+            return;
+        };
+        if self.loading.contains_key(&(carousel_id, frame_id)) {
+            return;
+        }
+        if let Err(error) = direct_image_url(&url) {
+            self.toast(error);
+            return;
+        }
+        let token = self.next_token();
+        self.loading.insert((carousel_id, frame_id), token);
+        self.status = "Loading photo…".to_string();
+        self.link_open = false;
+        let tx = self.photo_tx.clone();
+        thread::spawn(move || {
+            let result = fetch_linked_image(&url);
+            let _ = tx.send(IncomingPhoto::Decoded {
+                token,
+                target: DecodeTarget::Frame {
+                    carousel_id,
+                    frame_id,
+                },
+                result,
+            });
+        });
+        ctx.request_repaint();
+    }
+
+    pub(super) fn share_carousel(&mut self) {
+        let Route::Carousel(id) = self.route else {
+            return;
+        };
+        if self.sharing {
+            return;
+        }
+        let Some(carousel) = self
+            .library
+            .carousels
+            .iter()
+            .find(|carousel| carousel.id == id)
+        else {
+            return;
+        };
+        let packaged = Carousel {
+            id: carousel.id,
+            name: carousel.name.clone(),
+            layout: carousel.layout.clone(),
+            photos: carousel.photos.clone(),
+            grid_cells: carousel.grid_cells,
+        };
+        let Some(path) = save_zip_path(&zip_file_name(&packaged.name)) else {
+            return;
+        };
+        self.sharing = true;
+        self.status = "Sharing…".to_string();
+        let tx = self.photo_tx.clone();
+        thread::spawn(move || {
+            let result = carousel_package(&packaged)
+                .and_then(|bytes| std::fs::write(&path, bytes).map_err(|error| error.to_string()))
+                .map(|()| format!("Shared {}", path.display()));
+            let _ = tx.send(IncomingPhoto::Shared(result));
+        });
+    }
+
+    pub(super) fn import_package(&mut self) {
+        if self.importing {
+            return;
+        }
+        let Some(path) = pick_zip_path() else {
+            return;
+        };
+        self.importing = true;
+        self.status = "Importing…".to_string();
+        let tx = self.photo_tx.clone();
+        thread::spawn(move || {
+            let result = std::fs::read(&path)
+                .map_err(|error| format!("Could not read {}: {error}", path.display()))
+                .and_then(|bytes| read_carousel_package(&bytes));
+            let _ = tx.send(IncomingPhoto::Imported(result));
+        });
+    }
+
+    pub(super) fn refresh_paste_offer(&mut self, ctx: &egui::Context) {
+        let focused = ctx.input(|input| input.viewport().focused.unwrap_or(false));
+        if cfg!(windows) {
+            self.paste_stamp = clipboard_image_stamp();
+        } else if focused && !self.paste_focused {
+            self.paste_look = self.paste_look.wrapping_add(1);
+            self.paste_stamp = clipboard_has_image().then_some(self.paste_look);
+        }
+        self.paste_focused = focused;
+    }
+
+    pub(super) fn paste_ready(&self) -> bool {
+        let Route::Carousel(carousel_id) = self.route else {
+            return false;
+        };
+        let Some(frame_id) = self.selected else {
+            return false;
+        };
+        if self.loading.contains_key(&(carousel_id, frame_id)) {
+            return false;
+        }
+        let Some(stamp) = self.paste_stamp else {
+            return false;
+        };
+        self.paste_mark != Some((stamp, frame_id))
+    }
+
+    pub(super) fn paste_clipboard(&mut self, ctx: &egui::Context) {
+        let Route::Carousel(carousel_id) = self.route else {
+            return;
+        };
+        let Some(frame_id) = self.selected else {
+            self.toast("Select a frame");
+            return;
+        };
+        if self.loading.contains_key(&(carousel_id, frame_id)) {
+            return;
+        }
+        let token = self.next_token();
+        self.loading.insert((carousel_id, frame_id), token);
+        self.paste_job = Some((token, self.paste_stamp.unwrap_or(0), frame_id));
+        self.status = "Pasting photo…".to_string();
+        let tx = self.photo_tx.clone();
+        thread::spawn(move || {
+            let result = clipboard_image();
+            let _ = tx.send(IncomingPhoto::Decoded {
+                token,
+                target: DecodeTarget::Frame {
+                    carousel_id,
+                    frame_id,
+                },
+                result,
+            });
+        });
+        ctx.request_repaint();
+    }
+
+    fn finish_paste_job(&mut self, token: u64, frame_id: FrameId, placed: bool) {
+        let Some((job_token, _, job_frame)) = self.paste_job else {
+            return;
+        };
+        if job_token != token || job_frame != frame_id {
+            return;
+        }
+        self.paste_job = None;
+        if placed {
+            let stamp = self.paste_stamp.unwrap_or(0);
+            self.paste_mark = Some((stamp, frame_id));
+        }
+    }
+
     pub(super) fn remove_photo(&mut self, id: FrameId) {
         self.checkpoint();
         self.forget_load(id);
@@ -1129,6 +1334,7 @@ impl PudduScrollApp {
         self.drag = None;
         self.free_rotate = false;
         self.status = "Photo removed".to_string();
+        self.toast_undo("Photo deleted");
         self.note_geometry();
     }
 
@@ -1154,6 +1360,32 @@ impl PudduScrollApp {
         }
     }
 
+    pub(super) fn remove_selected_canvases(&mut self, indices: &[usize]) {
+        self.checkpoint();
+        let shift = indices
+            .iter()
+            .filter(|index| **index < self.preview_index)
+            .count();
+        let Some(removed) = self
+            .layout_mut()
+            .and_then(|layout| layout.remove_canvases(indices))
+        else {
+            return;
+        };
+        for id in removed {
+            self.release_frame(id);
+        }
+        self.selected_canvases.clear();
+        self.canvas_marquee = None;
+        self.preview_index = self.preview_index.saturating_sub(shift);
+        self.toast_undo(if indices.len() == 1 {
+            "Canvas deleted"
+        } else {
+            "Canvases deleted"
+        });
+        self.note_geometry();
+    }
+
     pub(super) fn remove_frame(&mut self, id: FrameId) {
         self.checkpoint();
         self.release_frame(id);
@@ -1163,12 +1395,15 @@ impl PudduScrollApp {
         self.drag = None;
         self.edit_frame = false;
         self.status = "Frame removed".to_string();
+        self.toast_undo("Frame deleted");
         self.note_geometry();
     }
 
     pub(super) fn enter(&mut self, route: Route, ctx: &egui::Context) {
         self.route = route;
         self.selected = None;
+        self.selected_canvases.clear();
+        self.canvas_marquee = None;
         self.edit_frame = false;
         self.free_rotate = false;
         self.drag = None;
@@ -1189,10 +1424,12 @@ impl PudduScrollApp {
         self.strip_rect = None;
         self.view_rect = None;
         self.history.clear();
+        self.dismiss_undo_toasts();
         self.drag_origin = None;
         self.export_open = false;
         self.cancel_overwrite();
         self.create_open = false;
+        self.link_open = false;
         self.show_grid = true;
         self.snap_to_grid = true;
         self.plus_rects.clear();
@@ -1205,15 +1442,19 @@ impl PudduScrollApp {
     pub(super) fn go_home(&mut self) {
         self.library.visuals = self.library.visuals.wrapping_add(1);
         self.persist();
+        self.dismiss_undo_toasts();
         self.route = Route::Home;
         self.drag = None;
         self.crop_session = None;
         self.crop_press = None;
         self.selected = None;
+        self.selected_canvases.clear();
+        self.canvas_marquee = None;
         self.edit_frame = false;
         self.free_rotate = false;
         self.export_open = false;
         self.cancel_overwrite();
+        self.link_open = false;
         self.assets.clear();
         self.preview_job = None;
         self.pending_uploads.retain(|pending| {
@@ -1226,14 +1467,48 @@ impl PudduScrollApp {
     }
 
     pub(super) fn start_export(&mut self) {
-        let Some(dir) = rfd::FileDialog::new().pick_folder() else {
+        let Some(dir) = self.pick_export_folder() else {
             return;
         };
+        self.use_export_folder(dir);
+    }
+
+    pub(super) fn export_saved_folder(&mut self) {
+        match self.settings.folder.clone() {
+            Some(dir) if dir.is_dir() => self.export_into(dir),
+            _ => {
+                self.settings.folder = None;
+                self.save_settings();
+                self.toast("Choose a folder");
+                self.start_export();
+            }
+        }
+    }
+
+    fn pick_export_folder(&self) -> Option<PathBuf> {
+        let mut dialog = rfd::FileDialog::new();
+        if let Some(dir) = &self.settings.folder
+            && dir.is_dir()
+        {
+            dialog = dialog.set_directory(dir);
+        }
+        dialog.pick_folder()
+    }
+
+    fn use_export_folder(&mut self, dir: PathBuf) {
+        if self.settings.folder.as_ref() != Some(&dir) {
+            self.settings.folder = Some(dir.clone());
+            self.save_settings();
+        }
+        self.export_into(dir);
+    }
+
+    fn export_into(&mut self, dir: PathBuf) {
         let name = self.item_name();
         let Some(count) = self.layout().map(|layout| layout.canvas_count) else {
             return;
         };
-        let existing = existing_export_files(&dir, &name, self.format, count);
+        let existing = existing_export_files(&dir, &name, self.settings.format, count);
         if !existing.is_empty() {
             self.overwrite_names = existing;
             self.overwrite_dir = Some(dir);
@@ -1259,8 +1534,8 @@ impl PudduScrollApp {
         let Some(layout) = self.layout().cloned() else {
             return;
         };
-        let quality = self.quality;
-        let format = self.format;
+        let quality = self.settings.quality;
+        let format = self.settings.format;
         let name = self.item_name();
         let (tx, rx) = mpsc::channel();
         self.exporting = true;
@@ -1304,6 +1579,26 @@ impl PudduScrollApp {
     }
 }
 
+fn take_frame_paste(input: &mut egui::InputState, has_image: bool) -> bool {
+    let mut found = false;
+    input.events.retain(|event| {
+        let hit = match event {
+            egui::Event::PasteImage(_) => true,
+            egui::Event::Paste(_) => has_image,
+            egui::Event::Key {
+                key: egui::Key::V,
+                modifiers,
+                pressed: true,
+                ..
+            } => modifiers.matches_logically(egui::Modifiers::COMMAND),
+            _ => false,
+        };
+        found |= hit;
+        !hit
+    });
+    found
+}
+
 fn spawn_saver(photo_tx: Sender<IncomingPhoto>) -> Sender<SaveRequest> {
     let (tx, rx) = mpsc::channel::<SaveRequest>();
     thread::spawn(move || {
@@ -1324,4 +1619,44 @@ fn spawn_saver(photo_tx: Sender<IncomingPhoto>) -> Sender<SaveRequest> {
         }
     });
     tx
+}
+
+#[cfg(test)]
+mod tests {
+    use eframe::egui;
+
+    use super::take_frame_paste;
+
+    fn image_paste() -> egui::Event {
+        egui::Event::PasteImage(std::sync::Arc::new(egui::ColorImage::filled(
+            [1, 1],
+            egui::Color32::WHITE,
+        )))
+    }
+
+    #[test]
+    fn copied_image_paste_is_taken_without_a_v_key() {
+        let mut input = egui::InputState::default();
+        input.events.push(image_paste());
+        assert!(take_frame_paste(&mut input, false));
+        assert_eq!(input.events.len(), 0);
+    }
+
+    #[test]
+    fn copied_image_with_a_url_is_taken() {
+        let mut input = egui::InputState::default();
+        input
+            .events
+            .push(egui::Event::Paste("https://example.com/a.jpg".into()));
+        assert!(take_frame_paste(&mut input, true));
+        assert_eq!(input.events.len(), 0);
+    }
+
+    #[test]
+    fn text_paste_without_an_image_is_left_alone() {
+        let mut input = egui::InputState::default();
+        input.events.push(egui::Event::Paste("hello".into()));
+        assert!(!take_frame_paste(&mut input, false));
+        assert_eq!(input.events.len(), 1);
+    }
 }

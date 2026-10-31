@@ -1472,17 +1472,82 @@ fn removing_a_canvas_deletes_frames_that_overlap_it() {
     layout.set_frame_rect(above, 1.1, -0.8, 0.4, 0.5);
     let spanning = layout.add_frame();
     layout.set_frame_rect(spanning, 0.6, 0.1, 0.8, 0.5);
-    let removed = layout.remove_canvas().unwrap();
+    let removed = layout.remove_canvases(&[1]).unwrap();
     assert_eq!(layout.canvas_count, 1);
     assert!(layout.frame(keep).is_some());
     assert!(layout.frame(drop).is_none());
     assert!(layout.frame(hanging).is_some());
+    assert!((layout.frame(hanging).unwrap().x - 1.2).abs() < 1e-4);
     assert!(layout.frame(above).is_some());
+    assert!((layout.frame(above).unwrap().x - 1.1).abs() < 1e-4);
     assert!(layout.frame(spanning).is_none());
     assert!(removed.contains(&drop));
     assert!(removed.contains(&spanning));
     assert!(!removed.contains(&keep));
-    assert!(layout.remove_canvas().is_none());
+    assert!(layout.remove_canvases(&[0]).is_none());
+}
+
+#[test]
+fn removing_selected_canvases_closes_the_gap() {
+    let mut layout = Layout::new(AspectRatio::SQUARE);
+    layout.set_canvas_count(4);
+    let left = layout.add_frame();
+    layout.set_frame_rect(left, 0.2, 0.2, 0.5, 0.5);
+    let middle = layout.add_frame();
+    layout.set_frame_rect(middle, 1.2, 0.2, 0.4, 0.4);
+    let right = layout.add_frame();
+    layout.set_frame_rect(right, 2.2, 0.1, 0.5, 0.6);
+    let span = layout.add_frame();
+    layout.set_frame_rect(span, 1.6, 0.1, 0.8, 0.5);
+    let removed = layout.remove_canvases(&[1, 3]).unwrap();
+    assert_eq!(layout.canvas_count, 2);
+    assert!((layout.frame(left).unwrap().x - 0.2).abs() < 1e-4);
+    assert!(layout.frame(middle).is_none());
+    assert!(layout.frame(span).is_none());
+    assert!((layout.frame(right).unwrap().x - 1.2).abs() < 1e-4);
+    assert!(removed.contains(&middle) && removed.contains(&span));
+    assert!(!removed.contains(&left) && !removed.contains(&right));
+}
+
+#[test]
+fn removing_the_first_canvas_shifts_the_rest_left() {
+    let mut layout = Layout::new(AspectRatio::SQUARE);
+    layout.set_canvas_count(3);
+    let stay = layout.add_frame();
+    layout.set_frame_rect(stay, 1.25, 0.0, 0.5, 1.0);
+    let gone = layout.add_frame();
+    layout.set_frame_rect(gone, 0.1, 0.1, 0.4, 0.4);
+    let removed = layout.remove_canvases(&[0]).unwrap();
+    assert_eq!(layout.canvas_count, 2);
+    assert!(removed.contains(&gone));
+    assert!((layout.frame(stay).unwrap().x - 0.25).abs() < 1e-4);
+}
+
+#[test]
+fn removing_canvases_keeps_one_and_ignores_unknown_indices() {
+    let mut layout = Layout::new(AspectRatio::SQUARE);
+    layout.set_canvas_count(3);
+    assert!(layout.remove_canvases(&[]).is_none());
+    assert!(layout.remove_canvases(&[9]).is_none());
+    assert!(layout.remove_canvases(&[0, 1, 2]).is_none());
+    assert_eq!(layout.canvas_count, 3);
+    let removed = layout.remove_canvases(&[0, 0, 9]);
+    assert!(removed.is_some());
+    assert_eq!(layout.canvas_count, 2);
+}
+
+#[test]
+fn a_span_selects_every_canvas_it_touches() {
+    assert_eq!(canvases_touched(4, 0.5, 0.2, 2.1, 0.8), vec![0, 1, 2]);
+    assert_eq!(canvases_touched(4, 2.1, 0.8, 0.5, 0.2), vec![0, 1, 2]);
+    assert_eq!(canvases_touched(4, 0.2, 1.2, 0.8, 1.5), Vec::<usize>::new());
+    assert_eq!(canvases_touched(4, 0.2, 0.5, 1.8, 0.5), vec![0, 1]);
+    assert_eq!(canvases_touched(4, 1.2, 0.1, 1.2, 0.9), vec![1]);
+    assert_eq!(canvas_at(4, 1.0, 0.5), Some(1));
+    assert_eq!(canvas_at(4, 4.0, 1.0), Some(3));
+    assert_eq!(canvas_at(4, 4.01, 0.5), None);
+    assert_eq!(canvas_at(4, -0.1, 0.5), None);
+    assert_eq!(canvas_at(4, 0.5, -0.1), None);
 }
 
 #[test]

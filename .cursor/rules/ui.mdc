@@ -31,4 +31,4 @@ Colors, type, and chrome sizes live in `crates/app/src/ui/mod.rs`. Motion uses `
 
 - A button names the action ("Create template", "Choose folder").
 - An empty screen names what is missing ("No templates yet.").
-- Loading and failure stay visible in `status` or an inline label ("Estimating size…") until the work ends.
+- Loading stays in `status` until the work ends ("Estimating size…"). A failure calls `toast`.

@@ -122,7 +122,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           cat > release-notes.md << 'ENDNOTES'
-          PudduScroll 0.1.0 is the first desktop release. Photos sit on a horizontal strip of canvases and can cross the boundaries, so a swipe looks seamless.
+          PudduScroll 0.2.0 adds a window menu, saved export defaults, and ways to move a carousel to another machine.
 
           ## Downloads
 
@@ -150,51 +150,38 @@ jobs:
           - macOS: `~/Library/Application Support/pudduscroll`
           - Linux: `$XDG_DATA_HOME/pudduscroll`, or `~/.local/share/pudduscroll`
 
-          ## Templates and carousels
+          ## New
 
-          - The home screen lists templates and carousels.
-          - Create a template with a name, a cover image (PNG, JPEG, or WebP), and a starting ratio. A new template starts at 4:5.
-          - Click a template to start a carousel from its layout. Edit changes the template. Delete removes it.
-          - A template stores the frames and the layout. Photos are added on the carousel.
-          - A carousel card shows a preview of the first slide. Rename it on the card. Duplicate copies the layout, the photos, and the grid. Delete removes that carousel only.
-          - The library is saved as you edit, and again when the app closes.
+          - The app icon at the top left of the window opens the system menu. New carousel and Settings sit above Restore, Move, Size, Minimize, Maximize, and Close.
+          - New carousel starts a blank carousel at 4:5 with one empty frame.
+          - Settings stores the export you use most: JPEG or PNG, JPEG quality, and a folder. The next export uses those. Choosing another folder in the export dialog saves that folder as the new default.
+          - Shortcuts for the actions used most often. Change in Settings stores a new one. Two commands cannot share a shortcut. Paste image stays Ctrl+V, or Cmd+V on macOS.
 
-          ## Canvas
+          | Action | Windows and Linux | macOS |
+          | --- | --- | --- |
+          | New carousel | Ctrl+N | Cmd+N |
+          | Settings | Ctrl+, | Cmd+, |
+          | Export | Ctrl+E | Cmd+E |
+          | Undo | Ctrl+Z | Cmd+Z |
+          | Redo | Ctrl+Shift+Z, and Ctrl+Y | Cmd+Shift+Z, and Cmd+Y |
+          | Delete | Delete | Delete |
+          | Add frame | F | F |
+          | Add canvas | ] | ] |
+          | Toggle grid | G | G |
+          | Home | Ctrl+H | Cmd+H |
+          | Paste image | Ctrl+V | Cmd+V |
 
-          - Ratios are 1:1, 4:5, 3:4, and 9:16. 3:4 is the taller Instagram portrait.
-          - Changing the ratio resizes every canvas and leaves each frame where it sits on the strip, including across the gaps.
-          - Add or remove canvases, from 1 up to 20. The count is shown as `03 / 20`.
-          - The pixel size under the ratio is the size export will write. Width is the largest size that still uses each photo’s own pixels, so a slide stays within the crop. When that size cannot be taken from a photo, the width is 1080 px. Height follows the ratio.
+          - Share writes the open carousel, including its photos, to a zip. Import on the home screen opens that zip as a new carousel.
+          - Paste image puts a picture from the clipboard on the selected frame. From link loads a photo from an image URL onto that frame.
+          - Add left inserts a canvas at the start of the strip. Select one or more canvases and Remove deletes those slides and closes the gap. At least one canvas stays.
+          - Move left and Move right exchange the selected frame with its neighbor and keep each frame’s width.
 
-          ## Frames and photos
+          ## Fixes
 
-          - Add frame drops a new frame onto the strip, one canvas wide, on the next canvas and on top.
-          - Edit frame turns on move and resize for the selected frame. Drag the frame to move it, including across canvas boundaries. Drag a corner to resize and keep its shape. Drag an edge to change one side.
-          - The ratio buttons set that frame’s shape: 1:1, 4:5, 3:4, or 9:16. Remove frame deletes the selected frame. Delete does the same when the frame has no photo.
-          - Grid draws an alignment grid on every canvas, from 2 to 16 squares. Snap, with the grid on, pulls a frame onto that grid when you release a move or a resize. The square count is kept with each carousel.
-          - On a carousel, an empty frame shows a plus. Click it and pick a PNG, JPEG, or WebP. The photo fills the frame.
-          - With Edit frame off, drag a photo to slide it inside the frame. With Edit frame on, scroll over the selected photo to zoom it toward the pointer, from 1× up to 8×.
-          - Rotate by 90° counterclockwise or clockwise, or turn on Free and drag the handle for any angle. Remove photo clears the picture and leaves the frame. Delete does the same when a photo is selected.
-          - A photo can have a border. The slider and the percent field run from 0 to 100. The swatch opens a color picker. The border is drawn inside the frame and is clipped with the slide.
-          - Crop applies to the selected photo on a carousel. Presets are Original, 1:1, 4:5, 3:4, 3:2, 16:9, 9:16, and Freehand. A locked preset keeps that shape while you drag. Freehand moves each edge on its own. Original restores the full picture. Crop keeps the photo’s proportions. Enter keeps the crop. Escape cancels it.
-          - Every frame is a layer. The list is front to back: the top row draws on top and wins the click. Hover a row to move that frame up, down, to the front, or to the back. Click a row to select it.
-
-          ## Editing
-
-          - Scroll to zoom the strip. Hold Alt and scroll, or hold Space and drag, to move along it. Click empty space to clear the selection.
-          - The right rail holds Canvas, Frame, Photo, Crop, and Layers. Drag the splits between those sections to give one of them more room.
-          - Undo is Ctrl+Z, or Cmd+Z on macOS. Redo is Ctrl+Y, Cmd+Y, Ctrl+Shift+Z, or Cmd+Shift+Z. A drag, a zoom, a border change, and a grid change each become one step. Undo cancels an open crop before it steps back through edits.
-          - Canvas previews follow the monitor color profile, using a profile embedded in the file. Export is rendered from the original file bytes.
-          - Canvas dividers are shown while editing.
-
-          ## Export
-
-          - Export is available once a carousel has a photo. It writes one image per canvas into a folder you pick.
-          - The dialog previews one slide at a time. Step through it with the arrows or with Left and Right.
-          - Choose JPEG or PNG. The JPEG slider runs from a small file to quality 100. PNG is the rendered slide with no extra compression.
-          - The dialog estimates the encoded size of the whole carousel and shows it in megabytes.
-          - Files are named from the carousel. Spaces become underscores, so a carousel named `Summer trip` writes `Summer_trip-01.jpg`, then `Summer_trip-02.jpg`.
-          - When those names are already in the folder, PudduScroll lists them and asks before replacing them.
+          - Adding a canvas scrolls that canvas into view.
+          - A frame that sits past the edge of the strip stays on screen.
+          - A failed action shows a toast. Loading still uses the status line.
+          - The home screen no longer repeats the app name. The title bar already shows it.
           ENDNOTES
           gh release create "${GITHUB_REF_NAME}" dist/* \
             --repo "${GITHUB_REPOSITORY}" \

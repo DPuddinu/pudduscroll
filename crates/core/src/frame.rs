@@ -98,19 +98,31 @@ impl Layout {
         true
     }
 
-    pub fn remove_canvas(&mut self) -> Option<Vec<FrameId>> {
-        if self.canvas_count <= 1 {
+    pub fn remove_canvases(&mut self, indices: &[usize]) -> Option<Vec<FrameId>> {
+        let mut gone = indices
+            .iter()
+            .copied()
+            .filter(|index| *index < self.canvas_count)
+            .collect::<Vec<_>>();
+        gone.sort_unstable();
+        gone.dedup();
+        if gone.is_empty() || self.canvas_count - gone.len() < 1 {
             return None;
         }
-        let index = self.canvas_count - 1;
-        self.canvas_count -= 1;
         let removed = self
             .frames
             .iter()
-            .filter(|frame| frame_on_canvas(frame, index))
+            .filter(|frame| gone.iter().any(|index| frame_on_canvas(frame, *index)))
             .map(|frame| frame.id)
             .collect();
-        self.frames.retain(|frame| !frame_on_canvas(frame, index));
+        self.frames
+            .retain(|frame| !gone.iter().any(|index| frame_on_canvas(frame, *index)));
+        for frame in &mut self.frames {
+            let start = frame.x.floor() as i32;
+            let shift = gone.iter().filter(|index| (**index as i32) < start).count() as f32;
+            frame.x -= shift;
+        }
+        self.canvas_count -= gone.len();
         Some(removed)
     }
 
@@ -499,6 +511,37 @@ pub fn cover_fit(frame: &Frame, canvas_ratio: f32) -> Option<CoverFit> {
         w: size.image_w,
         h: size.image_h,
     })
+}
+
+#[must_use]
+pub fn canvas_at(canvas_count: usize, x: f32, y: f32) -> Option<usize> {
+    if canvas_count == 0 || !(0.0..=1.0).contains(&y) || x < 0.0 || x > canvas_count as f32 {
+        return None;
+    }
+    if (x - canvas_count as f32).abs() <= f32::EPSILON {
+        Some(canvas_count - 1)
+    } else {
+        Some(x.floor() as usize)
+    }
+}
+
+#[must_use]
+pub fn canvases_touched(canvas_count: usize, x0: f32, y0: f32, x1: f32, y1: f32) -> Vec<usize> {
+    if !intervals_touch(y0, y1, 0.0, 1.0) {
+        return Vec::new();
+    }
+    (0..canvas_count)
+        .filter(|index| {
+            let start = *index as f32;
+            intervals_touch(x0, x1, start, start + 1.0)
+        })
+        .collect()
+}
+
+fn intervals_touch(a0: f32, a1: f32, b0: f32, b1: f32) -> bool {
+    let (a0, a1) = if a0 <= a1 { (a0, a1) } else { (a1, a0) };
+    let (b0, b1) = if b0 <= b1 { (b0, b1) } else { (b1, b0) };
+    a1 + 1.0e-5 >= b0 && b1 + 1.0e-5 >= a0
 }
 
 fn frame_on_canvas(frame: &Frame, index: usize) -> bool {

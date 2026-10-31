@@ -5,8 +5,10 @@ mod history;
 mod home;
 mod rail;
 mod session;
+mod settings;
 mod shell;
 mod strip;
+mod toast;
 mod toolbar;
 
 use std::collections::{HashMap, VecDeque};
@@ -21,7 +23,8 @@ use pudduscroll_core::{
     AspectRatio, Crop, CropPreset, EncodedCanvas, ExportFormat, FrameId, Handle,
 };
 
-use crate::library::{Blob, Library, SaveRequest};
+use crate::library::{Blob, Carousel, Library, SaveRequest};
+use crate::settings::{AppSettings, Command};
 
 use history::{Edit, EditHistory};
 
@@ -101,6 +104,12 @@ impl Drag {
     }
 }
 
+#[derive(Clone, Copy)]
+struct CanvasSelect {
+    origin: egui::Pos2,
+    current: egui::Pos2,
+}
+
 struct CropSession {
     id: FrameId,
     preset: CropPreset,
@@ -165,6 +174,8 @@ enum IncomingPhoto {
         generation: u64,
         result: Result<(), String>,
     },
+    Shared(Result<String, String>),
+    Imported(Result<Carousel, String>),
 }
 
 enum PendingUpload {
@@ -209,10 +220,13 @@ pub struct PudduScrollApp {
     cover_textures: HashMap<u64, egui::TextureHandle>,
     card_previews: HashMap<u64, (u64, egui::TextureHandle)>,
     selected: Option<FrameId>,
+    selected_canvases: Vec<usize>,
+    canvas_marquee: Option<CanvasSelect>,
     edit_frame: bool,
     free_rotate: bool,
-    quality: u8,
-    format: ExportFormat,
+    settings: AppSettings,
+    settings_open: bool,
+    rebind: Option<Command>,
     preview_index: usize,
     preview_texture: Option<egui::TextureHandle>,
     preview_key: Option<(u64, usize)>,
@@ -222,6 +236,7 @@ pub struct PudduScrollApp {
     drag: Option<Drag>,
     gesture: String,
     status: String,
+    toaster: toast::Toaster,
     estimate_mb: Option<f64>,
     estimate_for: Option<(u64, u8, ExportFormat)>,
     estimate_canvases: Option<Arc<[EncodedCanvas]>>,
@@ -263,6 +278,15 @@ pub struct PudduScrollApp {
     grid_cells: i32,
     rail_weights: [f32; RAIL_SECTIONS],
     create_open: bool,
+    link_open: bool,
+    link_url: String,
+    sharing: bool,
+    importing: bool,
+    paste_stamp: Option<u64>,
+    paste_mark: Option<(u64, FrameId)>,
+    paste_job: Option<(u64, u64, FrameId)>,
+    paste_focused: bool,
+    paste_look: u64,
     create_name: String,
     create_ratio: AspectRatio,
     create_cover: Option<Blob>,
