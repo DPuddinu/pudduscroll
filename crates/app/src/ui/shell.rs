@@ -240,6 +240,7 @@ impl eframe::App for PudduScrollApp {
             self.link_modal(&ctx);
             self.export_modal(&ctx);
             self.overwrite_modal(&ctx);
+            self.confirm_modal(&ctx);
         }
         if self.sharing || self.importing {
             ctx.request_repaint_after(Duration::from_millis(100));

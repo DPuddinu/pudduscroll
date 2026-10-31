@@ -9,7 +9,8 @@ use super::draw::{
     short_name,
 };
 use super::{
-    ACCENT, BG, CANVAS_BG, DecodeTarget, HomeAction, IncomingPhoto, MUTED, PudduScrollApp, Route,
+    ACCENT, BG, CANVAS_BG, Confirm, DecodeTarget, HomeAction, IncomingPhoto, MUTED, PudduScrollApp,
+    Route,
 };
 
 impl PudduScrollApp {
@@ -248,10 +249,7 @@ impl PudduScrollApp {
             }
             HomeAction::EditTemplate(id) => self.enter(Route::Template(id), ctx),
             HomeAction::DeleteTemplate(id) => {
-                self.library.delete_template(id);
-                self.cover_textures.remove(&id);
-                self.cover_pending.remove(&id);
-                self.note_geometry();
+                self.confirm = Some(Confirm::DeleteTemplate(id));
             }
             HomeAction::OpenCarousel(id) => self.enter(Route::Carousel(id), ctx),
             HomeAction::DuplicateCarousel(id) => {
@@ -259,10 +257,7 @@ impl PudduScrollApp {
                 self.note_geometry();
             }
             HomeAction::DeleteCarousel(id) => {
-                self.library.delete_carousel(id);
-                self.card_previews.remove(&id);
-                self.card_jobs.remove(&id);
-                self.note_geometry();
+                self.confirm = Some(Confirm::DeleteCarousel(id));
             }
         }
     }
@@ -381,4 +376,141 @@ impl PudduScrollApp {
             self.cover_load = None;
         }
     }
+
+    pub(super) fn confirm_modal(&mut self, ctx: &egui::Context) {
+        if self.confirm.is_none() {
+            return;
+        }
+        let Some(copy) = self.confirm_copy() else {
+            self.confirm = None;
+            return;
+        };
+        let modal_id = egui::Id::unique("confirm-delete");
+        let mut accept = false;
+        let response = egui::Modal::new(modal_id)
+            .area(egui::Modal::default_area(modal_id).order(egui::Order::Debug))
+            .frame(dialog_frame())
+            .show(ctx, |ui| {
+                ui.set_min_width(420.0);
+                ui.heading(copy.title);
+                ui.add_space(6.0);
+                ui.label(&copy.body);
+                ui.add_space(12.0);
+                ui.horizontal(|ui| {
+                    let cancel = ui.button("Cancel");
+                    cancel
+                        .clone()
+                        .on_hover_cursor(egui::CursorIcon::PointingHand);
+                    self.remember("confirm-cancel", cancel.rect);
+                    if cancel.clicked() {
+                        self.confirm = None;
+                    }
+                    let action = ui.add(
+                        egui::Button::new(
+                            egui::RichText::new(copy.action).color(egui::Color32::BLACK),
+                        )
+                        .fill(ACCENT),
+                    );
+                    action
+                        .clone()
+                        .on_hover_cursor(egui::CursorIcon::PointingHand);
+                    self.remember("confirm-accept", action.rect);
+                    if action.clicked() {
+                        accept = true;
+                    }
+                });
+            });
+        ctx.move_to_top(egui::LayerId::new(egui::Order::Debug, modal_id));
+        if accept {
+            if let Some(confirm) = self.confirm.take() {
+                self.apply_confirm(confirm);
+            }
+        } else if response.should_close() {
+            self.confirm = None;
+        }
+    }
+
+    fn confirm_copy(&self) -> Option<ConfirmCopy> {
+        match self.confirm.as_ref()? {
+            Confirm::DeleteCarousel(id) => {
+                let name = self
+                    .library
+                    .carousels
+                    .iter()
+                    .find(|carousel| carousel.id == *id)?
+                    .name
+                    .clone();
+                Some(ConfirmCopy {
+                    title: "Delete carousel?",
+                    body: format!("{} will be removed.", short_name(&name)),
+                    action: "Delete",
+                })
+            }
+            Confirm::DeleteTemplate(id) => {
+                let name = self
+                    .library
+                    .templates
+                    .iter()
+                    .find(|template| template.id == *id)?
+                    .name
+                    .clone();
+                Some(ConfirmCopy {
+                    title: "Delete template?",
+                    body: format!("{} will be removed.", short_name(&name)),
+                    action: "Delete",
+                })
+            }
+            Confirm::RemoveCanvases(indices) => {
+                if indices.is_empty() {
+                    return None;
+                }
+                let (title, body) = if indices.len() == 1 {
+                    ("Remove canvas?", "This canvas will be removed.")
+                } else {
+                    ("Remove canvases?", "These canvases will be removed.")
+                };
+                Some(ConfirmCopy {
+                    title,
+                    body: body.to_string(),
+                    action: "Remove",
+                })
+            }
+            Confirm::RemoveFrame(_) => Some(ConfirmCopy {
+                title: "Remove frame?",
+                body: "This frame will be removed.".to_string(),
+                action: "Remove",
+            }),
+            Confirm::RemovePhoto(_) => Some(ConfirmCopy {
+                title: "Remove photo?",
+                body: "This photo will be removed.".to_string(),
+                action: "Remove",
+            }),
+        }
+    }
+
+    fn apply_confirm(&mut self, confirm: Confirm) {
+        match confirm {
+            Confirm::DeleteTemplate(id) => {
+                self.library.delete_template(id);
+                self.cover_textures.remove(&id);
+                self.cover_pending.remove(&id);
+                self.note_geometry();
+            }
+            Confirm::DeleteCarousel(id) => {
+                self.library.delete_carousel(id);
+                self.card_previews.remove(&id);
+                self.card_jobs.remove(&id);
+                self.note_geometry();
+            }
+            Confirm::RemoveCanvases(indices) => self.remove_selected_canvases(&indices),
+            Confirm::RemoveFrame(id) => self.remove_frame(id),
+            Confirm::RemovePhoto(id) => self.remove_photo(id),
+        }
+    }
+}
+
+struct ConfirmCopy {
+    title: &'static str,
+    body: String,
+    action: &'static str,
 }

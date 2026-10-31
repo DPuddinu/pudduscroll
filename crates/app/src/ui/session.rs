@@ -1,7 +1,7 @@
 use std::collections::{HashMap, VecDeque};
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::sync::mpsc::{self, Sender};
+use std::sync::mpsc::{self, Sender, TryRecvError};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -23,7 +23,7 @@ use super::draw::{
 };
 use super::history::{Edit, EditHistory, HISTORY_WINDOW, HistoryKind, photo_stamp};
 use super::{
-    DEFAULT_EDITOR_ZOOM, DEFAULT_RAIL_WEIGHTS, DecodeTarget, EstimateMsg, EstimateUpdate,
+    Confirm, DEFAULT_EDITOR_ZOOM, DEFAULT_RAIL_WEIGHTS, DecodeTarget, EstimateMsg, EstimateUpdate,
     ExportUpdate, IncomingPhoto, PendingUpload, PhotoAsset, PudduScrollApp, Route, UNDO_LIMIT,
 };
 
@@ -73,6 +73,7 @@ impl PudduScrollApp {
             export_done: 0,
             photo_tx,
             photo_rx,
+            update_rx: crate::update::start(),
             save_tx,
             pending_uploads: VecDeque::new(),
             loading: HashMap::new(),
@@ -103,6 +104,7 @@ impl PudduScrollApp {
             grid_cells: DEFAULT_GRID_CELLS,
             rail_weights: DEFAULT_RAIL_WEIGHTS,
             create_open: false,
+            confirm: None,
             link_open: false,
             link_url: String::new(),
             sharing: false,
@@ -517,12 +519,67 @@ impl PudduScrollApp {
             }
         }
         self.poll_export();
+        self.poll_update(ctx);
         self.upload_one(ctx);
         if self.photos_busy() {
             ctx.request_repaint_after(Duration::from_millis(16));
         } else if self.estimate_rx.is_some() || self.export_rx.is_some() {
             ctx.request_repaint_after(Duration::from_millis(40));
         }
+    }
+
+    fn poll_update(&mut self, ctx: &egui::Context) {
+        let (events, waiting) = self.drain_update();
+        let mut close = false;
+        for event in events {
+            match event {
+                crate::update::Event::Installing(version) => {
+                    self.status = format!("Updating to {version}…");
+                    self.toast(format!("Updating to {version}…"));
+                }
+                crate::update::Event::Restart => close = true,
+                crate::update::Event::Failed(message) => {
+                    if self.status.starts_with("Updating to ") {
+                        self.status.clear();
+                    }
+                    self.toast(message);
+                    self.update_rx = None;
+                }
+            }
+        }
+        if close {
+            self.update_rx = None;
+            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+            return;
+        }
+        if waiting && self.update_rx.is_some() {
+            ctx.request_repaint_after(Duration::from_millis(200));
+        }
+    }
+
+    fn drain_update(&mut self) -> (Vec<crate::update::Event>, bool) {
+        let mut events = Vec::new();
+        let mut waiting = false;
+        let mut closed = false;
+        if let Some(rx) = &self.update_rx {
+            loop {
+                match rx.try_recv() {
+                    Ok(event) => events.push(event),
+                    Err(TryRecvError::Empty) => {
+                        waiting = true;
+                        break;
+                    }
+                    Err(TryRecvError::Disconnected) => {
+                        closed = true;
+                        break;
+                    }
+                }
+            }
+        }
+        if closed {
+            self.update_rx = None;
+        }
+        (events, waiting)
     }
 
     fn poll_estimate(&mut self) -> Option<EstimateMsg> {
@@ -726,11 +783,15 @@ impl PudduScrollApp {
             Ok(library) => {
                 self.library = library;
                 self.can_store = true;
-                self.status.clear();
+                if self.status == "Opening library…" {
+                    self.status.clear();
+                }
             }
             Err(error) => {
                 self.can_store = false;
-                self.status.clear();
+                if self.status == "Opening library…" {
+                    self.status.clear();
+                }
                 self.toast_persist(error);
             }
         }
@@ -885,7 +946,7 @@ impl PudduScrollApp {
         if self.capture_rebind(ctx) {
             return;
         }
-        if self.overwrite_dir.is_some() {
+        if self.overwrite_dir.is_some() || self.confirm.is_some() {
             return;
         }
         if self.crop_session.is_some() && !self.export_open {
@@ -950,11 +1011,11 @@ impl PudduScrollApp {
             .layout()
             .and_then(|layout| layout.frame(id))
             .is_some_and(|frame| frame.photo.is_some());
-        if has_photo {
-            self.remove_photo(id);
+        self.confirm = Some(if has_photo {
+            Confirm::RemovePhoto(id)
         } else {
-            self.remove_frame(id);
-        }
+            Confirm::RemoveFrame(id)
+        });
     }
 
     fn upload_one(&mut self, ctx: &egui::Context) {
@@ -1429,6 +1490,7 @@ impl PudduScrollApp {
         self.export_open = false;
         self.cancel_overwrite();
         self.create_open = false;
+        self.confirm = None;
         self.link_open = false;
         self.show_grid = true;
         self.snap_to_grid = true;
@@ -1454,6 +1516,7 @@ impl PudduScrollApp {
         self.free_rotate = false;
         self.export_open = false;
         self.cancel_overwrite();
+        self.confirm = None;
         self.link_open = false;
         self.assets.clear();
         self.preview_job = None;

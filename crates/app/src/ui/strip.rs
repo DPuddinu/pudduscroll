@@ -170,6 +170,7 @@ impl PudduScrollApp {
         if self.export_open
             || self.overwrite_dir.is_some()
             || self.create_open
+            || self.confirm.is_some()
             || !Self::space_held(ui.ctx())
         {
             return;
@@ -404,7 +405,11 @@ impl PudduScrollApp {
         if Self::space_held(ctx) {
             return true;
         }
-        if self.crop_session.is_some() || self.export_open || self.overwrite_dir.is_some() {
+        if self.crop_session.is_some()
+            || self.export_open
+            || self.overwrite_dir.is_some()
+            || self.confirm.is_some()
+        {
             return false;
         }
         if self.drag.is_some() || self.canvas_marquee.is_some() {
@@ -505,7 +510,7 @@ impl PudduScrollApp {
         editor: egui::Rect,
         layer: egui::LayerId,
     ) {
-        if self.export_open || self.overwrite_dir.is_some() {
+        if self.export_open || self.overwrite_dir.is_some() || self.confirm.is_some() {
             self.canvas_marquee = None;
             return;
         }

@@ -122,7 +122,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           cat > release-notes.md << 'ENDNOTES'
-          PudduScroll 0.2.0 adds a window menu, saved export defaults, and ways to move a carousel to another machine.
+          PudduScroll 0.3.0 checks GitHub at startup and installs a newer build for this computer. Delete asks before it removes a carousel, template, canvas, frame, or photo.
 
           ## Downloads
 
@@ -152,36 +152,9 @@ jobs:
 
           ## New
 
-          - The app icon at the top left of the window opens the system menu. New carousel and Settings sit above Restore, Move, Size, Minimize, Maximize, and Close.
-          - New carousel starts a blank carousel at 4:5 with one empty frame.
-          - Settings stores the export you use most: JPEG or PNG, JPEG quality, and a folder. The next export uses those. Choosing another folder in the export dialog saves that folder as the new default.
-          - Shortcuts for the actions used most often. Change in Settings stores a new one. Two commands cannot share a shortcut. Paste image stays Ctrl+V, or Cmd+V on macOS.
-
-          | Action | Windows and Linux | macOS |
-          | --- | --- | --- |
-          | New carousel | Ctrl+N | Cmd+N |
-          | Settings | Ctrl+, | Cmd+, |
-          | Export | Ctrl+E | Cmd+E |
-          | Undo | Ctrl+Z | Cmd+Z |
-          | Redo | Ctrl+Shift+Z, and Ctrl+Y | Cmd+Shift+Z, and Cmd+Y |
-          | Delete | Delete | Delete |
-          | Add frame | F | F |
-          | Add canvas | ] | ] |
-          | Toggle grid | G | G |
-          | Home | Ctrl+H | Cmd+H |
-          | Paste image | Ctrl+V | Cmd+V |
-
-          - Share writes the open carousel, including its photos, to a zip. Import on the home screen opens that zip as a new carousel.
-          - Paste image puts a picture from the clipboard on the selected frame. From link loads a photo from an image URL onto that frame.
-          - Add left inserts a canvas at the start of the strip. Select one or more canvases and Remove deletes those slides and closes the gap. At least one canvas stays.
-          - Move left and Move right exchange the selected frame with its neighbor and keep each frame’s width.
-
-          ## Fixes
-
-          - Adding a canvas scrolls that canvas into view.
-          - A frame that sits past the edge of the strip stays on screen.
-          - A failed action shows a toast. Loading still uses the status line.
-          - The home screen no longer repeats the app name. The title bar already shows it.
+          - A release build looks up the latest GitHub release when it opens. When that release is newer, it downloads the archive for this system, replaces the running app, and starts again.
+          - Windows installs `pudduscroll-windows-x86_64.zip`. Linux installs `pudduscroll-linux-x86_64.tar.gz`. Apple silicon installs `pudduscroll-macos-aarch64.zip`. Intel Macs install `pudduscroll-macos-x86_64.zip`.
+          - Delete, Remove, and the Delete key ask before they remove a carousel, a template, a canvas, a frame, or a photo.
           ENDNOTES
           gh release create "${GITHUB_REF_NAME}" dist/* \
             --repo "${GITHUB_REPOSITORY}" \

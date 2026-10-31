@@ -4,6 +4,7 @@ mod color;
 mod library;
 mod settings;
 mod ui;
+mod update;
 mod window_menu;
 
 use eframe::egui;

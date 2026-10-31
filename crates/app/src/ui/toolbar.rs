@@ -102,7 +102,7 @@ impl PudduScrollApp {
                     let remove = ui.button("Remove");
                     self.remember("remove-canvas", remove.rect);
                     if remove.clicked() {
-                        self.remove_selected_canvases(&chosen);
+                        self.confirm = Some(super::Confirm::RemoveCanvases(chosen));
                     }
                 }
                 if let Some(layout) = self.layout() {
@@ -161,7 +161,7 @@ impl PudduScrollApp {
                 if remove_frame.clicked()
                     && let Some(id) = self.selected
                 {
-                    self.remove_frame(id);
+                    self.confirm = Some(super::Confirm::RemoveFrame(id));
                 }
                 let can_move_left = self.selected.is_some_and(|id| {
                     self.layout()
@@ -382,7 +382,7 @@ impl PudduScrollApp {
                 if remove_photo.clicked()
                     && let Some(id) = self.selected
                 {
-                    self.remove_photo(id);
+                    self.confirm = Some(super::Confirm::RemovePhoto(id));
                 }
                 if let Route::Carousel(carousel_id) = self.route {
                     let busy = self

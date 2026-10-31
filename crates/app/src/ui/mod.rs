@@ -68,6 +68,14 @@ enum HomeAction {
     DeleteCarousel(u64),
 }
 
+enum Confirm {
+    DeleteCarousel(u64),
+    DeleteTemplate(u64),
+    RemoveCanvases(Vec<usize>),
+    RemoveFrame(FrameId),
+    RemovePhoto(FrameId),
+}
+
 #[derive(Clone, Copy)]
 enum Drag {
     MoveFrame {
@@ -248,6 +256,7 @@ pub struct PudduScrollApp {
     export_done: usize,
     photo_tx: Sender<IncomingPhoto>,
     photo_rx: Receiver<IncomingPhoto>,
+    update_rx: Option<Receiver<crate::update::Event>>,
     save_tx: Sender<SaveRequest>,
     pending_uploads: VecDeque<PendingUpload>,
     loading: HashMap<(u64, FrameId), u64>,
@@ -278,6 +287,7 @@ pub struct PudduScrollApp {
     grid_cells: i32,
     rail_weights: [f32; RAIL_SECTIONS],
     create_open: bool,
+    confirm: Option<Confirm>,
     link_open: bool,
     link_url: String,
     sharing: bool,

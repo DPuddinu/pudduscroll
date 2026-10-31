@@ -247,6 +247,7 @@ impl PudduScrollApp {
         self.export_open = false;
         self.link_open = false;
         self.create_open = false;
+        self.confirm = None;
         self.cancel_overwrite();
         self.rebind = None;
         self.settings_open = true;
@@ -340,7 +341,11 @@ impl PudduScrollApp {
     }
 
     fn modal_open(&self) -> bool {
-        self.export_open || self.link_open || self.create_open || self.overwrite_dir.is_some()
+        self.export_open
+            || self.link_open
+            || self.create_open
+            || self.overwrite_dir.is_some()
+            || self.confirm.is_some()
     }
 
     fn apply_command(&mut self, command: Command, ctx: &egui::Context) {
