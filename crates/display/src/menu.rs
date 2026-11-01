@@ -1,7 +1,9 @@
 #[cfg(windows)]
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
+#[cfg(any(windows, test))]
 const NEW_CAROUSEL: usize = 0x10;
+#[cfg(any(windows, test))]
 const SETTINGS: usize = 0x20;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -10,6 +12,7 @@ pub enum WindowMenuCommand {
     Settings,
 }
 
+#[cfg(any(windows, test))]
 #[must_use]
 pub fn command_from_id(wparam: usize) -> Option<WindowMenuCommand> {
     match wparam & 0xFFF0 {
