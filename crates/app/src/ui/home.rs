@@ -497,7 +497,7 @@ impl PudduScrollApp {
                 self.card_jobs.remove(&id);
                 self.note_geometry();
             }
-            Confirm::RemoveCanvases(indices) => self.remove_selected_canvases(&indices),
+            Confirm::RemoveCanvases(indices) => self.remove_canvases(&indices),
             Confirm::RemoveFrame(id) => self.remove_frame(id),
             Confirm::RemovePhoto(id) => self.remove_photo(id),
         }

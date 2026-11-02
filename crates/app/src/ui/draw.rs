@@ -357,6 +357,107 @@ pub(super) fn paint_frame(
     }
 }
 
+const FRAME_OUTLINE: f32 = 2.0;
+const CANVAS_EDGE_SLACK: f32 = 0.75;
+
+#[must_use]
+pub(super) fn frame_outline_bands(
+    screen: egui::Rect,
+    strip: egui::Rect,
+    count: usize,
+    mark_edge: bool,
+) -> [egui::Rect; 4] {
+    if screen.width() <= FRAME_OUTLINE * 2.0 || screen.height() <= FRAME_OUTLINE * 2.0 {
+        return [egui::Rect::NOTHING; 4];
+    }
+    let (left_min, left_max) = edge_span(
+        on_column(strip, count, screen.left()),
+        screen.left(),
+        mark_edge,
+        1.0,
+    );
+    let (right_min, right_max) = edge_span(
+        on_column(strip, count, screen.right()),
+        screen.right(),
+        mark_edge,
+        -1.0,
+    );
+    let (top_min, top_max) = edge_span(on_row(strip, screen.top()), screen.top(), mark_edge, 1.0);
+    let (bottom_min, bottom_max) = edge_span(
+        on_row(strip, screen.bottom()),
+        screen.bottom(),
+        mark_edge,
+        -1.0,
+    );
+    [
+        egui::Rect::from_min_max(
+            egui::pos2(left_min, top_min),
+            egui::pos2(right_max, top_max),
+        ),
+        egui::Rect::from_min_max(
+            egui::pos2(left_min, bottom_min),
+            egui::pos2(right_max, bottom_max),
+        ),
+        egui::Rect::from_min_max(
+            egui::pos2(left_min, top_max),
+            egui::pos2(left_max, bottom_min),
+        ),
+        egui::Rect::from_min_max(
+            egui::pos2(right_min, top_max),
+            egui::pos2(right_max, bottom_min),
+        ),
+    ]
+}
+
+pub(super) fn paint_frame_outline(
+    painter: &egui::Painter,
+    screen: egui::Rect,
+    strip: egui::Rect,
+    count: usize,
+    clip: egui::Rect,
+    color: egui::Color32,
+    mark_edge: bool,
+) {
+    for band in frame_outline_bands(screen, strip, count, mark_edge) {
+        let band = band.intersect(clip);
+        if band.is_positive() {
+            painter.rect_filled(band, 0.0, color);
+        }
+    }
+}
+
+fn edge_span(on_grid: bool, at: f32, mark_edge: bool, into_frame: f32) -> (f32, f32) {
+    let (thick, sign) = if on_grid {
+        if !mark_edge {
+            return (at, at);
+        }
+        (FRAME_OUTLINE * 0.5, -into_frame)
+    } else {
+        (FRAME_OUTLINE, into_frame)
+    };
+    let delta = thick * sign;
+    if delta >= 0.0 {
+        (at, at + delta)
+    } else {
+        (at + delta, at)
+    }
+}
+
+fn on_column(strip: egui::Rect, count: usize, x: f32) -> bool {
+    let canvas_w = strip.width() / count.max(1) as f32;
+    if canvas_w <= f32::EPSILON {
+        return false;
+    }
+    let n = (x - strip.min.x) / canvas_w;
+    let nearest = n.round();
+    (0.0..=count.max(1) as f32).contains(&nearest)
+        && (n - nearest).abs() * canvas_w <= CANVAS_EDGE_SLACK
+}
+
+fn on_row(strip: egui::Rect, y: f32) -> bool {
+    (y - strip.top()).abs() <= CANVAS_EDGE_SLACK || (y - strip.bottom()).abs() <= CANVAS_EDGE_SLACK
+}
+
 pub(super) fn paint_resize_handle(
     painter: &egui::Painter,
     center: egui::Pos2,
@@ -1181,4 +1282,65 @@ pub(super) fn apply_style(ctx: &egui::Context) {
         style.spacing.item_spacing = egui::vec2(8.0, 6.0);
         style.spacing.button_padding = egui::vec2(10.0, 5.0);
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use eframe::egui;
+
+    use super::frame_outline_bands;
+
+    fn strip() -> egui::Rect {
+        egui::Rect::from_min_size(egui::pos2(10.0, 20.0), egui::vec2(300.0, 400.0))
+    }
+
+    fn canvas(index: usize) -> egui::Rect {
+        let strip = strip();
+        egui::Rect::from_min_size(
+            egui::pos2(strip.min.x + index as f32 * 100.0, strip.min.y),
+            egui::vec2(100.0, strip.height()),
+        )
+    }
+
+    fn covers(band: egui::Rect, canvas: egui::Rect) -> bool {
+        let overlap = band.intersect(canvas);
+        overlap.width() > 0.01 && overlap.height() > 0.01
+    }
+
+    #[test]
+    fn canvas_sized_frame_does_not_cover_its_canvas() {
+        let strip = strip();
+        let screen = canvas(0);
+        for mark_edge in [false, true] {
+            for band in frame_outline_bands(screen, strip, 3, mark_edge) {
+                assert!(!covers(band, screen));
+            }
+        }
+        for band in frame_outline_bands(screen, strip, 3, false) {
+            assert!(!covers(band, canvas(1)));
+            assert!(!covers(band, canvas(2)));
+        }
+    }
+
+    #[test]
+    fn selected_canvas_edge_sits_on_the_divider() {
+        let screen = canvas(0);
+        let right = frame_outline_bands(screen, strip(), 3, true)[3];
+        assert!(right.is_positive());
+        assert!(right.left() >= screen.right() - 0.01);
+        assert!((right.right() - screen.right() - 1.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn inset_frame_outline_stays_on_the_frame() {
+        let screen = egui::Rect::from_min_size(egui::pos2(40.0, 60.0), egui::vec2(40.0, 80.0));
+        let bands = frame_outline_bands(screen, strip(), 3, false);
+        assert!(bands.iter().all(egui::Rect::is_positive));
+        for band in bands {
+            assert!(band.left() >= screen.left() - 0.01);
+            assert!(band.right() <= screen.right() + 0.01);
+            assert!(band.top() >= screen.top() - 0.01);
+            assert!(band.bottom() <= screen.bottom() + 0.01);
+        }
+    }
 }

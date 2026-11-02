@@ -7,7 +7,7 @@ use super::{ACCENT, PudduScrollApp, TEXT};
 
 const TOAST_LIFE: Duration = Duration::from_millis(4_000);
 const TOAST_MARGIN: f32 = 24.0;
-const TOAST_RISE: f32 = 16.0;
+const TOAST_BOTTOM: f32 = 32.0;
 const TOAST_W: f32 = 360.0;
 const TOAST_GAP: f32 = 14.0;
 const TOAST_LIMIT: usize = 3;
@@ -266,16 +266,12 @@ fn toast_shadow() -> egui::Shadow {
 
 fn toast_inset() -> egui::Vec2 {
     let edge = toast_shadow().margin();
-    egui::vec2(TOAST_MARGIN + edge.right, TOAST_MARGIN + edge.bottom)
+    egui::vec2(TOAST_MARGIN + edge.right, TOAST_BOTTOM + edge.bottom)
 }
 
 fn toast_transform(pivot: egui::Pos2, shown: f32) -> egui::emath::TSTransform {
     let scale = 1.0 - 0.06 * (1.0 - shown);
-    let travel = (1.0 - shown) * TOAST_RISE;
-    egui::emath::TSTransform::new(
-        (1.0 - scale) * pivot.to_vec2() + egui::vec2(travel, travel),
-        scale,
-    )
+    egui::emath::TSTransform::new((1.0 - scale) * pivot.to_vec2(), scale)
 }
 
 fn toast_frame() -> egui::Frame {
@@ -319,29 +315,30 @@ mod tests {
     use eframe::egui;
 
     use super::{
-        Spring, TOAST_LIFE, TOAST_MARGIN, Toaster, toast_inset, toast_shadow, toast_transform,
+        Spring, TOAST_BOTTOM, TOAST_LIFE, TOAST_MARGIN, Toaster, toast_inset, toast_shadow,
+        toast_transform,
     };
 
     #[test]
-    fn the_shadow_sits_the_same_distance_from_the_right_and_the_bottom() {
+    fn the_toast_keeps_a_margin_under_the_shadow() {
         let inset = toast_inset();
         let edge = toast_shadow().margin();
         let right = inset.x - edge.right;
         let bottom = inset.y - edge.bottom;
-        assert!((right - bottom).abs() < f32::EPSILON);
         assert!((right - TOAST_MARGIN).abs() < f32::EPSILON);
+        assert!((bottom - TOAST_BOTTOM).abs() < f32::EPSILON);
     }
 
     #[test]
-    fn the_toast_rests_at_full_size_in_the_corner() {
+    fn the_toast_scales_in_place_without_sliding() {
         let pivot = egui::pos2(400.0, 300.0);
         let settled = toast_transform(pivot, 1.0);
         assert_eq!(settled, egui::emath::TSTransform::IDENTITY);
         let hidden = toast_transform(pivot, 0.0);
         assert!((hidden.scaling - 0.94).abs() < 0.001);
         let corner = hidden.mul_pos(pivot);
-        assert!((corner.x - (pivot.x + 16.0)).abs() < 0.001);
-        assert!((corner.y - (pivot.y + 16.0)).abs() < 0.001);
+        assert!((corner.x - pivot.x).abs() < 0.001);
+        assert!((corner.y - pivot.y).abs() < 0.001);
     }
 
     #[test]

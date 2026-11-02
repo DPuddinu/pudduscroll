@@ -336,9 +336,10 @@ impl PudduScrollApp {
             Command::NewCarousel | Command::Settings => !modal,
             Command::Export => editor && !modal && !self.exporting && self.has_photo(),
             Command::Undo | Command::Redo | Command::Delete => editor,
-            Command::AddFrame | Command::AddCanvas | Command::ToggleGrid => {
-                editor && !modal && self.layout().is_some()
+            Command::AddCanvas => {
+                editor && !modal && self.layout().is_some() && self.active_canvas.is_some()
             }
+            Command::AddFrame | Command::ToggleGrid => editor && !modal && self.layout().is_some(),
             Command::Home => !modal && (self.settings_open || !matches!(self.route, Route::Home)),
             Command::Paste => false,
         }
@@ -402,20 +403,33 @@ impl PudduScrollApp {
     }
 
     pub(super) fn add_canvas_command(&mut self) {
-        let can_add = self
-            .layout()
-            .is_some_and(|layout| layout.canvas_count < pudduscroll_core::MAX_CANVASES);
-        if !can_add {
+        self.add_canvas_beside(true);
+    }
+
+    pub(super) fn add_canvas_beside(&mut self, to_the_right: bool) {
+        let Some(count) = self.layout().map(|layout| layout.canvas_count) else {
+            return;
+        };
+        if count == 0 || count >= pudduscroll_core::MAX_CANVASES {
             return;
         }
+        let Some(active) = self.active_canvas.filter(|index| *index < count) else {
+            return;
+        };
+        let index = if to_the_right { active + 1 } else { active };
         self.checkpoint();
         let added = self
             .layout_mut()
-            .is_some_and(pudduscroll_core::Layout::add_canvas);
-        if added {
-            self.reveal_canvas = self.layout().map(|layout| layout.canvas_count - 1);
-            self.note_geometry();
+            .is_some_and(|layout| layout.insert_canvas(index));
+        if !added {
+            return;
         }
+        if self.preview_index >= index {
+            self.preview_index += 1;
+        }
+        self.active_canvas = Some(if to_the_right { active } else { active + 1 });
+        self.reveal_canvas = Some(index);
+        self.note_geometry();
     }
 }
 

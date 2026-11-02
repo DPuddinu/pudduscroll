@@ -115,12 +115,6 @@ impl Drag {
     }
 }
 
-#[derive(Clone, Copy)]
-struct CanvasSelect {
-    origin: egui::Pos2,
-    current: egui::Pos2,
-}
-
 struct CropSession {
     id: FrameId,
     preset: CropPreset,
@@ -235,8 +229,7 @@ pub struct PudduScrollApp {
     cover_textures: HashMap<u64, egui::TextureHandle>,
     card_previews: HashMap<u64, (u64, egui::TextureHandle)>,
     selected: Option<FrameId>,
-    selected_canvases: Vec<usize>,
-    canvas_marquee: Option<CanvasSelect>,
+    active_canvas: Option<usize>,
     edit_frame: bool,
     free_rotate: bool,
     settings: AppSettings,

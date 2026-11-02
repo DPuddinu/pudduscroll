@@ -54,8 +54,7 @@ impl PudduScrollApp {
             cover_textures: HashMap::new(),
             card_previews: HashMap::new(),
             selected: None,
-            selected_canvases: Vec::new(),
-            canvas_marquee: None,
+            active_canvas: None,
             edit_frame: false,
             free_rotate: false,
             settings: crate::settings::AppSettings::load(),
@@ -400,8 +399,7 @@ impl PudduScrollApp {
             self.selected = None;
             self.edit_frame = false;
         }
-        self.selected_canvases.clear();
-        self.canvas_marquee = None;
+        self.clamp_active_canvas();
         self.drag = None;
         self.drag_origin = None;
         self.crop_session = None;
@@ -1075,12 +1073,8 @@ impl PudduScrollApp {
 
     pub(super) fn removable_canvases(&self) -> Option<Vec<usize>> {
         let layout = self.layout()?;
-        let chosen = self.selected_canvases.clone();
-        let count = chosen
-            .iter()
-            .filter(|index| **index < layout.canvas_count)
-            .count();
-        (count > 0 && count < layout.canvas_count).then_some(chosen)
+        let active = self.active_canvas?;
+        (layout.canvas_count > 1 && active < layout.canvas_count).then_some(vec![active])
     }
 
     pub(super) fn delete_selection(&mut self) {
@@ -1571,7 +1565,7 @@ impl PudduScrollApp {
         }
     }
 
-    pub(super) fn remove_selected_canvases(&mut self, indices: &[usize]) {
+    pub(super) fn remove_canvases(&mut self, indices: &[usize]) {
         self.checkpoint();
         let shift = indices
             .iter()
@@ -1586,8 +1580,7 @@ impl PudduScrollApp {
         for id in removed {
             self.release_frame(id);
         }
-        self.selected_canvases.clear();
-        self.canvas_marquee = None;
+        self.active_canvas = None;
         self.preview_index = self.preview_index.saturating_sub(shift);
         self.toast_undo(if indices.len() == 1 {
             "Canvas deleted"
@@ -1595,6 +1588,16 @@ impl PudduScrollApp {
             "Canvases deleted"
         });
         self.note_geometry();
+    }
+
+    fn clamp_active_canvas(&mut self) {
+        let Some(index) = self.active_canvas else {
+            return;
+        };
+        let count = self.layout().map_or(0, |layout| layout.canvas_count);
+        if index >= count {
+            self.active_canvas = None;
+        }
     }
 
     pub(super) fn remove_frame(&mut self, id: FrameId) {
@@ -1613,8 +1616,7 @@ impl PudduScrollApp {
     pub(super) fn enter(&mut self, route: Route, ctx: &egui::Context) {
         self.route = route;
         self.selected = None;
-        self.selected_canvases.clear();
-        self.canvas_marquee = None;
+        self.active_canvas = None;
         self.edit_frame = false;
         self.free_rotate = false;
         self.drag = None;
@@ -1660,8 +1662,7 @@ impl PudduScrollApp {
         self.crop_session = None;
         self.crop_press = None;
         self.selected = None;
-        self.selected_canvases.clear();
-        self.canvas_marquee = None;
+        self.active_canvas = None;
         self.edit_frame = false;
         self.free_rotate = false;
         self.export_open = false;

@@ -1462,6 +1462,43 @@ fn zoom_in_shows_the_middle_of_the_photo_and_zoom_out_restores_it() {
 }
 
 #[test]
+fn insert_canvas_opens_a_slot_beside_that_index() {
+    let mut layout = Layout::new(AspectRatio::SQUARE);
+    layout.set_canvas_count(3);
+    let left = layout.add_frame();
+    layout.set_frame_rect(left, 0.25, 0.2, 0.4, 0.4);
+    let middle = layout.add_frame();
+    layout.set_frame_rect(middle, 1.0, 0.2, 0.5, 0.5);
+    let right = layout.add_frame();
+    layout.set_frame_rect(right, 2.3, 0.1, 0.4, 0.6);
+    let hung = layout.add_frame();
+    layout.set_frame_rect(hung, -0.4, 0.0, 0.2, 0.3);
+
+    assert!(layout.insert_canvas(1));
+    assert_eq!(layout.canvas_count, 4);
+    assert!((layout.frame(left).unwrap().x - 0.25).abs() < 1e-4);
+    assert!((layout.frame(hung).unwrap().x + 0.4).abs() < 1e-4);
+    assert!((layout.frame(middle).unwrap().x - 2.0).abs() < 1e-4);
+    assert!((layout.frame(right).unwrap().x - 3.3).abs() < 1e-4);
+
+    assert!(layout.insert_canvas(3));
+    assert_eq!(layout.canvas_count, 5);
+    assert!((layout.frame(middle).unwrap().x - 2.0).abs() < 1e-4);
+    assert!((layout.frame(right).unwrap().x - 4.3).abs() < 1e-4);
+
+    let tail = layout.frame(right).unwrap().x;
+    assert!(layout.insert_canvas(99));
+    assert_eq!(layout.canvas_count, 6);
+    assert!((layout.frame(right).unwrap().x - tail).abs() < 1e-4);
+
+    layout.set_canvas_count(MAX_CANVASES);
+    let held = layout.frame(left).unwrap().x;
+    assert!(!layout.insert_canvas(2));
+    assert_eq!(layout.canvas_count, MAX_CANVASES);
+    assert!((layout.frame(left).unwrap().x - held).abs() < 1e-4);
+}
+
+#[test]
 fn add_left_shifts_frames_and_stops_at_the_limit() {
     let mut layout = Layout::new(AspectRatio::SQUARE);
     let id = layout.add_frame();

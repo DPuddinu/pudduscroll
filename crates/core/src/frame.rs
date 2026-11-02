@@ -80,21 +80,27 @@ impl Layout {
     }
 
     pub fn add_canvas(&mut self) -> bool {
-        if self.canvas_count >= MAX_CANVASES {
-            return false;
-        }
-        self.canvas_count += 1;
-        true
+        self.insert_canvas(self.canvas_count)
     }
 
     pub fn add_canvas_left(&mut self) -> bool {
+        self.insert_canvas(0)
+    }
+
+    pub fn insert_canvas(&mut self, index: usize) -> bool {
         if self.canvas_count >= MAX_CANVASES {
             return false;
         }
-        self.canvas_count += 1;
-        for frame in &mut self.frames {
-            frame.x += 1.0;
+        let index = index.min(self.canvas_count);
+        if index < self.canvas_count {
+            let boundary = index as f32;
+            for frame in &mut self.frames {
+                if index == 0 || frame.x >= boundary {
+                    frame.x += 1.0;
+                }
+            }
         }
+        self.canvas_count += 1;
         true
     }
 

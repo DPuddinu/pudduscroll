@@ -72,38 +72,31 @@ impl PudduScrollApp {
                 );
             }
             ui.horizontal_wrapped(|ui| {
-                let can_add = self
-                    .layout()
-                    .is_some_and(|layout| layout.canvas_count < MAX_CANVASES);
-                let add_left = ui.add_enabled(can_add, egui::Button::new("Add left"));
-                self.remember("add-canvas-left", add_left.rect);
-                if add_left.clicked() && can_add {
-                    self.checkpoint();
-                    if self
-                        .layout_mut()
-                        .is_some_and(pudduscroll_core::Layout::add_canvas_left)
-                    {
-                        for index in &mut self.selected_canvases {
-                            *index = index.saturating_add(1);
-                        }
-                        self.reveal_canvas = Some(0);
-                        self.note_geometry();
+                if self.active_canvas.is_some() {
+                    let can_add = self
+                        .layout()
+                        .is_some_and(|layout| layout.canvas_count < MAX_CANVASES);
+                    let add_left = ui.add_enabled(can_add, egui::Button::new("Add left"));
+                    self.remember("add-canvas-left", add_left.rect);
+                    if add_left.clicked() && can_add {
+                        self.add_canvas_beside(false);
                     }
-                }
-                if let Some(chosen) = self.removable_canvases() {
-                    let remove = ui.button("Remove");
+                    let chosen = self.removable_canvases();
+                    let remove = ui.add_enabled(chosen.is_some(), egui::Button::new("Remove"));
                     self.remember("remove-canvas", remove.rect);
-                    if remove.clicked() {
+                    if remove.clicked()
+                        && let Some(chosen) = chosen
+                    {
                         self.confirm = Some(super::Confirm::RemoveCanvases(chosen));
+                    }
+                    let add = ui.add_enabled(can_add, egui::Button::new("Add right"));
+                    self.remember("add-canvas", add.rect);
+                    if add.clicked() {
+                        self.add_canvas_command();
                     }
                 }
                 if let Some(layout) = self.layout() {
                     ui.monospace(format!("{:02} / {MAX_CANVASES:02}", layout.canvas_count));
-                }
-                let add = ui.add_enabled(can_add, egui::Button::new("Add right"));
-                self.remember("add-canvas", add.rect);
-                if add.clicked() {
-                    self.add_canvas_command();
                 }
             });
         });

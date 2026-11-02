@@ -48,30 +48,7 @@ fn rect(app: &PudduScrollApp, name: &str) -> egui::Rect {
 }
 
 fn click(app: &mut PudduScrollApp, ctx: &egui::Context, name: &str) {
-    let pos = rect(app, name).center();
-    paint(
-        app,
-        ctx,
-        vec![
-            egui::Event::PointerMoved(pos),
-            egui::Event::PointerButton {
-                pos,
-                button: egui::PointerButton::Primary,
-                pressed: true,
-                modifiers: egui::Modifiers::NONE,
-            },
-        ],
-    );
-    paint(
-        app,
-        ctx,
-        vec![egui::Event::PointerButton {
-            pos,
-            button: egui::PointerButton::Primary,
-            pressed: false,
-            modifiers: egui::Modifiers::NONE,
-        }],
-    );
+    click_at(app, ctx, rect(app, name).center());
 }
 
 fn plus_names(app: &PudduScrollApp) -> Vec<String> {
@@ -118,6 +95,32 @@ fn empty_frames_hold_a_visible_plus(app: &PudduScrollApp) {
     }
 }
 
+fn click_at(app: &mut PudduScrollApp, ctx: &egui::Context, pos: egui::Pos2) {
+    paint(
+        app,
+        ctx,
+        vec![
+            egui::Event::PointerMoved(pos),
+            egui::Event::PointerButton {
+                pos,
+                button: egui::PointerButton::Primary,
+                pressed: true,
+                modifiers: egui::Modifiers::NONE,
+            },
+        ],
+    );
+    paint(
+        app,
+        ctx,
+        vec![egui::Event::PointerButton {
+            pos,
+            button: egui::PointerButton::Primary,
+            pressed: false,
+            modifiers: egui::Modifiers::NONE,
+        }],
+    );
+}
+
 fn tap(app: &mut PudduScrollApp, ctx: &egui::Context, key: egui::Key) {
     paint(
         app,
@@ -132,23 +135,96 @@ fn tap(app: &mut PudduScrollApp, ctx: &egui::Context, key: egui::Key) {
     );
 }
 
+fn visible_canvas_hit(app: &PudduScrollApp) -> (usize, egui::Pos2) {
+    let strip = app.strip_rect.expect("strip");
+    let view = app.view_rect.expect("view");
+    let count = app.layout().expect("layout").canvas_count;
+    let canvas_w = strip.width() / count.max(1) as f32;
+    let mut hit = None;
+    for index in 0..count {
+        let canvas = egui::Rect::from_min_size(
+            egui::pos2(strip.min.x + index as f32 * canvas_w, strip.min.y),
+            egui::vec2(canvas_w, strip.height()),
+        );
+        let visible = canvas.intersect(view);
+        if visible.width() > 40.0 && visible.height() > 40.0 {
+            let pos = egui::pos2(visible.min.x + 12.0, visible.min.y + 12.0);
+            hit = Some((index, pos));
+        }
+    }
+    hit.expect("visible canvas")
+}
+
 #[test]
-fn delete_confirms_selected_canvases() {
+fn canvas_starts_inactive_and_activates_on_click() {
     let (ctx, mut app) = ready();
     app.new_carousel(&ctx);
-    app.add_canvas_command();
-    app.selected_canvases = vec![1];
+    settle(&mut app, &ctx);
+    assert_eq!(app.active_canvas, None);
+    assert!(!shown(&app, "add-canvas-left"));
+    assert!(!shown(&app, "add-canvas"));
+    assert!(!shown(&app, "remove-canvas"));
+    let (index, pos) = visible_canvas_hit(&app);
+    click_at(&mut app, &ctx, pos);
+    settle(&mut app, &ctx);
+    assert_eq!(app.active_canvas, Some(index));
+    assert!(shown(&app, "add-canvas-left"));
+    assert!(shown(&app, "add-canvas"));
+    assert!(shown(&app, "remove-canvas"));
+    let view = app.view_rect.expect("view");
+    let strip = app.strip_rect.expect("strip");
+    let outside = egui::pos2(view.min.x + 8.0, strip.min.y - 12.0);
+    assert!(view.contains(outside));
+    assert!(!strip.contains(outside));
+    click_at(&mut app, &ctx, outside);
+    settle(&mut app, &ctx);
+    assert_eq!(app.active_canvas, None);
+    assert!(!shown(&app, "add-canvas"));
+}
+
+#[test]
+fn adding_beside_keeps_the_active_canvas() {
+    let (ctx, mut app) = ready();
+    app.new_carousel(&ctx);
+    settle(&mut app, &ctx);
+    let (_, pos) = visible_canvas_hit(&app);
+    click_at(&mut app, &ctx, pos);
+    settle(&mut app, &ctx);
+    click(&mut app, &ctx, "add-canvas");
+    click(&mut app, &ctx, "add-canvas");
+    settle(&mut app, &ctx);
+    assert_eq!(app.layout().expect("layout").canvas_count, 3);
+    app.active_canvas = Some(2);
+    settle(&mut app, &ctx);
+    click(&mut app, &ctx, "add-canvas-left");
+    assert_eq!(app.layout().expect("layout").canvas_count, 4);
+    assert_eq!(app.active_canvas, Some(3));
+    app.active_canvas = Some(2);
+    settle(&mut app, &ctx);
+    click(&mut app, &ctx, "add-canvas");
+    assert_eq!(app.layout().expect("layout").canvas_count, 5);
+    assert_eq!(app.active_canvas, Some(2));
+}
+
+#[test]
+fn delete_removes_the_active_canvas() {
+    let (ctx, mut app) = ready();
+    app.new_carousel(&ctx);
+    settle(&mut app, &ctx);
+    let (_, pos) = visible_canvas_hit(&app);
+    click_at(&mut app, &ctx, pos);
+    settle(&mut app, &ctx);
+    click(&mut app, &ctx, "add-canvas");
+    settle(&mut app, &ctx);
+    app.active_canvas = Some(1);
+    settle(&mut app, &ctx);
     tap(&mut app, &ctx, egui::Key::Delete);
     assert!(matches!(
         &app.confirm,
         Some(super::Confirm::RemoveCanvases(indices)) if indices == &vec![1]
     ));
     app.confirm = None;
-    app.selected_canvases = vec![0, 1];
-    tap(&mut app, &ctx, egui::Key::Delete);
-    assert!(matches!(app.confirm, Some(super::Confirm::RemoveFrame(_))));
-    app.confirm = None;
-    app.selected_canvases.clear();
+    app.active_canvas = None;
     tap(&mut app, &ctx, egui::Key::Delete);
     assert!(matches!(app.confirm, Some(super::Confirm::RemoveFrame(_))));
 }
@@ -176,8 +252,6 @@ fn an_empty_carousel_frame_shows_a_plus() {
         "home",
         "export",
         "share",
-        "add-canvas-left",
-        "add-canvas",
         "add-frame",
         "edit-frame",
         "remove-frame",
@@ -205,6 +279,9 @@ fn an_empty_carousel_frame_shows_a_plus() {
 fn add_frame_paints_a_plus_on_the_next_canvas_and_undo_removes_it() {
     let (ctx, mut app) = ready();
     app.new_carousel(&ctx);
+    settle(&mut app, &ctx);
+    let (_, pos) = visible_canvas_hit(&app);
+    click_at(&mut app, &ctx, pos);
     settle(&mut app, &ctx);
     click(&mut app, &ctx, "add-canvas");
     settle(&mut app, &ctx);
