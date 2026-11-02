@@ -48,6 +48,14 @@ enum Space<'a> {
 }
 
 pub(crate) fn note_display(frame: &eframe::Frame) {
+    #[cfg(not(target_arch = "wasm32"))]
+    note_native_display(frame);
+    #[cfg(target_arch = "wasm32")]
+    let _ = frame;
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn note_native_display(frame: &eframe::Frame) {
     if CANVAS.get().is_some() {
         return;
     }

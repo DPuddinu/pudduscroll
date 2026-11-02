@@ -2673,6 +2673,8 @@ dependencies = [
  "eframe",
  "flate2",
  "image",
+ "js-sys",
+ "log",
  "moxcms",
  "pudduscroll-core",
  "pudduscroll-display",
@@ -2682,6 +2684,9 @@ dependencies = [
  "serde_json",
  "tar",
  "ureq",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
+ "web-sys",
  "winit",
  "zip",
 ]

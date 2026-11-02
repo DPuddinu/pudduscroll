@@ -1,6 +1,8 @@
 mod card;
 mod crop;
 mod draw;
+#[cfg(test)]
+mod features;
 mod history;
 mod home;
 mod rail;
@@ -23,6 +25,7 @@ use pudduscroll_core::{
     AspectRatio, Crop, CropPreset, EncodedCanvas, ExportFormat, FrameId, Handle,
 };
 
+use crate::host::PickedFile;
 use crate::library::{Blob, Carousel, Library, SaveRequest};
 use crate::settings::{AppSettings, Command};
 
@@ -163,6 +166,10 @@ enum DecodeTarget {
 
 enum IncomingPhoto {
     Library(Result<Library, String>),
+    Chosen {
+        target: DecodeTarget,
+        picked: PickedFile,
+    },
     Decoded {
         token: u64,
         target: DecodeTarget,
@@ -183,7 +190,7 @@ enum IncomingPhoto {
         result: Result<(), String>,
     },
     Shared(Result<String, String>),
-    Imported(Result<Carousel, String>),
+    Imported(Option<Result<Carousel, String>>),
 }
 
 enum PendingUpload {

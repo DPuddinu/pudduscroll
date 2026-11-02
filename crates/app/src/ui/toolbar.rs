@@ -90,15 +90,7 @@ impl PudduScrollApp {
                         self.note_geometry();
                     }
                 }
-                let chosen = self.selected_canvases.clone();
-                let can_remove = self.layout().is_some_and(|layout| {
-                    let count = chosen
-                        .iter()
-                        .filter(|index| **index < layout.canvas_count)
-                        .count();
-                    count > 0 && count < layout.canvas_count
-                });
-                if can_remove {
+                if let Some(chosen) = self.removable_canvases() {
                     let remove = ui.button("Remove");
                     self.remember("remove-canvas", remove.rect);
                     if remove.clicked() {
@@ -518,6 +510,7 @@ impl PudduScrollApp {
                     ui.label(egui::RichText::new(label).color(MUTED));
                 }
                 ui.add_space(12.0);
+                #[cfg(not(target_arch = "wasm32"))]
                 if let Some(folder) = &self.settings.folder {
                     ui.label(
                         egui::RichText::new(folder.display().to_string())
@@ -529,28 +522,48 @@ impl PudduScrollApp {
                     if ui.button("Cancel").clicked() {
                         self.export_open = false;
                     }
-                    let saved = self.settings.folder.is_some();
-                    if saved {
-                        let choose = ui.button("Choose folder");
-                        self.remember("export-choose", choose.rect);
-                        if choose.clicked() {
+                    #[cfg(target_arch = "wasm32")]
+                    {
+                        let confirm = ui.add_enabled(
+                            !self.exporting,
+                            egui::Button::new(
+                                egui::RichText::new("Download").color(egui::Color32::BLACK),
+                            )
+                            .fill(ACCENT),
+                        );
+                        self.remember("export-go", confirm.rect);
+                        if confirm.clicked() {
                             self.export_open = false;
                             self.start_export();
                         }
                     }
-                    let label = if saved { "Export" } else { "Choose folder" };
-                    let confirm = ui.add_enabled(
-                        !self.exporting,
-                        egui::Button::new(egui::RichText::new(label).color(egui::Color32::BLACK))
-                            .fill(ACCENT),
-                    );
-                    self.remember("export-go", confirm.rect);
-                    if confirm.clicked() {
-                        self.export_open = false;
+                    #[cfg(not(target_arch = "wasm32"))]
+                    {
+                        let saved = self.settings.folder.is_some();
                         if saved {
-                            self.export_saved_folder();
-                        } else {
-                            self.start_export();
+                            let choose = ui.button("Choose folder");
+                            self.remember("export-choose", choose.rect);
+                            if choose.clicked() {
+                                self.export_open = false;
+                                self.start_export();
+                            }
+                        }
+                        let label = if saved { "Export" } else { "Choose folder" };
+                        let confirm = ui.add_enabled(
+                            !self.exporting,
+                            egui::Button::new(
+                                egui::RichText::new(label).color(egui::Color32::BLACK),
+                            )
+                            .fill(ACCENT),
+                        );
+                        self.remember("export-go", confirm.rect);
+                        if confirm.clicked() {
+                            self.export_open = false;
+                            if saved {
+                                self.export_saved_folder();
+                            } else {
+                                self.start_export();
+                            }
                         }
                     }
                 });

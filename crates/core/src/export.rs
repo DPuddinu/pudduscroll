@@ -198,6 +198,14 @@ pub fn decode_frame_images<S: BuildHasher>(
 ) -> Result<FrameImages, ExportError> {
     let jobs: Vec<(FrameId, &[u8])> = encoded.iter().map(|(id, bytes)| (*id, &**bytes)).collect();
     let total = jobs.len();
+    if export_workers(total) == 1 {
+        let mut images = FrameImages::with_capacity(total);
+        for (done, (id, bytes)) in jobs.into_iter().enumerate() {
+            images.insert(id, Arc::new(image_from_bytes(bytes)?));
+            on_photo(done + 1, total);
+        }
+        return Ok(images);
+    }
     let next = &AtomicUsize::new(0);
     let finished = &AtomicUsize::new(0);
     let jobs = &jobs;
@@ -318,9 +326,16 @@ fn export_workers(canvas_count: usize) -> usize {
     if canvas_count <= 1 {
         return 1;
     }
-    std::thread::available_parallelism()
-        .map_or(1, std::num::NonZero::get)
-        .clamp(1, canvas_count)
+    #[cfg(target_arch = "wasm32")]
+    {
+        canvas_count.min(1)
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        std::thread::available_parallelism()
+            .map_or(1, std::num::NonZero::get)
+            .clamp(1, canvas_count)
+    }
 }
 
 fn encode_layout_canvas(

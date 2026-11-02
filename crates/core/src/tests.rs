@@ -1285,6 +1285,24 @@ fn export_reports_each_slide_once() {
 }
 
 #[test]
+fn single_decode_keeps_the_frame() {
+    let mut encoded = std::collections::HashMap::new();
+    let bytes = png_bytes(&solid(4, 3, [20, 30, 40, 255]));
+    encoded.insert(FrameId(1), Arc::from(bytes));
+    let seen = std::sync::atomic::AtomicUsize::new(0);
+    let images = decode_frame_images(&encoded, &|done, total| {
+        assert_eq!(total, 1);
+        assert_eq!(done, 1);
+        seen.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    })
+    .unwrap();
+    assert_eq!(seen.load(std::sync::atomic::Ordering::Relaxed), 1);
+    let image = &images[&FrameId(1)];
+    assert_eq!(image.dimensions(), (4, 3));
+    assert_eq!(pixel(image, 1, 1), [20, 30, 40, 255]);
+}
+
+#[test]
 fn parallel_decode_keeps_every_frame() {
     let mut encoded = std::collections::HashMap::new();
     for index in 0..5u8 {

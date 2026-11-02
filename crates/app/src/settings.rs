@@ -191,7 +191,7 @@ impl AppSettings {
 
     #[must_use]
     pub fn load_from(path: &Path) -> Self {
-        let Ok(text) = std::fs::read_to_string(path) else {
+        let Ok(text) = crate::disk::read_to_string(path) else {
             return Self::default();
         };
         Self::parse(&text)
@@ -199,7 +199,7 @@ impl AppSettings {
 
     pub fn save(&self) -> Result<(), String> {
         let root = library_directory();
-        std::fs::create_dir_all(&root).map_err(|error| error.to_string())?;
+        crate::disk::create_dir_all(&root).map_err(|error| error.to_string())?;
         self.save_to(&root.join("settings.txt"))
     }
 
@@ -208,12 +208,14 @@ impl AppSettings {
             .parent()
             .filter(|parent| !parent.as_os_str().is_empty())
         {
-            std::fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+            crate::disk::create_dir_all(parent).map_err(|error| error.to_string())?;
         }
         let temporary = path.with_extension("txt.tmp");
-        std::fs::write(&temporary, self.encode()).map_err(|error| error.to_string())?;
-        let _ = std::fs::remove_file(path);
-        std::fs::rename(&temporary, path).map_err(|error| error.to_string())
+        crate::disk::write(&temporary, self.encode()).map_err(|error| error.to_string())?;
+        let _ = crate::disk::remove_file(path);
+        crate::disk::rename(&temporary, path).map_err(|error| error.to_string())?;
+        crate::disk::sync();
+        Ok(())
     }
 
     #[must_use]
@@ -410,8 +412,8 @@ mod tests {
     #[test]
     fn settings_roundtrip_keeps_export_defaults_and_bindings() {
         let dir = std::env::temp_dir().join(format!("pudduscroll-settings-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
+        let _ = crate::disk::remove_dir_all(&dir);
+        crate::disk::create_dir_all(&dir).unwrap();
         let mut settings = AppSettings {
             quality: 70,
             format: ExportFormat::Png,
@@ -434,7 +436,7 @@ mod tests {
             AppSettings::default().binding(Command::Undo)
         );
         assert_eq!(loaded, AppSettings::parse(&loaded.encode()));
-        let _ = std::fs::remove_dir_all(&dir);
+        let _ = crate::disk::remove_dir_all(&dir);
     }
 
     #[test]
@@ -500,7 +502,7 @@ quality 40
             std::process::id(),
             "absent"
         ));
-        let _ = std::fs::remove_file(&path);
+        let _ = crate::disk::remove_file(&path);
         let settings = AppSettings::load_from(&path);
         assert_eq!(settings.quality, 90);
         assert_eq!(settings.format, ExportFormat::Jpeg);

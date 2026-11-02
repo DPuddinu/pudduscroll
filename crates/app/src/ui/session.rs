@@ -2,25 +2,27 @@ use std::collections::{HashMap, VecDeque};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::mpsc::{self, Sender, TryRecvError};
-use std::thread;
 use std::time::{Duration, Instant};
 
 use eframe::egui;
+#[cfg(not(target_arch = "wasm32"))]
+use pudduscroll_core::existing_export_files;
 use pudduscroll_core::{
     AspectRatio, ExportSettings, FrameId, FrameImages, Layout, decode_frame_images,
-    existing_export_files, export_layout_canvases_with, layout_export_width,
+    export_layout_canvases_with, layout_export_width,
 };
 
+use crate::host::PickedFile;
+#[cfg(target_arch = "wasm32")]
+use crate::library::pasted_image;
 use crate::library::{
-    Carousel, DEFAULT_GRID_CELLS, Library, SaveRequest, carousel_package, clamp_grid_cells,
-    clipboard_has_image, clipboard_image, clipboard_image_stamp, direct_image_url,
-    fetch_linked_image, library_directory, load_blob, read_carousel_package, write_snapshot,
+    Carousel, DEFAULT_GRID_CELLS, Library, SaveRequest, blob_from_bytes, carousel_package,
+    clamp_grid_cells, clipboard_has_image, clipboard_image, clipboard_image_stamp,
+    direct_image_url, library_directory, linked_image, load_blob, read_carousel_package,
+    write_snapshot,
 };
 
-use super::draw::{
-    apply_style, export_folder, pick_image_path, pick_zip_path, save_folder, save_zip_path,
-    texture_from_preview, zip_file_name,
-};
+use super::draw::{apply_style, export_folder, save_folder, texture_from_preview, zip_file_name};
 use super::history::{Edit, EditHistory, HISTORY_WINDOW, HistoryKind, photo_stamp};
 use super::{
     Confirm, DEFAULT_EDITOR_ZOOM, DEFAULT_RAIL_WEIGHTS, DecodeTarget, EstimateMsg, EstimateUpdate,
@@ -29,13 +31,20 @@ use super::{
 
 impl PudduScrollApp {
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
-        apply_style(&cc.egui_ctx);
+        let app = Self::assemble(&cc.egui_ctx);
+        let load_tx = app.photo_tx.clone();
+        let ctx = cc.egui_ctx.clone();
+        crate::host::boot(move || {
+            let _ = load_tx.send(IncomingPhoto::Library(Library::load()));
+            ctx.request_repaint();
+        });
+        app
+    }
+
+    pub(super) fn assemble(ctx: &egui::Context) -> Self {
+        apply_style(ctx);
         let (photo_tx, photo_rx) = mpsc::channel();
         let save_tx = spawn_saver(photo_tx.clone());
-        let load_tx = photo_tx.clone();
-        thread::spawn(move || {
-            let _ = load_tx.send(IncomingPhoto::Library(Library::load()));
-        });
         Self {
             library: Library::empty(),
             library_ready: false,
@@ -237,18 +246,29 @@ impl PudduScrollApp {
         if !self.can_store {
             return;
         }
-        let (tx, rx) = mpsc::channel();
         let snapshot = self.library.snapshot();
-        if self
-            .save_tx
-            .send(SaveRequest {
-                snapshot,
-                ack: Some(tx),
-            })
-            .is_ok()
-            && let Ok(Err(error)) = rx.recv()
+        #[cfg(target_arch = "wasm32")]
         {
-            self.toast(error);
+            let _ = self.save_tx.send(SaveRequest {
+                snapshot,
+                ack: None,
+            });
+            drive_saver();
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let (tx, rx) = mpsc::channel();
+            if self
+                .save_tx
+                .send(SaveRequest {
+                    snapshot,
+                    ack: Some(tx),
+                })
+                .is_ok()
+                && let Ok(Err(error)) = rx.recv()
+            {
+                self.toast(error);
+            }
         }
     }
 
@@ -476,6 +496,11 @@ impl PudduScrollApp {
     }
 
     pub(super) fn poll_jobs(&mut self, ctx: &egui::Context) {
+        #[cfg(target_arch = "wasm32")]
+        drive_saver();
+        if let Some(error) = crate::disk::take_error() {
+            self.toast(error);
+        }
         while let Ok(message) = self.photo_rx.try_recv() {
             self.apply_incoming(message);
         }
@@ -521,7 +546,9 @@ impl PudduScrollApp {
         self.poll_export();
         self.poll_update(ctx);
         self.upload_one(ctx);
-        if self.photos_busy() {
+        if !self.library_ready {
+            ctx.request_repaint_after(Duration::from_millis(50));
+        } else if self.photos_busy() {
             ctx.request_repaint_after(Duration::from_millis(16));
         } else if self.estimate_rx.is_some() || self.export_rx.is_some() {
             ctx.request_repaint_after(Duration::from_millis(40));
@@ -712,6 +739,7 @@ impl PudduScrollApp {
     pub(super) fn apply_incoming(&mut self, message: IncomingPhoto) {
         match message {
             IncomingPhoto::Library(result) => self.apply_library(result),
+            IncomingPhoto::Chosen { target, picked } => self.apply_chosen(target, picked),
             IncomingPhoto::Decoded {
                 token,
                 target,
@@ -759,6 +787,10 @@ impl PudduScrollApp {
             }
             IncomingPhoto::Imported(result) => {
                 self.importing = false;
+                let Some(result) = result else {
+                    self.status.clear();
+                    return;
+                };
                 match result {
                     Ok(carousel) => {
                         let name = carousel.name.clone();
@@ -781,6 +813,10 @@ impl PudduScrollApp {
         }
         match result {
             Ok(library) => {
+                #[cfg(target_arch = "wasm32")]
+                {
+                    self.settings = crate::settings::AppSettings::load();
+                }
                 self.library = library;
                 self.can_store = true;
                 if self.status == "Opening library…" {
@@ -796,6 +832,38 @@ impl PudduScrollApp {
             }
         }
         self.library_ready = true;
+    }
+
+    fn apply_chosen(&mut self, target: DecodeTarget, picked: PickedFile) {
+        let token = self.next_token();
+        match target {
+            DecodeTarget::Frame {
+                carousel_id,
+                frame_id,
+            } => {
+                if self.loading.contains_key(&(carousel_id, frame_id)) {
+                    return;
+                }
+                self.loading.insert((carousel_id, frame_id), token);
+                self.status = "Loading photo…".to_string();
+            }
+            DecodeTarget::Cover => {
+                self.cover_load = Some(token);
+                self.status = "Loading cover…".to_string();
+            }
+        }
+        let tx = self.photo_tx.clone();
+        crate::host::spawn(move || {
+            let result = match picked {
+                PickedFile::Path(path) => load_blob(&path),
+                PickedFile::Bytes { name, bytes } => blob_from_bytes(&name, bytes),
+            };
+            let _ = tx.send(IncomingPhoto::Decoded {
+                token,
+                target,
+                result,
+            });
+        });
     }
 
     pub(super) fn apply_decoded(
@@ -907,7 +975,7 @@ impl PudduScrollApp {
         let geometry = self.geometry_revision;
         let (tx, rx) = mpsc::channel();
         let progress = tx.clone();
-        thread::spawn(move || {
+        crate::host::spawn(move || {
             let result = decode_frame_images(&encoded, &|done, total| {
                 let _ = progress.send(EstimateUpdate::Decoding { done, total });
             })
@@ -974,8 +1042,10 @@ impl PudduScrollApp {
             && !self.create_open
             && !self.settings_open
             && !ctx.text_edit_focused();
-        if paste && ctx.input_mut(|input| take_frame_paste(input, self.paste_stamp.is_some())) {
-            self.paste_clipboard(ctx);
+        let (paste_hit, pasted) =
+            ctx.input_mut(|input| take_paste(input, self.paste_stamp.is_some()));
+        if paste && paste_hit {
+            self.paste_hit(ctx, pasted);
             return;
         }
         if ctx.egui_wants_keyboard_input() {
@@ -1003,7 +1073,21 @@ impl PudduScrollApp {
         }
     }
 
+    pub(super) fn removable_canvases(&self) -> Option<Vec<usize>> {
+        let layout = self.layout()?;
+        let chosen = self.selected_canvases.clone();
+        let count = chosen
+            .iter()
+            .filter(|index| **index < layout.canvas_count)
+            .count();
+        (count > 0 && count < layout.canvas_count).then_some(chosen)
+    }
+
     pub(super) fn delete_selection(&mut self) {
+        if let Some(chosen) = self.removable_canvases() {
+            self.confirm = Some(Confirm::RemoveCanvases(chosen));
+            return;
+        }
         let Some(id) = self.selected else {
             return;
         };
@@ -1178,12 +1262,9 @@ impl PudduScrollApp {
         if self.loading.contains_key(&(carousel_id, id)) {
             return;
         }
-        let Some(path) = pick_image_path("Add photo") else {
-            return;
-        };
-        self.spawn_decode(
+        self.pick_image(
             ctx,
-            path,
+            "Add photo",
             DecodeTarget::Frame {
                 carousel_id,
                 frame_id: id,
@@ -1191,36 +1272,25 @@ impl PudduScrollApp {
         );
     }
 
-    pub(super) fn spawn_decode(
+    pub(super) fn pick_image(
         &mut self,
         ctx: &egui::Context,
-        path: PathBuf,
+        title: &'static str,
         target: DecodeTarget,
     ) {
-        let token = self.next_token();
-        match target {
-            DecodeTarget::Frame {
-                carousel_id,
-                frame_id,
-            } => {
-                self.loading.insert((carousel_id, frame_id), token);
-                self.status = "Loading photo…".to_string();
-            }
-            DecodeTarget::Cover => {
-                self.cover_load = Some(token);
-                self.status = "Loading cover…".to_string();
-            }
-        }
         let tx = self.photo_tx.clone();
-        thread::spawn(move || {
-            let result = load_blob(&path);
-            let _ = tx.send(IncomingPhoto::Decoded {
-                token,
-                target,
-                result,
-            });
-        });
-        ctx.request_repaint();
+        let ctx = ctx.clone();
+        crate::host::pick_file(
+            title,
+            "Images",
+            &["png", "jpg", "jpeg", "webp"],
+            move |picked| {
+                if let Some(picked) = picked {
+                    let _ = tx.send(IncomingPhoto::Chosen { target, picked });
+                }
+                ctx.request_repaint();
+            },
+        );
     }
 
     pub(super) fn spawn_link(&mut self, ctx: &egui::Context, frame_id: FrameId, url: String) {
@@ -1239,8 +1309,9 @@ impl PudduScrollApp {
         self.status = "Loading photo…".to_string();
         self.link_open = false;
         let tx = self.photo_tx.clone();
-        thread::spawn(move || {
-            let result = fetch_linked_image(&url);
+        let ctx = ctx.clone();
+        crate::host::fetch(url.clone(), move |bytes| {
+            let result = bytes.and_then(|bytes| linked_image(&url, bytes));
             let _ = tx.send(IncomingPhoto::Decoded {
                 token,
                 target: DecodeTarget::Frame {
@@ -1249,8 +1320,8 @@ impl PudduScrollApp {
                 },
                 result,
             });
+            ctx.request_repaint();
         });
-        ctx.request_repaint();
     }
 
     pub(super) fn share_carousel(&mut self) {
@@ -1275,35 +1346,63 @@ impl PudduScrollApp {
             photos: carousel.photos.clone(),
             grid_cells: carousel.grid_cells,
         };
-        let Some(path) = save_zip_path(&zip_file_name(&packaged.name)) else {
-            return;
-        };
-        self.sharing = true;
-        self.status = "Sharing…".to_string();
-        let tx = self.photo_tx.clone();
-        thread::spawn(move || {
-            let result = carousel_package(&packaged)
-                .and_then(|bytes| std::fs::write(&path, bytes).map_err(|error| error.to_string()))
-                .map(|()| format!("Shared {}", path.display()));
-            let _ = tx.send(IncomingPhoto::Shared(result));
-        });
+        let file_name = zip_file_name(&packaged.name);
+        #[cfg(target_arch = "wasm32")]
+        {
+            self.sharing = true;
+            self.status = "Sharing…".to_string();
+            let tx = self.photo_tx.clone();
+            crate::host::spawn(move || {
+                let result = carousel_package(&packaged).and_then(|bytes| {
+                    crate::host::download(&file_name, &bytes)?;
+                    Ok(format!("Downloaded {file_name}"))
+                });
+                let _ = tx.send(IncomingPhoto::Shared(result));
+            });
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let Some(path) =
+                crate::host::save_path("Share carousel", "Carousel", &["zip"], &file_name)
+            else {
+                return;
+            };
+            self.sharing = true;
+            self.status = "Sharing…".to_string();
+            let tx = self.photo_tx.clone();
+            crate::host::spawn(move || {
+                let result = carousel_package(&packaged)
+                    .and_then(|bytes| {
+                        std::fs::write(&path, bytes).map_err(|error| error.to_string())
+                    })
+                    .map(|()| format!("Shared {}", path.display()));
+                let _ = tx.send(IncomingPhoto::Shared(result));
+            });
+        }
     }
 
     pub(super) fn import_package(&mut self) {
         if self.importing {
             return;
         }
-        let Some(path) = pick_zip_path() else {
-            return;
-        };
         self.importing = true;
         self.status = "Importing…".to_string();
         let tx = self.photo_tx.clone();
-        thread::spawn(move || {
-            let result = std::fs::read(&path)
-                .map_err(|error| format!("Could not read {}: {error}", path.display()))
-                .and_then(|bytes| read_carousel_package(&bytes));
-            let _ = tx.send(IncomingPhoto::Imported(result));
+        crate::host::pick_file("Import carousel", "Carousel", &["zip"], move |picked| {
+            let Some(picked) = picked else {
+                let _ = tx.send(IncomingPhoto::Imported(None));
+                return;
+            };
+            let tx = tx.clone();
+            crate::host::spawn(move || {
+                let result = match picked {
+                    PickedFile::Path(path) => crate::disk::read(&path)
+                        .map_err(|error| format!("Could not read {}: {error}", path.display()))
+                        .and_then(|bytes| read_carousel_package(&bytes)),
+                    PickedFile::Bytes { bytes, .. } => read_carousel_package(&bytes),
+                };
+                let _ = tx.send(IncomingPhoto::Imported(Some(result)));
+            });
         });
     }
 
@@ -1334,6 +1433,57 @@ impl PudduScrollApp {
         self.paste_mark != Some((stamp, frame_id))
     }
 
+    #[cfg(target_arch = "wasm32")]
+    fn paste_hit(&mut self, ctx: &egui::Context, pasted: Option<Arc<egui::ColorImage>>) {
+        if let Some(image) = pasted {
+            self.paste_pixels(ctx, &image);
+        } else {
+            self.toast("Copy an image first");
+        }
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn paste_hit(&mut self, ctx: &egui::Context, _pasted: Option<Arc<egui::ColorImage>>) {
+        self.paste_clipboard(ctx);
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    fn paste_pixels(&mut self, ctx: &egui::Context, image: &egui::ColorImage) {
+        let Route::Carousel(carousel_id) = self.route else {
+            return;
+        };
+        let Some(frame_id) = self.selected else {
+            self.toast("Select a frame");
+            return;
+        };
+        if self.loading.contains_key(&(carousel_id, frame_id)) {
+            return;
+        }
+        let mut rgba = Vec::with_capacity(image.pixels.len() * 4);
+        for pixel in &image.pixels {
+            rgba.extend_from_slice(&pixel.to_array());
+        }
+        let width = image.size[0];
+        let height = image.size[1];
+        let token = self.next_token();
+        self.loading.insert((carousel_id, frame_id), token);
+        self.paste_job = Some((token, self.paste_stamp.unwrap_or(0), frame_id));
+        self.status = "Pasting photo…".to_string();
+        let tx = self.photo_tx.clone();
+        crate::host::spawn(move || {
+            let result = pasted_image(width, height, &rgba);
+            let _ = tx.send(IncomingPhoto::Decoded {
+                token,
+                target: DecodeTarget::Frame {
+                    carousel_id,
+                    frame_id,
+                },
+                result,
+            });
+        });
+        ctx.request_repaint();
+    }
+
     pub(super) fn paste_clipboard(&mut self, ctx: &egui::Context) {
         let Route::Carousel(carousel_id) = self.route else {
             return;
@@ -1350,7 +1500,7 @@ impl PudduScrollApp {
         self.paste_job = Some((token, self.paste_stamp.unwrap_or(0), frame_id));
         self.status = "Pasting photo…".to_string();
         let tx = self.photo_tx.clone();
-        thread::spawn(move || {
+        crate::host::spawn(move || {
             let result = clipboard_image();
             let _ = tx.send(IncomingPhoto::Decoded {
                 token,
@@ -1530,12 +1680,20 @@ impl PudduScrollApp {
     }
 
     pub(super) fn start_export(&mut self) {
-        let Some(dir) = self.pick_export_folder() else {
-            return;
-        };
-        self.use_export_folder(dir);
+        #[cfg(target_arch = "wasm32")]
+        {
+            self.launch_download();
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let Some(dir) = self.pick_export_folder() else {
+                return;
+            };
+            self.use_export_folder(dir);
+        }
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     pub(super) fn export_saved_folder(&mut self) {
         match self.settings.folder.clone() {
             Some(dir) if dir.is_dir() => self.export_into(dir),
@@ -1548,6 +1706,7 @@ impl PudduScrollApp {
         }
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     fn pick_export_folder(&self) -> Option<PathBuf> {
         let mut dialog = rfd::FileDialog::new();
         if let Some(dir) = &self.settings.folder
@@ -1558,6 +1717,7 @@ impl PudduScrollApp {
         dialog.pick_folder()
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     fn use_export_folder(&mut self, dir: PathBuf) {
         if self.settings.folder.as_ref() != Some(&dir) {
             self.settings.folder = Some(dir.clone());
@@ -1566,6 +1726,7 @@ impl PudduScrollApp {
         self.export_into(dir);
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     fn export_into(&mut self, dir: PathBuf) {
         let name = self.item_name();
         let Some(count) = self.layout().map(|layout| layout.canvas_count) else {
@@ -1594,12 +1755,35 @@ impl PudduScrollApp {
     }
 
     fn launch_export(&mut self, dir: PathBuf) {
+        let name = self.item_name();
+        self.launch_job(move |encoded, format| save_folder(&dir, &name, encoded, format));
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    fn launch_download(&mut self) {
+        let name = self.item_name();
+        let file_name = zip_file_name(&name);
+        self.launch_job(move |encoded, format| {
+            let bytes = super::draw::zip_slides(&name, encoded, format)?;
+            crate::host::download(&file_name, &bytes)?;
+            Ok(format!("Downloaded {file_name}"))
+        });
+    }
+
+    fn launch_job(
+        &mut self,
+        finish: impl FnOnce(
+            &[pudduscroll_core::EncodedCanvas],
+            pudduscroll_core::ExportFormat,
+        ) -> Result<String, String>
+        + Send
+        + 'static,
+    ) {
         let Some(layout) = self.layout().cloned() else {
             return;
         };
         let quality = self.settings.quality;
         let format = self.settings.format;
-        let name = self.item_name();
         let (tx, rx) = mpsc::channel();
         self.exporting = true;
         self.export_done = 0;
@@ -1610,17 +1794,15 @@ impl PudduScrollApp {
             .clone()
             .filter(|_| self.estimate_for == Some((self.geometry_revision, quality, format)));
         if let Some(canvases) = estimated {
-            thread::spawn(move || {
+            crate::host::spawn(move || {
                 let _ = tx.send(ExportUpdate::Saving);
-                let _ = tx.send(ExportUpdate::Finished(save_folder(
-                    &dir, &name, &canvases, format,
-                )));
+                let _ = tx.send(ExportUpdate::Finished(finish(&canvases, format)));
             });
             return;
         }
         let encoded = self.original_bytes();
         let progress = tx.clone();
-        thread::spawn(move || {
+        crate::host::spawn(move || {
             let outcome = (|| {
                 let images = decode_frame_images(&encoded, &|done, total| {
                     let _ = progress.send(ExportUpdate::Decoding { done, total });
@@ -1635,18 +1817,30 @@ impl PudduScrollApp {
                     let _ = slides.send(ExportUpdate::Exporting { done, total });
                 })?;
                 let _ = progress.send(ExportUpdate::Saving);
-                save_folder(&dir, &name, &encoded, format)
+                finish(&encoded, format)
             })();
             let _ = tx.send(ExportUpdate::Finished(outcome));
         });
     }
 }
 
+#[cfg(test)]
 fn take_frame_paste(input: &mut egui::InputState, has_image: bool) -> bool {
+    take_paste(input, has_image).0
+}
+
+fn take_paste(
+    input: &mut egui::InputState,
+    has_image: bool,
+) -> (bool, Option<Arc<egui::ColorImage>>) {
     let mut found = false;
+    let mut image = None;
     input.events.retain(|event| {
         let hit = match event {
-            egui::Event::PasteImage(_) => true,
+            egui::Event::PasteImage(pasted) => {
+                image = Some(Arc::clone(pasted));
+                true
+            }
             egui::Event::Paste(_) => has_image,
             egui::Event::Key {
                 key: egui::Key::V,
@@ -1659,29 +1853,73 @@ fn take_frame_paste(input: &mut egui::InputState, has_image: bool) -> bool {
         found |= hit;
         !hit
     });
-    found
+    (found, image)
 }
+
+#[cfg(target_arch = "wasm32")]
+struct SaveInbox {
+    rx: mpsc::Receiver<SaveRequest>,
+    photo_tx: Sender<IncomingPhoto>,
+}
+
+#[cfg(target_arch = "wasm32")]
+static SAVE_INBOX: std::sync::Mutex<Option<SaveInbox>> = std::sync::Mutex::new(None);
 
 fn spawn_saver(photo_tx: Sender<IncomingPhoto>) -> Sender<SaveRequest> {
     let (tx, rx) = mpsc::channel::<SaveRequest>();
-    thread::spawn(move || {
-        let root = library_directory();
+    start_saver(rx, photo_tx);
+    tx
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn start_saver(rx: mpsc::Receiver<SaveRequest>, photo_tx: Sender<IncomingPhoto>) {
+    std::thread::spawn(move || {
         while let Ok(request) = rx.recv() {
-            let generation = request.snapshot.generation;
-            let had_images = request.snapshot.images.is_some();
-            let result = write_snapshot(&root, &request.snapshot);
-            if had_images {
-                let _ = photo_tx.send(IncomingPhoto::Saved {
-                    generation,
-                    result: result.clone(),
-                });
-            }
-            if let Some(ack) = request.ack {
-                let _ = ack.send(result);
-            }
+            deliver_save(request, &photo_tx);
         }
     });
-    tx
+}
+
+#[cfg(target_arch = "wasm32")]
+fn start_saver(rx: mpsc::Receiver<SaveRequest>, photo_tx: Sender<IncomingPhoto>) {
+    *SAVE_INBOX
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(SaveInbox { rx, photo_tx });
+}
+
+fn deliver_save(request: SaveRequest, photo_tx: &Sender<IncomingPhoto>) {
+    let generation = request.snapshot.generation;
+    let had_images = request.snapshot.images.is_some();
+    let result = write_snapshot(&library_directory(), &request.snapshot);
+    if had_images {
+        let _ = photo_tx.send(IncomingPhoto::Saved {
+            generation,
+            result: result.clone(),
+        });
+    }
+    if let Some(ack) = request.ack {
+        let _ = ack.send(result);
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+fn drive_saver() {
+    let (pending, photo_tx) = {
+        let mut inbox = SAVE_INBOX
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let Some(saver) = inbox.as_mut() else {
+            return;
+        };
+        let mut pending = Vec::new();
+        while let Ok(request) = saver.rx.try_recv() {
+            pending.push(request);
+        }
+        (pending, saver.photo_tx.clone())
+    };
+    for request in pending {
+        deliver_save(request, &photo_tx);
+    }
 }
 
 #[cfg(test)]

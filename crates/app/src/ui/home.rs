@@ -1,12 +1,9 @@
-use std::thread;
-
 use eframe::egui;
 use pudduscroll_core::{AspectRatio, CANVAS_PRESETS, FrameImages};
 
 use super::card::{self, CARD_INNER_W, Card};
 use super::draw::{
-    carousel_preview_image, counted, dialog_frame, fitted_rect, pick_image_path, section_scroll,
-    short_name,
+    carousel_preview_image, counted, dialog_frame, fitted_rect, section_scroll, short_name,
 };
 use super::{
     ACCENT, BG, CANVAS_BG, Confirm, DecodeTarget, HomeAction, IncomingPhoto, MUTED, PudduScrollApp,
@@ -228,7 +225,7 @@ impl PudduScrollApp {
             .collect();
         self.card_jobs.insert(id, visuals);
         let tx = self.photo_tx.clone();
-        thread::spawn(move || {
+        crate::host::spawn(move || {
             let image = carousel_preview_image(&layout, &images);
             let _ = tx.send(IncomingPhoto::CardPreview {
                 carousel_id: id,
@@ -305,10 +302,8 @@ impl PudduScrollApp {
                 ui.horizontal(|ui| {
                     let choose = ui.button("Choose cover");
                     self.remember("choose-cover", choose.rect);
-                    if choose.clicked()
-                        && let Some(path) = pick_image_path("Choose cover")
-                    {
-                        self.spawn_decode(ctx, path, DecodeTarget::Cover);
+                    if choose.clicked() {
+                        self.pick_image(ctx, "Choose cover", DecodeTarget::Cover);
                     }
                     if let Some(cover) = &self.create_cover {
                         ui.label(egui::RichText::new(short_name(&cover.name)).color(MUTED));

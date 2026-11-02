@@ -47,43 +47,46 @@ impl PudduScrollApp {
                 ui.heading("Export");
                 ui.add_space(8.0);
                 self.export_default_controls(ui, "settings");
-                ui.add_space(8.0);
-                ui.label("Folder");
-                if let Some(folder) = &self.settings.folder {
-                    ui.label(
-                        egui::RichText::new(folder.display().to_string())
-                            .color(MUTED)
-                            .size(13.0),
-                    );
-                } else {
-                    ui.label(egui::RichText::new("No folder yet.").color(MUTED));
-                }
-                ui.horizontal(|ui| {
-                    let choose = ui.add(
-                        egui::Button::new(
-                            egui::RichText::new("Choose folder").color(egui::Color32::BLACK),
-                        )
-                        .fill(ACCENT),
-                    );
-                    choose
-                        .clone()
-                        .on_hover_cursor(egui::CursorIcon::PointingHand);
-                    self.remember("settings-choose-folder", choose.rect);
-                    if choose.clicked() {
-                        self.choose_default_folder();
+                #[cfg(not(target_arch = "wasm32"))]
+                {
+                    ui.add_space(8.0);
+                    ui.label("Folder");
+                    if let Some(folder) = &self.settings.folder {
+                        ui.label(
+                            egui::RichText::new(folder.display().to_string())
+                                .color(MUTED)
+                                .size(13.0),
+                        );
+                    } else {
+                        ui.label(egui::RichText::new("No folder yet.").color(MUTED));
                     }
-                    if self.settings.folder.is_some() {
-                        let clear = ui.button("Clear");
-                        clear
+                    ui.horizontal(|ui| {
+                        let choose = ui.add(
+                            egui::Button::new(
+                                egui::RichText::new("Choose folder").color(egui::Color32::BLACK),
+                            )
+                            .fill(ACCENT),
+                        );
+                        choose
                             .clone()
                             .on_hover_cursor(egui::CursorIcon::PointingHand);
-                        self.remember("settings-clear-folder", clear.rect);
-                        if clear.clicked() {
-                            self.settings.folder = None;
-                            self.save_settings();
+                        self.remember("settings-choose-folder", choose.rect);
+                        if choose.clicked() {
+                            self.choose_default_folder();
                         }
-                    }
-                });
+                        if self.settings.folder.is_some() {
+                            let clear = ui.button("Clear");
+                            clear
+                                .clone()
+                                .on_hover_cursor(egui::CursorIcon::PointingHand);
+                            self.remember("settings-clear-folder", clear.rect);
+                            if clear.clicked() {
+                                self.settings.folder = None;
+                                self.save_settings();
+                            }
+                        }
+                    })
+                };
                 ui.add_space(18.0);
                 ui.heading("Keybindings");
                 ui.add_space(8.0);
@@ -253,6 +256,7 @@ impl PudduScrollApp {
         self.settings_open = true;
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     fn choose_default_folder(&mut self) {
         let mut dialog = rfd::FileDialog::new().set_title("Export folder");
         if let Some(dir) = &self.settings.folder

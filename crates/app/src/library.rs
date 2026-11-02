@@ -4,6 +4,7 @@ use std::io::{Cursor, Read, Write as IoWrite};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::mpsc::Sender;
+#[cfg(not(target_arch = "wasm32"))]
 use std::time::Duration;
 
 use std::sync::Mutex;
@@ -17,9 +18,10 @@ use pudduscroll_core::{
 pub(crate) const MIN_GRID_CELLS: i32 = 2;
 pub(crate) const MAX_GRID_CELLS: i32 = 16;
 pub(crate) const DEFAULT_GRID_CELLS: i32 = CANVAS_GRID as i32;
-const MAX_LINK_BYTES: u64 = 32 * 1024 * 1024;
+pub(crate) const MAX_LINK_BYTES: u64 = 32 * 1024 * 1024;
 const MAX_PASTE_BYTES: usize = 128 * 1024 * 1024;
 const MAX_PACKAGE_TEXT: u64 = 2 * 1024 * 1024;
+#[cfg(not(target_arch = "wasm32"))]
 const LINK_TIMEOUT: Duration = Duration::from_secs(20);
 
 pub(crate) fn clamp_grid_cells(cells: i32) -> i32 {
@@ -120,7 +122,7 @@ impl Library {
     pub fn load() -> Result<Self, String> {
         let root = library_directory();
         let path = root.join("library.txt");
-        if !path.exists() {
+        if !crate::disk::exists(&path) {
             return Ok(Self::empty());
         }
         Self::load_from(&root)
@@ -286,8 +288,8 @@ impl Library {
     }
 
     fn load_from(root: &Path) -> Result<Self, String> {
-        let text =
-            std::fs::read_to_string(root.join("library.txt")).map_err(|error| error.to_string())?;
+        let text = crate::disk::read_to_string(root.join("library.txt"))
+            .map_err(|error| error.to_string())?;
         parse_library(&text, root)
     }
 
@@ -301,41 +303,49 @@ impl Library {
 }
 
 pub fn write_snapshot(root: &Path, snapshot: &LibrarySnapshot) -> Result<(), String> {
-    std::fs::create_dir_all(root.join("images")).map_err(|error| error.to_string())?;
+    crate::disk::create_dir_all(root.join("images")).map_err(|error| error.to_string())?;
     if let Some(images) = &snapshot.images {
         write_named_images(root, images)?;
     }
     let destination = root.join("library.txt");
     let temporary = root.join("library.txt.tmp");
-    std::fs::write(&temporary, &snapshot.text).map_err(|error| error.to_string())?;
-    let _ = std::fs::remove_file(&destination);
-    std::fs::rename(&temporary, &destination).map_err(|error| error.to_string())?;
+    crate::disk::write(&temporary, &snapshot.text).map_err(|error| error.to_string())?;
+    let _ = crate::disk::remove_file(&destination);
+    crate::disk::rename(&temporary, &destination).map_err(|error| error.to_string())?;
+    crate::disk::sync();
     Ok(())
 }
 
 #[must_use]
 pub fn library_directory() -> PathBuf {
-    if let Some(dir) = std::env::var_os("LOCALAPPDATA") {
-        return PathBuf::from(dir).join("pudduscroll");
+    #[cfg(target_arch = "wasm32")]
+    {
+        return PathBuf::from("pudduscroll");
     }
-    if let Some(dir) = std::env::var_os("XDG_DATA_HOME") {
-        return PathBuf::from(dir).join("pudduscroll");
-    }
-    if let Some(home) = std::env::var_os("HOME") {
-        let home = PathBuf::from(home);
-        if cfg!(target_os = "macos") {
-            return home
-                .join("Library")
-                .join("Application Support")
-                .join("pudduscroll");
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        if let Some(dir) = std::env::var_os("LOCALAPPDATA") {
+            return PathBuf::from(dir).join("pudduscroll");
         }
-        return home.join(".local").join("share").join("pudduscroll");
+        if let Some(dir) = std::env::var_os("XDG_DATA_HOME") {
+            return PathBuf::from(dir).join("pudduscroll");
+        }
+        if let Some(home) = std::env::var_os("HOME") {
+            let home = PathBuf::from(home);
+            if cfg!(target_os = "macos") {
+                return home
+                    .join("Library")
+                    .join("Application Support")
+                    .join("pudduscroll");
+            }
+            return home.join(".local").join("share").join("pudduscroll");
+        }
+        PathBuf::from("pudduscroll")
     }
-    PathBuf::from("pudduscroll")
 }
 
 pub fn load_blob(path: &Path) -> Result<Blob, String> {
-    let bytes = std::fs::read(path)
+    let bytes = crate::disk::read(path)
         .map_err(|error| format!("Could not read {}: {error}", path.display()))?;
     decode_blob(path, bytes)
 }
@@ -401,15 +411,19 @@ fn image_files(library: &Library) -> Vec<(String, Arc<[u8]>)> {
 
 fn write_named_images(root: &Path, files: &[(String, Arc<[u8]>)]) -> Result<(), String> {
     let dir = root.join("images");
-    std::fs::create_dir_all(&dir).map_err(|error| error.to_string())?;
+    crate::disk::create_dir_all(&dir).map_err(|error| error.to_string())?;
     for (name, bytes) in files {
-        std::fs::write(dir.join(name), bytes.as_ref()).map_err(|error| error.to_string())?;
+        crate::disk::write(dir.join(name), bytes.as_ref()).map_err(|error| error.to_string())?;
     }
-    if let Ok(entries) = std::fs::read_dir(&dir) {
-        for entry in entries.flatten() {
-            let name = entry.file_name().to_string_lossy().to_string();
+    if let Ok(entries) = crate::disk::list(&dir) {
+        for path in entries {
+            let name = path
+                .file_name()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .to_string();
             if !files.iter().any(|(kept, _)| kept == &name) {
-                let _ = std::fs::remove_file(entry.path());
+                let _ = crate::disk::remove_file(&path);
             }
         }
     }
@@ -1091,11 +1105,6 @@ pub(crate) fn linked_image(url: &str, bytes: Vec<u8>) -> Result<Blob, String> {
     Ok(blob)
 }
 
-pub(crate) fn fetch_linked_image(url: &str) -> Result<Blob, String> {
-    let bytes = download_image(url)?;
-    linked_image(url, bytes)
-}
-
 pub(crate) fn carousel_package(carousel: &Carousel) -> Result<Vec<u8>, String> {
     let mut writer = zip::ZipWriter::new(Cursor::new(Vec::new()));
     let options = zip::write::SimpleFileOptions::default();
@@ -1130,11 +1139,11 @@ pub(crate) fn read_carousel_package(bytes: &[u8]) -> Result<Carousel, String> {
             .map_or(0, |duration| duration.as_nanos())
     ));
     let outcome = (|| {
-        std::fs::create_dir_all(root.join("images")).map_err(|error| error.to_string())?;
-        std::fs::write(root.join("library.txt"), &package.text)
+        crate::disk::create_dir_all(root.join("images")).map_err(|error| error.to_string())?;
+        crate::disk::write(root.join("library.txt"), &package.text)
             .map_err(|error| error.to_string())?;
         for (name, bytes) in &package.images {
-            std::fs::write(root.join("images").join(name), bytes)
+            crate::disk::write(root.join("images").join(name), bytes)
                 .map_err(|error| error.to_string())?;
         }
         let library = parse_library(&package.text, &root)?;
@@ -1157,11 +1166,12 @@ pub(crate) fn read_carousel_package(bytes: &[u8]) -> Result<Carousel, String> {
         }
         Ok(carousel)
     })();
-    let _ = std::fs::remove_dir_all(&root);
+    let _ = crate::disk::remove_dir_all(&root);
     outcome
 }
 
-fn download_image(url: &str) -> Result<Vec<u8>, String> {
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn download_image(url: &str) -> Result<Vec<u8>, String> {
     direct_image_url(url)?;
     let agent = ureq::AgentBuilder::new()
         .timeout_connect(LINK_TIMEOUT)
@@ -1193,7 +1203,7 @@ fn download_image(url: &str) -> Result<Vec<u8>, String> {
     Ok(bytes)
 }
 
-fn blob_from_bytes(name: &str, bytes: Vec<u8>) -> Result<Blob, String> {
+pub(crate) fn blob_from_bytes(name: &str, bytes: Vec<u8>) -> Result<Blob, String> {
     let format = image::guess_format(&bytes)
         .map_err(|_error| "Photo must be a png, jpeg, or webp".to_string())?;
     let ext = match format {
@@ -1244,12 +1254,19 @@ pub(crate) fn pasted_image(width: usize, height: usize, rgba: &[u8]) -> Result<B
 }
 
 pub(crate) fn clipboard_image() -> Result<Blob, String> {
-    let mut clipboard = arboard::Clipboard::new()
-        .map_err(|error| format!("Could not read the clipboard: {error}"))?;
-    let image = clipboard
-        .get_image()
-        .map_err(|_error| "Clipboard has no image".to_string())?;
-    pasted_image(image.width, image.height, image.bytes.as_ref())
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let mut clipboard = arboard::Clipboard::new()
+            .map_err(|error| format!("Could not read the clipboard: {error}"))?;
+        let image = clipboard
+            .get_image()
+            .map_err(|_error| "Clipboard has no image".to_string())?;
+        pasted_image(image.width, image.height, image.bytes.as_ref())
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        Err("Copy an image first".to_string())
+    }
 }
 
 pub(crate) fn clipboard_image_stamp() -> Option<u64> {
@@ -1268,12 +1285,16 @@ pub(crate) fn clipboard_has_image() -> bool {
     {
         clipboard_image_stamp().is_some()
     }
-    #[cfg(not(windows))]
+    #[cfg(all(not(windows), not(target_arch = "wasm32")))]
     {
         arboard::Clipboard::new()
             .ok()
             .and_then(|mut clipboard| clipboard.get_image().ok())
             .is_some()
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        false
     }
 }
 
@@ -1433,7 +1454,7 @@ mod tests {
     fn library_roundtrip_keeps_template_and_carousel_apart() {
         let root =
             std::env::temp_dir().join(format!("pudduscroll-library-test-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&root);
+        let _ = crate::disk::remove_dir_all(&root);
         let mut library = Library::empty();
         let cover = sample_blob("dune.png");
         let id = library.create_template("Sea \"m\"".to_string(), AspectRatio::FOUR_FIVE, cover);
@@ -1523,7 +1544,7 @@ mod tests {
         assert_eq!(frame.border_color, [12, 34, 56, 255]);
         assert!(carousel.photos.contains_key(&frame.id));
         assert!(carousel.photos[&frame.id].source.is_none());
-        let _ = std::fs::remove_dir_all(&root);
+        let _ = crate::disk::remove_dir_all(&root);
     }
 
     #[test]
@@ -1578,7 +1599,7 @@ mod tests {
     fn carousel_grid_squares_stay_on_that_carousel() {
         let root =
             std::env::temp_dir().join(format!("pudduscroll-grid-test-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&root);
+        let _ = crate::disk::remove_dir_all(&root);
         let mut library = Library::empty();
         let template_id = library.create_template(
             "Sea".to_string(),
@@ -1650,7 +1671,7 @@ squares 99
 ";
         let parsed = parse_library(wide, Path::new(".")).unwrap();
         assert_eq!(parsed.carousels[0].grid_cells, MAX_GRID_CELLS);
-        let _ = std::fs::remove_dir_all(&root);
+        let _ = crate::disk::remove_dir_all(&root);
     }
 
     fn sample_blob(name: &str) -> Blob {

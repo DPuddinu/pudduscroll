@@ -1,5 +1,3 @@
-use std::thread;
-
 use eframe::egui;
 use pudduscroll_core::{CROP_PRESETS, Crop, CropPreset, FrameId, LayerMove, render_layout};
 
@@ -211,7 +209,7 @@ impl PudduScrollApp {
         let images = self.proxy_map();
         self.preview_job = Some(key);
         let tx = self.photo_tx.clone();
-        thread::spawn(move || {
+        crate::host::spawn(move || {
             let image = render_layout(&layout, index, &images, EXPORT_PREVIEW_WIDTH);
             let _ = tx.send(IncomingPhoto::PhonePreview {
                 revision: key.0,

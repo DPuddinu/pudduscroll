@@ -1,4 +1,4 @@
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use eframe::egui;
 use image::RgbaImage;
@@ -649,26 +649,28 @@ pub(super) fn save_folder(
     ))
 }
 
-pub(super) fn pick_image_path(title: &str) -> Option<PathBuf> {
-    rfd::FileDialog::new()
-        .set_title(title)
-        .add_filter("Images", &["png", "jpg", "jpeg", "webp"])
-        .pick_file()
-}
+#[cfg(target_arch = "wasm32")]
+pub(super) fn zip_slides(
+    name: &str,
+    canvases: &[EncodedCanvas],
+    format: ExportFormat,
+) -> Result<Vec<u8>, String> {
+    use std::io::{Cursor, Write};
 
-pub(super) fn pick_zip_path() -> Option<PathBuf> {
-    rfd::FileDialog::new()
-        .set_title("Import carousel")
-        .add_filter("Carousel", &["zip"])
-        .pick_file()
-}
-
-pub(super) fn save_zip_path(file_name: &str) -> Option<PathBuf> {
-    rfd::FileDialog::new()
-        .set_title("Share carousel")
-        .add_filter("Carousel", &["zip"])
-        .set_file_name(file_name)
-        .save_file()
+    let mut writer = zip::ZipWriter::new(Cursor::new(Vec::new()));
+    let options = zip::write::SimpleFileOptions::default();
+    for (index, canvas) in canvases.iter().enumerate() {
+        writer
+            .start_file(canvas_file_name(name, index, format), options)
+            .map_err(|error| format!("Could not pack the export: {error}"))?;
+        writer
+            .write_all(&canvas.bytes)
+            .map_err(|error| format!("Could not pack the export: {error}"))?;
+    }
+    writer
+        .finish()
+        .map_err(|error| format!("Could not pack the export: {error}"))
+        .map(Cursor::into_inner)
 }
 
 pub(super) fn zip_file_name(name: &str) -> String {
