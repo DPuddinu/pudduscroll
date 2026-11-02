@@ -122,7 +122,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           cat > release-notes.md << 'ENDNOTES'
-          PudduScroll 0.3.0 checks GitHub at startup and installs a newer build for this computer. Delete asks before it removes a carousel, template, canvas, frame, or photo.
+          PudduScroll 0.3.1 uses one optional active canvas for add, remove, and Delete. Startup still checks GitHub for a newer build for this computer.
 
           ## Downloads
 
@@ -152,9 +152,8 @@ jobs:
 
           ## New
 
-          - A release build looks up the latest GitHub release when it opens. When that release is newer, it downloads the archive for this system, replaces the running app, and starts again.
-          - Windows installs `pudduscroll-windows-x86_64.zip`. Linux installs `pudduscroll-linux-x86_64.tar.gz`. Apple silicon installs `pudduscroll-macos-aarch64.zip`. Intel Macs install `pudduscroll-macos-x86_64.zip`.
-          - Delete, Remove, and the Delete key ask before they remove a carousel, a template, a canvas, a frame, or a photo.
+          - Click a canvas to make it active. Add left, Remove, Add right, and Delete act on that canvas. Click outside the strip to clear the active canvas.
+          - Canvas toolbar buttons show only while a canvas is active.
           ENDNOTES
           gh release create "${GITHUB_REF_NAME}" dist/* \
             --repo "${GITHUB_REPOSITORY}" \

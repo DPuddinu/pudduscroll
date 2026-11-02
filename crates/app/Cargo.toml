@@ -1,6 +1,6 @@
 [package]
 name = "pudduscroll"
-version = "0.3.0"
+version = "0.3.1"
 description = "PudduScroll Instagram carousel composer"
 edition.workspace = true
 license.workspace = true
@@ -17,7 +17,7 @@ tar = "0.4"
 image = { workspace = true, features = ["png", "jpeg", "webp"] }
 moxcms = "0.8.1"
 pudduscroll-core = { workspace = true }
-pudduscroll-display = { path = "../display", version = "0.3.0" }
+pudduscroll-display = { path = "../display", version = "0.3.1" }
 rfd = { workspace = true }
 zip = { version = "2", default-features = false, features = ["deflate"] }
 
