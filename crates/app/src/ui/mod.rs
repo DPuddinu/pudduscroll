@@ -48,6 +48,7 @@ const MAX_EDITOR_ZOOM: f32 = 4.0;
 const EDITOR_ZOOM_SPEED: f32 = 1.0 / 200.0;
 const UNDO_LIMIT: usize = 50;
 const CROP_HANDLE_HIT: f32 = 12.0;
+const MENU_H: f32 = 28.0;
 const TOOLBAR_H: f32 = 48.0;
 const RAIL_W: f32 = 320.0;
 const RAIL_SECTIONS: usize = 5;

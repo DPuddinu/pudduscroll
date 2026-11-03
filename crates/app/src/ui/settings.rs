@@ -8,20 +8,6 @@ use crate::settings::{
 use super::{ACCENT, MUTED, PudduScrollApp, Route};
 
 impl PudduScrollApp {
-    pub(super) fn apply_system_menu(&mut self, ctx: &egui::Context) {
-        let Some(command) = crate::window_menu::take() else {
-            return;
-        };
-        match command {
-            crate::window_menu::SystemCommand::NewCarousel => self.new_carousel(ctx),
-            crate::window_menu::SystemCommand::Settings => self.open_settings(),
-            crate::window_menu::SystemCommand::Quit => {
-                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
-            }
-            crate::window_menu::SystemCommand::About => self.about_open = true,
-        }
-    }
-
     pub(super) fn settings_screen(&mut self, ui: &mut egui::Ui, full: egui::Rect) {
         ui.painter().rect_filled(full, 0.0, super::BG);
         let inner = full.shrink(16.0);
@@ -240,7 +226,7 @@ impl PudduScrollApp {
         false
     }
 
-    fn open_settings(&mut self) {
+    pub(super) fn open_settings(&mut self) {
         if !self.settings_open {
             self.toggle_settings();
         }

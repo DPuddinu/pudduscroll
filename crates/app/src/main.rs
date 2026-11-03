@@ -38,8 +38,6 @@ mod update {
         rx
     }
 }
-mod window_menu;
-
 #[cfg(not(target_arch = "wasm32"))]
 use eframe::egui;
 use ui::PudduScrollApp;
