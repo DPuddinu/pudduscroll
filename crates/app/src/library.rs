@@ -234,7 +234,10 @@ impl Library {
             .iter()
             .find(|template| template.id == template_id)?;
         let name = template.name.clone();
-        let layout = template.layout.clone();
+        let mut layout = template.layout.clone();
+        for frame in &mut layout.frames {
+            frame.photo = None;
+        }
         let id = self.alloc();
         self.carousels.push(Carousel {
             id,
@@ -1405,8 +1408,8 @@ pub(crate) fn read_carousel_package(bytes: &[u8]) -> Result<Carousel, String> {
     let root = std::env::temp_dir().join(format!(
         "pudduscroll-package-{}-{}",
         std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
+        web_time::SystemTime::now()
+            .duration_since(web_time::UNIX_EPOCH)
             .map_or(0, |duration| duration.as_nanos())
     ));
     let outcome = (|| {
@@ -1757,6 +1760,11 @@ pub(crate) fn blob_from_cover_image(image: &RgbaImage) -> Result<Blob, String> {
         .write_to(&mut Cursor::new(&mut bytes), image::ImageFormat::Png)
         .map_err(|error| format!("Could not save the cover: {error}"))?;
     blob_from_bytes("cover.png", bytes)
+}
+
+pub(crate) fn blank_template_cover() -> Blob {
+    let image = RgbaImage::from_pixel(8, 6, image::Rgba([36, 36, 36, 255]));
+    blob_from_cover_image(&image).unwrap_or_else(|_| placeholder_blob("png"))
 }
 
 fn read_capped(reader: &mut impl Read, max: u64) -> Result<Vec<u8>, String> {

@@ -1,5 +1,31 @@
 #!/bin/sh
 set -eu
-cargo fmt --all -- --check
-cargo clippy --workspace --all-targets -- -D warnings
-cargo test --workspace
+
+run_checks() {
+	if [ -f "${HOME}/.cargo/env" ]; then
+		# shellcheck disable=SC1091
+		. "${HOME}/.cargo/env"
+	fi
+	cargo fmt --all -- --check
+	cargo clippy --workspace --all-targets -- -D warnings
+	cargo test --workspace
+}
+
+case "$(uname -s)" in
+MINGW* | MSYS* | CYGWIN*)
+	if ! command -v wsl.exe >/dev/null 2>&1; then
+		echo "WSL is required so Windows hooks match Linux CI (cfg(unix))." >&2
+		echo "Install with: wsl --install -d Ubuntu" >&2
+		echo "Then run: wsl -e bash scripts/setup-wsl-checks.sh" >&2
+		exit 1
+	fi
+	if command -v wslpath >/dev/null 2>&1; then
+		repo=$(wslpath -a "$(pwd)")
+	else
+		repo=$(wsl.exe wslpath -a "$(pwd)" | tr -d "$(printf '\r')")
+	fi
+	exec wsl.exe -e bash -lc "cd \"$repo\" && exec .githooks/pre-commit"
+	;;
+esac
+
+run_checks

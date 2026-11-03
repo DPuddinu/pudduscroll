@@ -18,7 +18,7 @@ use std::collections::{HashMap, VecDeque};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::mpsc::{Receiver, Sender};
-use std::time::Instant;
+use web_time::Instant;
 
 use eframe::egui;
 use image::RgbaImage;
@@ -158,7 +158,6 @@ struct PhotoAsset {
 enum DecodeTarget {
     Frame { carousel_id: u64, frame_id: FrameId },
     DiskFrame { carousel_id: u64, frame_id: FrameId },
-    Cover,
 }
 
 enum IncomingPhoto {
@@ -195,10 +194,6 @@ enum PendingUpload {
     },
     Cover {
         template_id: u64,
-        token: u64,
-        proxy: Arc<RgbaImage>,
-    },
-    CreateCover {
         token: u64,
         proxy: Arc<RgbaImage>,
     },
@@ -252,7 +247,6 @@ pub struct PudduScrollApp {
     save_tx: Sender<SaveRequest>,
     pending_uploads: VecDeque<PendingUpload>,
     loading: HashMap<(u64, FrameId), u64>,
-    cover_load: Option<u64>,
     cover_pending: HashMap<u64, u64>,
     load_token: u64,
     painted: u64,
@@ -290,8 +284,6 @@ pub struct PudduScrollApp {
     paste_look: u64,
     create_name: String,
     create_ratio: AspectRatio,
-    create_cover: Option<Blob>,
-    create_cover_texture: Option<egui::TextureHandle>,
     name_dirty: bool,
     widgets: Vec<(String, egui::Rect)>,
     plus_rects: Vec<(FrameId, egui::Rect)>,

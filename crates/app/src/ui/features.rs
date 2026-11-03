@@ -320,7 +320,26 @@ fn a_template_frame_has_no_plus() {
     assert_eq!(plus_names(&app), Vec::<String>::new());
     assert!(!shown(&app, "share"));
     assert!(!shown(&app, "from-link"));
+    assert!(!shown(&app, "rotate-ccw"));
     assert!(shown(&app, "add-frame"));
+}
+
+#[test]
+fn creating_a_template_does_not_save_a_carousel() {
+    let (ctx, mut app) = ready();
+    assert!(app.library.carousels.is_empty());
+    app.create_name = "Blank".to_string();
+    app.create_ratio = AspectRatio::FOUR_FIVE;
+    app.create_template(&ctx);
+    settle(&mut app, &ctx);
+    assert!(matches!(app.route, Route::Template(_)));
+    assert_eq!(app.library.templates.len(), 1);
+    assert!(app.library.carousels.is_empty());
+    app.go_home();
+    settle(&mut app, &ctx);
+    assert!(matches!(app.route, Route::Home));
+    assert_eq!(app.library.templates.len(), 1);
+    assert!(app.library.carousels.is_empty());
 }
 
 #[test]

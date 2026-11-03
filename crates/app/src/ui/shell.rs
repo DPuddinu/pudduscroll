@@ -181,11 +181,7 @@ impl PudduScrollApp {
         for message in self.toast_messages() {
             let _ = writeln!(text, "toast {}", message.replace(['\n', '\r'], " "));
         }
-        let _ = writeln!(
-            text,
-            "cover_loading {}",
-            u8::from(self.cover_load.is_some())
-        );
+        let _ = writeln!(text, "cover_loading 0");
         for (carousel_id, frame_id) in self.loading.keys() {
             let _ = writeln!(text, "loading {carousel_id} {}", frame_id.0);
         }

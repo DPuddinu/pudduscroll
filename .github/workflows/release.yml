@@ -122,7 +122,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           cat > release-notes.md << 'ENDNOTES'
-          PudduScroll 0.3.3 add menu bar
+          PudduScroll 0.3.4 simplifies templates on Home.
 
           ## Downloads
 
@@ -152,9 +152,8 @@ jobs:
 
           ## New
 
-          - Library boot loads only small card covers, in parallel. Frame photos stay on disk until you open a carousel.
-          - Leaving a carousel or quitting the app writes a cover thumbnail for the home card.
-          - Home no longer shows status lines like “Opening library…” or “photo added”.
+          - Creating a template no longer asks for a cover or saves a carousel; cards start with a blank cover.
+          - Rename templates inline on Home; Use opens a carousel from the template, and Edit opens the template itself.
           ENDNOTES
           gh release create "${GITHUB_REF_NAME}" dist/* \
             --repo "${GITHUB_REPOSITORY}" \

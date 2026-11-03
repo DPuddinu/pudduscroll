@@ -2,10 +2,8 @@ use eframe::egui;
 use pudduscroll_core::{AspectRatio, CANVAS_PRESETS};
 
 use super::card::{self, CARD_INNER_W, Card};
-use super::draw::{counted, dialog_frame, fitted_rect, section_scroll, short_name};
-use super::{
-    ACCENT, BG, CANVAS_BG, Confirm, DecodeTarget, HomeAction, MUTED, PudduScrollApp, Route,
-};
+use super::draw::{counted, dialog_frame, section_scroll, short_name};
+use super::{ACCENT, BG, CANVAS_BG, Confirm, HomeAction, MUTED, PudduScrollApp, Route};
 
 impl PudduScrollApp {
     pub(super) fn home_screen(
@@ -29,9 +27,6 @@ impl PudduScrollApp {
             if response.clicked() {
                 self.create_name = "Template".to_string();
                 self.create_ratio = AspectRatio::FOUR_FIVE;
-                self.create_cover = None;
-                self.create_cover_texture = None;
-                self.cover_load = None;
                 self.create_open = true;
             }
         });
@@ -105,7 +100,6 @@ impl PudduScrollApp {
 
     pub(super) fn template_card(&mut self, ui: &mut egui::Ui, index: usize) -> Option<HomeAction> {
         let id = self.library.templates[index].id;
-        let name = self.library.templates[index].name.clone();
         let canvases = self.library.templates[index].layout.canvas_count;
         let frames = self.library.templates[index].layout.frames.len();
         self.ensure_cover_texture(ui.ctx(), index);
@@ -120,7 +114,19 @@ impl PudduScrollApp {
             loading,
         }
         .show(ui, |content, buttons| {
-            content.label(egui::RichText::new(short_name(&name)).strong().size(16.0));
+            let (changed, name_rect) = {
+                let template = &mut self.library.templates[index];
+                let response = content.add(
+                    egui::TextEdit::singleline(&mut template.name)
+                        .id_salt(("template-name", id))
+                        .desired_width(CARD_INNER_W),
+                );
+                (response.changed(), response.rect)
+            };
+            self.remember(format!("template-name-{id}"), name_rect);
+            if changed {
+                self.name_dirty = true;
+            }
             content.label(
                 egui::RichText::new(format!(
                     "{} · {}",
@@ -130,6 +136,11 @@ impl PudduScrollApp {
                 .color(MUTED),
             );
             buttons.horizontal(|ui| {
+                let use_template = ui.button("Use");
+                self.remember(format!("template-use-{id}"), use_template.rect);
+                if use_template.clicked() {
+                    action = Some(HomeAction::OpenTemplate(id));
+                }
                 let edit = ui.button("Edit");
                 self.remember(format!("template-edit-{id}"), edit.rect);
                 if edit.clicked() {
@@ -145,7 +156,7 @@ impl PudduScrollApp {
         self.remember(format!("template-open-{id}"), shown.cover);
         self.remember(format!("template-card-{id}"), shown.rect);
         if shown.opened {
-            action = Some(HomeAction::OpenTemplate(id));
+            action = Some(HomeAction::EditTemplate(id));
         }
         action
     }
@@ -237,13 +248,9 @@ impl PudduScrollApp {
             self.toast("Name the template");
             return;
         }
-        let Some(cover) = self.create_cover.take() else {
-            self.toast("Choose a cover");
-            return;
-        };
         let ratio = self.create_ratio;
+        let cover = crate::library::blank_template_cover();
         let id = self.library.create_template(name, ratio, cover);
-        self.create_cover_texture = None;
         self.create_open = false;
         self.note_geometry();
         self.enter(Route::Template(id), ctx);
@@ -270,36 +277,6 @@ impl PudduScrollApp {
                 );
                 self.remember("template-name", name.rect);
                 ui.add_space(6.0);
-                ui.label("Cover");
-                ui.horizontal(|ui| {
-                    let choose = ui.button("Choose cover");
-                    self.remember("choose-cover", choose.rect);
-                    if choose.clicked() {
-                        self.pick_image(ctx, "Choose cover", DecodeTarget::Cover);
-                    }
-                    if let Some(cover) = &self.create_cover {
-                        ui.label(egui::RichText::new(short_name(&cover.name)).color(MUTED));
-                    }
-                });
-                if self.cover_load.is_some() {
-                    ui.horizontal(|ui| {
-                        ui.add(egui::Spinner::new().size(18.0).color(ACCENT));
-                        ui.label("Loading");
-                    });
-                } else if let Some(texture) = &self.create_cover_texture {
-                    let size = texture.size();
-                    let bounds =
-                        egui::Rect::from_min_size(ui.cursor().min, egui::vec2(120.0, 90.0));
-                    let fitted = fitted_rect(bounds, size[0] as f32, size[1] as f32);
-                    ui.allocate_exact_size(egui::vec2(120.0, 90.0), egui::Sense::hover());
-                    ui.painter().image(
-                        texture.id(),
-                        fitted,
-                        egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
-                        egui::Color32::WHITE,
-                    );
-                }
-                ui.add_space(6.0);
                 ui.label("Canvas aspect");
                 ui.horizontal(|ui| {
                     for preset in CANVAS_PRESETS {
@@ -317,13 +294,8 @@ impl PudduScrollApp {
                     self.remember("cancel-template", cancel.rect);
                     if cancel.clicked() {
                         self.create_open = false;
-                        self.create_cover = None;
-                        self.create_cover_texture = None;
-                        self.cover_load = None;
                     }
-                    let ready = self.cover_load.is_none()
-                        && self.create_cover.is_some()
-                        && !self.create_name.trim().is_empty();
+                    let ready = !self.create_name.trim().is_empty();
                     let create = ui.add_enabled(
                         ready,
                         egui::Button::new(
@@ -340,7 +312,6 @@ impl PudduScrollApp {
         ctx.move_to_top(egui::LayerId::new(egui::Order::Debug, modal_id));
         if response.should_close() {
             self.create_open = false;
-            self.cover_load = None;
         }
     }
 

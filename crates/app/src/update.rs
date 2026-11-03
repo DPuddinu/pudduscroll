@@ -150,7 +150,7 @@ fn write_staged(bytes: &[u8]) -> Result<PathBuf, String> {
     {
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755))
-            .map_err(|error| format!("Could not save the update: {error}"))?
+            .map_err(|error| format!("Could not save the update: {error}"))?;
     };
     Ok(path)
 }

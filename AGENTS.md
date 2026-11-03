@@ -17,6 +17,7 @@ Desktop Instagram carousel composer. Photos sit on a horizontal strip of canvase
 - `cargo test --workspace`
 - `cargo audit` when `Cargo.lock` changes
 - `git config core.hooksPath .githooks` once per clone so the pre-commit hook runs fmt, Clippy, and tests
+- On Windows, hooks re-enter WSL so `cfg(unix)` matches CI; once per machine run `wsl -e bash scripts/setup-wsl-checks.sh`
 - Before the first edit of a request, check simplicity, reuse, maintainability, and https://refactoring.guru/design-patterns/rust, then run `powershell -NoProfile -File .cursor/hooks/mark-design.ps1 -Note "<one-line summary>"`
 
 ## Boundary

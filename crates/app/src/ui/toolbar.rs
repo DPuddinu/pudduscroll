@@ -209,6 +209,10 @@ impl PudduScrollApp {
     pub(super) fn photo_panel(&mut self, ui: &mut egui::Ui) {
         ui.add_space(8.0);
         ui.heading("Photo");
+        if matches!(self.route, Route::Template(_)) {
+            ui.label("Frames stay empty in a template.");
+            return;
+        }
         section_scroll(ui, "photo-scroll").show(ui, |ui| {
             let photo_ready = self.selected.is_some_and(|id| {
                 self.layout()

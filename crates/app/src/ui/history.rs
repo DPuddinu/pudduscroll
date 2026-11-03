@@ -1,8 +1,9 @@
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use pudduscroll_core::{FrameId, Layout};
+use web_time::Instant;
 
 use crate::library::Blob;
 
@@ -111,7 +112,9 @@ pub(super) fn photo_stamp(photos: &HashMap<FrameId, Blob>) -> Vec<(u64, usize)> 
 #[cfg(test)]
 mod tests {
     use super::{EditHistory, HISTORY_WINDOW, HistoryKind};
-    use std::time::{Duration, Instant};
+    use std::time::Duration;
+
+    use web_time::Instant;
 
     #[test]
     fn undo_and_redo_roundtrip_and_a_new_edit_drops_redo() {

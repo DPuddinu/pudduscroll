@@ -2,7 +2,9 @@ use std::collections::{HashMap, VecDeque};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::mpsc::{self, Sender, TryRecvError};
-use std::time::{Duration, Instant};
+use std::time::Duration;
+
+use web_time::Instant;
 
 use eframe::egui;
 #[cfg(not(target_arch = "wasm32"))]
@@ -87,7 +89,6 @@ impl PudduScrollApp {
             save_tx,
             pending_uploads: VecDeque::new(),
             loading: HashMap::new(),
-            cover_load: None,
             cover_pending: HashMap::new(),
             load_token: 0,
             painted: 0,
@@ -125,8 +126,6 @@ impl PudduScrollApp {
             paste_look: 0,
             create_name: "Template".to_string(),
             create_ratio: AspectRatio::FOUR_FIVE,
-            create_cover: None,
-            create_cover_texture: None,
             name_dirty: false,
             widgets: Vec::new(),
             plus_rects: Vec::new(),
@@ -735,7 +734,6 @@ impl PudduScrollApp {
     pub(super) fn photos_busy(&self) -> bool {
         !self.library_ready
             || !self.loading.is_empty()
-            || self.cover_load.is_some()
             || !self.cover_pending.is_empty()
             || self.preview_job.is_some()
             || !self.pending_uploads.is_empty()
@@ -833,7 +831,7 @@ impl PudduScrollApp {
 
     fn apply_chosen(&mut self, target: DecodeTarget, picked: PickedFile) {
         let token = self.next_token();
-        match target {
+        let (carousel_id, frame_id) = match target {
             DecodeTarget::Frame {
                 carousel_id,
                 frame_id,
@@ -841,18 +839,13 @@ impl PudduScrollApp {
             | DecodeTarget::DiskFrame {
                 carousel_id,
                 frame_id,
-            } => {
-                if self.loading.contains_key(&(carousel_id, frame_id)) {
-                    return;
-                }
-                self.loading.insert((carousel_id, frame_id), token);
-                self.status = "Loading photo…".to_string();
-            }
-            DecodeTarget::Cover => {
-                self.cover_load = Some(token);
-                self.status = "Loading cover…".to_string();
-            }
+            } => (carousel_id, frame_id),
+        };
+        if self.loading.contains_key(&(carousel_id, frame_id)) {
+            return;
         }
+        self.loading.insert((carousel_id, frame_id), token);
+        self.status = "Loading photo…".to_string();
         let tx = self.photo_tx.clone();
         crate::host::spawn(move || {
             let result = match picked {
@@ -912,26 +905,6 @@ impl PudduScrollApp {
                     }
                     Err(error) => {
                         self.loading.remove(&(carousel_id, frame_id));
-                        self.status.clear();
-                        self.toast(error);
-                    }
-                }
-            }
-            DecodeTarget::Cover => {
-                if self.cover_load != Some(token) {
-                    return;
-                }
-                match result {
-                    Ok(blob) => {
-                        let name = blob.name.clone();
-                        let proxy = blob.screen();
-                        self.create_cover = Some(blob);
-                        self.pending_uploads
-                            .push_back(PendingUpload::CreateCover { token, proxy });
-                        self.status = format!("{name} ready");
-                    }
-                    Err(error) => {
-                        self.cover_load = None;
                         self.status.clear();
                         self.toast(error);
                     }
@@ -1208,14 +1181,6 @@ impl PudduScrollApp {
                 }
                 self.cover_pending.remove(&template_id);
                 present
-            }
-            PendingUpload::CreateCover { token, proxy } => {
-                if self.cover_load != Some(token) {
-                    return false;
-                }
-                self.create_cover_texture = Some(texture_from_preview(ctx, "create-cover", &proxy));
-                self.cover_load = None;
-                true
             }
             PendingUpload::Phone {
                 revision,
