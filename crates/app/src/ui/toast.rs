@@ -130,77 +130,75 @@ impl Toaster {
         let mut finished = Vec::new();
         let mut follow = false;
         let inset = toast_inset();
-        let area = egui::Area::new(egui::Id::unique("toasts"))
-            .order(egui::Order::Debug)
-            .anchor(egui::Align2::RIGHT_BOTTOM, egui::vec2(-inset.x, -inset.y))
-            .fade_in(false)
-            .interactable(true)
-            .show(ctx, |ui| {
-                ui.with_layout(egui::Layout::bottom_up(egui::Align::Max), |ui| {
-                    ui.spacing_mut().item_spacing.y = TOAST_GAP;
-                    for index in (0..self.items.len()).rev() {
-                        let toast = &mut self.items[index];
-                        let target = if toast.open { 1.0 } else { 0.0 };
-                        if toast.motion.step(target, dt) {
-                            follow = true;
-                        }
-                        if !toast.open && toast.motion.resting(0.0) {
-                            finished.push(toast.id);
-                            continue;
-                        }
-                        let shown = toast.motion.value.clamp(0.0, 1.0);
-                        let toast_id = toast.id;
-                        let text = toast.text.clone();
-                        let undoable = toast.undo;
-                        ui.push_id(toast_id, |ui| {
-                            let layer_id = ui.layer_id();
-                            let start = ui.ctx().graphics(|gfx| {
-                                gfx.get(layer_id).map_or(
-                                    egui::layers::ShapeIdx(0),
-                                    egui::layers::PaintList::next_idx,
-                                )
-                            });
-                            ui.set_opacity(shown);
-                            ui.set_max_width(TOAST_W);
-                            let mut acted = false;
-                            let inner = toast_frame().show(ui, |ui| {
-                                acted = toast_body(ui, &text, undoable);
-                            });
-                            let transform =
-                                toast_transform(inner.response.rect.right_bottom(), shown);
-                            if transform != egui::emath::TSTransform::IDENTITY {
-                                ui.ctx().graphics_mut(|gfx| {
-                                    let layer = gfx.entry(layer_id);
-                                    let end = layer.next_idx();
-                                    layer.transform_after_rounding_range(start, end, transform);
-                                });
-                            }
-                            if undoable {
-                                if inner.response.container_hovered() {
-                                    hover = true;
-                                    ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
-                                }
-                                if inner.response.container_clicked() || acted {
-                                    dismiss.push(toast_id);
-                                }
-                                if acted {
-                                    undo = true;
-                                }
-                            } else {
-                                let response = inner.response.interact(egui::Sense::click());
-                                if response.hovered() {
-                                    hover = true;
-                                    ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
-                                }
-                                if response.clicked() {
-                                    dismiss.push(toast_id);
-                                }
-                            }
+        let mut offset_y = inset.y;
+        for index in (0..self.items.len()).rev() {
+            let toast = &mut self.items[index];
+            let target = if toast.open { 1.0 } else { 0.0 };
+            if toast.motion.step(target, dt) {
+                follow = true;
+            }
+            if !toast.open && toast.motion.resting(0.0) {
+                finished.push(toast.id);
+                continue;
+            }
+            let shown = toast.motion.value.clamp(0.0, 1.0);
+            let toast_id = toast.id;
+            let text = toast.text.clone();
+            let undoable = toast.undo;
+            let area = egui::Area::new(egui::Id::unique(("toast", toast_id)))
+                .order(egui::Order::Debug)
+                .anchor(egui::Align2::RIGHT_BOTTOM, egui::vec2(-inset.x, -offset_y))
+                .default_width(TOAST_W)
+                .default_height(1.0)
+                .fade_in(false)
+                .movable(false)
+                .sense(egui::Sense::hover())
+                .show(ctx, |ui| {
+                    ui.set_opacity(shown);
+                    ui.set_max_width(TOAST_W);
+                    let layer_id = ui.layer_id();
+                    let start = ui.ctx().graphics(|gfx| {
+                        gfx.get(layer_id)
+                            .map_or(egui::layers::ShapeIdx(0), egui::layers::PaintList::next_idx)
+                    });
+                    let mut acted = false;
+                    let inner = toast_frame().show(ui, |ui| {
+                        acted = toast_body(ui, &text, undoable);
+                    });
+                    let transform = toast_transform(inner.response.rect.right_bottom(), shown);
+                    if transform != egui::emath::TSTransform::IDENTITY {
+                        ui.ctx().graphics_mut(|gfx| {
+                            let layer = gfx.entry(layer_id);
+                            let end = layer.next_idx();
+                            layer.transform_after_rounding_range(start, end, transform);
                         });
                     }
+                    if undoable {
+                        if inner.response.container_hovered() {
+                            hover = true;
+                            ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+                        }
+                        if inner.response.container_clicked() || acted {
+                            dismiss.push(toast_id);
+                        }
+                        if acted {
+                            undo = true;
+                        }
+                    } else {
+                        let response = inner.response.interact(egui::Sense::click());
+                        if response.hovered() {
+                            hover = true;
+                            ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+                        }
+                        if response.clicked() {
+                            dismiss.push(toast_id);
+                        }
+                    }
+                    inner.response.rect
                 });
-            });
-        hover |= area.response.hovered();
+            hover |= area.response.hovered();
+            offset_y += area.inner.height() + TOAST_GAP;
+        }
         for id in dismiss {
             if let Some(toast) = self.items.iter_mut().find(|toast| toast.id == id) {
                 toast.open = false;

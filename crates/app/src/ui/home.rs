@@ -1,13 +1,10 @@
 use eframe::egui;
-use pudduscroll_core::{AspectRatio, CANVAS_PRESETS, FrameImages};
+use pudduscroll_core::{AspectRatio, CANVAS_PRESETS};
 
 use super::card::{self, CARD_INNER_W, Card};
-use super::draw::{
-    carousel_preview_image, counted, dialog_frame, fitted_rect, section_scroll, short_name,
-};
+use super::draw::{counted, dialog_frame, fitted_rect, section_scroll, short_name};
 use super::{
-    ACCENT, BG, CANVAS_BG, Confirm, DecodeTarget, HomeAction, IncomingPhoto, MUTED, PudduScrollApp,
-    Route,
+    ACCENT, BG, CANVAS_BG, Confirm, DecodeTarget, HomeAction, MUTED, PudduScrollApp, Route,
 };
 
 impl PudduScrollApp {
@@ -24,10 +21,6 @@ impl PudduScrollApp {
                 .max_rect(inner)
                 .layout(egui::Layout::top_down(egui::Align::Min)),
         );
-        if !self.status.is_empty() {
-            home.label(egui::RichText::new(&self.status).color(MUTED));
-            home.add_space(8.0);
-        }
         let mut action = None;
         home.horizontal(|ui| {
             ui.heading("Templates");
@@ -97,6 +90,19 @@ impl PudduScrollApp {
         ctx.request_repaint();
     }
 
+    pub(super) fn ensure_carousel_cover(&mut self, ctx: &egui::Context, index: usize) {
+        let id = self.library.carousels[index].id;
+        if self.cover_textures.contains_key(&id) || self.cover_pending.contains_key(&id) {
+            return;
+        }
+        let Some(cover) = self.library.carousels[index].cover.as_ref() else {
+            return;
+        };
+        let proxy = cover.screen();
+        self.queue_cover(id, proxy);
+        ctx.request_repaint();
+    }
+
     pub(super) fn template_card(&mut self, ui: &mut egui::Ui, index: usize) -> Option<HomeAction> {
         let id = self.library.templates[index].id;
         let name = self.library.templates[index].name.clone();
@@ -146,14 +152,11 @@ impl PudduScrollApp {
 
     pub(super) fn carousel_card(&mut self, ui: &mut egui::Ui, index: usize) -> Option<HomeAction> {
         let id = self.library.carousels[index].id;
-        self.ensure_carousel_preview(ui.ctx(), index);
+        self.ensure_carousel_cover(ui.ctx(), index);
         let canvases = self.library.carousels[index].layout.canvas_count;
         let frames = self.library.carousels[index].layout.frames.len();
-        let image = self
-            .card_previews
-            .get(&id)
-            .map(|(_, texture)| card::image_stamp(texture));
-        let loading = image.is_none() && self.card_jobs.contains_key(&id);
+        let image = self.cover_textures.get(&id).map(card::image_stamp);
+        let loading = image.is_none() && self.cover_pending.contains_key(&id);
         let mut action = None;
         let shown = Card {
             kind: "carousel",
@@ -203,37 +206,6 @@ impl PudduScrollApp {
             action = Some(HomeAction::OpenCarousel(id));
         }
         action
-    }
-
-    pub(super) fn ensure_carousel_preview(&mut self, ctx: &egui::Context, index: usize) {
-        let id = self.library.carousels[index].id;
-        let visuals = self.library.visuals;
-        if self
-            .card_previews
-            .get(&id)
-            .is_some_and(|(stamp, _)| *stamp == visuals)
-            || self.card_jobs.get(&id) == Some(&visuals)
-        {
-            return;
-        }
-        let carousel = &self.library.carousels[index];
-        let layout = carousel.layout.clone();
-        let images: FrameImages = carousel
-            .photos
-            .iter()
-            .map(|(frame_id, blob)| (*frame_id, blob.screen()))
-            .collect();
-        self.card_jobs.insert(id, visuals);
-        let tx = self.photo_tx.clone();
-        crate::host::spawn(move || {
-            let image = carousel_preview_image(&layout, &images);
-            let _ = tx.send(IncomingPhoto::CardPreview {
-                carousel_id: id,
-                visuals,
-                image,
-            });
-        });
-        ctx.request_repaint();
     }
 
     pub(super) fn apply_home(&mut self, action: &HomeAction, ctx: &egui::Context) {
@@ -493,8 +465,8 @@ impl PudduScrollApp {
             }
             Confirm::DeleteCarousel(id) => {
                 self.library.delete_carousel(id);
-                self.card_previews.remove(&id);
-                self.card_jobs.remove(&id);
+                self.cover_textures.remove(&id);
+                self.cover_pending.remove(&id);
                 self.note_geometry();
             }
             Confirm::RemoveCanvases(indices) => self.remove_canvases(&indices),

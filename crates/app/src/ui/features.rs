@@ -276,7 +276,7 @@ fn an_empty_carousel_frame_shows_a_plus() {
 }
 
 #[test]
-fn add_frame_paints_a_plus_on_the_next_canvas_and_undo_removes_it() {
+fn add_frame_lands_on_the_active_canvas_and_undo_removes_it() {
     let (ctx, mut app) = ready();
     app.new_carousel(&ctx);
     settle(&mut app, &ctx);
@@ -286,9 +286,13 @@ fn add_frame_paints_a_plus_on_the_next_canvas_and_undo_removes_it() {
     click(&mut app, &ctx, "add-canvas");
     settle(&mut app, &ctx);
     assert_eq!(app.layout().expect("layout").canvas_count, 2);
+    assert_eq!(app.active_canvas, Some(0));
     click(&mut app, &ctx, "add-frame");
     settle(&mut app, &ctx);
-    assert_eq!(app.layout().expect("layout").frames.len(), 2);
+    let layout = app.layout().expect("layout");
+    assert_eq!(layout.frames.len(), 2);
+    let added = layout.frames.iter().max_by_key(|frame| frame.id.0).unwrap();
+    assert!((added.x).abs() < 1e-4);
     assert_eq!(plus_names(&app).len(), 2);
     empty_frames_hold_a_visible_plus(&app);
     app.undo_edit(&ctx);
@@ -309,7 +313,7 @@ fn a_template_frame_has_no_plus() {
         .find(|template| template.id == id)
         .expect("template")
         .layout
-        .add_frame();
+        .add_frame(0);
     app.enter(Route::Template(id), &ctx);
     settle(&mut app, &ctx);
     assert_eq!(app.layout().expect("layout").frames.len(), 1);

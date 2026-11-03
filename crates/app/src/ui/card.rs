@@ -1,7 +1,8 @@
 use eframe::egui;
 
+use super::PANEL;
 use super::draw::fitted_rect;
-use super::{PANEL, TEXT};
+use super::skeleton;
 
 pub(super) const CARD_INNER_W: f32 = 212.0;
 const CARD_INNER_H: f32 = 248.0;
@@ -91,13 +92,14 @@ impl Card {
         let show_loading = self.loading && self.image.is_none();
         paint_rounded_image(&painter, shown, COVER_RADIUS * scale, self.fill, self.image);
         if show_loading {
-            painter.text(
-                shown.center(),
-                egui::Align2::CENTER_CENTER,
-                "Loading",
-                egui::FontId::proportional(14.0),
-                TEXT,
+            skeleton::paint(
+                ui.ctx(),
+                &painter,
+                shown,
+                COVER_RADIUS * scale,
+                egui::Color32::from_rgb(40, 38, 36),
             );
+            ui.ctx().request_repaint();
         }
         ShownCard {
             rect: drawn.response.rect,

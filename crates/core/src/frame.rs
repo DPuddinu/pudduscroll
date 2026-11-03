@@ -196,10 +196,11 @@ impl Layout {
         self.frames.push(frame);
     }
 
-    pub fn add_frame(&mut self) -> FrameId {
+    pub fn add_frame(&mut self, canvas: usize) -> FrameId {
         let id = FrameId(self.next_id);
         self.next_id += 1;
-        let slot = self.frames.len() % self.canvas_count.max(1);
+        let count = self.canvas_count.max(1);
+        let slot = canvas.min(count - 1);
         let z = self.next_z;
         self.next_z += 1;
         self.frames.push(Frame {

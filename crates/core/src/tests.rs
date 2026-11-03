@@ -826,7 +826,7 @@ fn crop_move_and_resize_stay_inside_and_honor_aspect_lock() {
 fn frame_cover_stays_inside_while_panning_and_after_a_resize() {
     let mut layout = Layout::new(AspectRatio::FOUR_FIVE);
     assert!(layout.add_canvas());
-    let id = layout.add_frame();
+    let id = layout.add_frame(0);
     layout.set_frame_rect(id, 0.4, 0.15, 1.35, 0.62);
     layout.fill_frame(id, "night.jpg", 900, 900);
     layout.set_pan(id, -4.0, 9.0);
@@ -858,7 +858,7 @@ fn frame_cover_stays_inside_while_panning_and_after_a_resize() {
 #[test]
 fn snap_lines_the_frame_up_without_moving_the_pan() {
     let mut layout = Layout::new(AspectRatio::FOUR_FIVE);
-    let id = layout.add_frame();
+    let id = layout.add_frame(0);
     layout.set_frame_rect(id, 0.11, 0.07, 1.2, 0.63);
     layout.fill_frame(id, "dune.png", 800, 1200);
     layout.set_pan(id, 0.25, 0.8);
@@ -917,7 +917,7 @@ fn resize_snaps_only_the_edges_that_moved() {
     assert!((y + h - 0.625).abs() < 1e-4);
 
     let mut layout = Layout::new(AspectRatio::FOUR_FIVE);
-    let id = layout.add_frame();
+    let id = layout.add_frame(0);
     layout.set_frame_rect(id, 0.125, 0.11, 0.4, 0.5);
     layout.fill_frame(id, "night.jpg", 900, 900);
     layout.set_pan(id, 0.2, 0.7);
@@ -958,7 +958,7 @@ fn frame_resize_keeps_aspect_on_corners_and_changes_it_on_edges() {
 fn photo_stops_at_the_last_canvas_while_the_frame_continues() {
     let mut layout = Layout::new(AspectRatio::SQUARE);
     layout.set_canvas_count(2);
-    let id = layout.add_frame();
+    let id = layout.add_frame(0);
     layout.set_frame_rect(id, 1.25, -0.2, 1.4, 1.3);
     layout.fill_frame(id, "edge", 16, 16);
     let frame = layout.frame(id).unwrap();
@@ -981,7 +981,7 @@ fn photo_stops_at_the_last_canvas_while_the_frame_continues() {
 fn spanning_frame_clips_the_photo_to_each_canvas() {
     let mut layout = Layout::new(AspectRatio::SQUARE);
     layout.set_canvas_count(2);
-    let id = layout.add_frame();
+    let id = layout.add_frame(0);
     layout.set_frame_rect(id, 0.0, 0.25, 2.0, 0.5);
     layout.fill_frame(id, "split", 40, 10);
     let mut image = RgbaImage::new(40, 10);
@@ -1023,7 +1023,7 @@ fn same_border_has_the_same_thickness_on_every_frame() {
 
 fn bordered_frame(w: f32, h: f32, y: u32) -> u32 {
     let mut layout = Layout::new(AspectRatio::SQUARE);
-    let id = layout.add_frame();
+    let id = layout.add_frame(0);
     layout.set_frame_rect(id, 0.0, 0.0, w, h);
     layout.fill_frame(id, "solid", 16, 16);
     layout.set_border(id, 0.5);
@@ -1045,7 +1045,7 @@ fn bordered_frame(w: f32, h: f32, y: u32) -> u32 {
 #[test]
 fn frame_border_paints_the_edge_and_keeps_the_photo() {
     let mut layout = Layout::new(AspectRatio::SQUARE);
-    let id = layout.add_frame();
+    let id = layout.add_frame(0);
     layout.fill_frame(id, "solid", 16, 16);
     layout.set_border_color(id, [9, 18, 27, 255]);
     let mut images = FrameImages::new();
@@ -1064,7 +1064,7 @@ fn frame_border_paints_the_edge_and_keeps_the_photo() {
 #[test]
 fn clearing_a_photo_leaves_the_frame() {
     let mut layout = Layout::new(AspectRatio::SQUARE);
-    let id = layout.add_frame();
+    let id = layout.add_frame(0);
     layout.fill_frame(id, "night.jpg", 32, 32);
     assert!(layout.clear_photo(id));
     let frame = layout.frame(id).unwrap();
@@ -1077,7 +1077,7 @@ fn clearing_a_photo_leaves_the_frame() {
 fn carousel_copy_does_not_share_frame_photos() {
     let mut template = Layout::new(AspectRatio::FOUR_FIVE);
     template.set_canvas_count(2);
-    let id = template.add_frame();
+    let id = template.add_frame(0);
     template.set_frame_rect(id, 0.0, 0.0, 2.0, 1.0);
     let mut carousel = template.clone();
     carousel.fill_frame(id, "night.jpg", 900, 900);
@@ -1112,7 +1112,7 @@ fn moved_square_crop_keeps_placement_on_the_cropped_aspect() {
 #[test]
 fn quarter_turns_spin_the_photo_and_keep_the_frame_covered() {
     let mut layout = Layout::new(AspectRatio::SQUARE);
-    let id = layout.add_frame();
+    let id = layout.add_frame(0);
     layout.fill_frame(id, "night.jpg", 80, 40);
     let ratio = layout.ratio.value();
     let upright = photo_local(layout.frame(id).unwrap(), ratio, 0.2, 0.4);
@@ -1144,7 +1144,7 @@ fn quarter_turns_spin_the_photo_and_keep_the_frame_covered() {
     );
 
     let mut tall = Layout::new(AspectRatio::FOUR_FIVE);
-    let tall_id = tall.add_frame();
+    let tall_id = tall.add_frame(0);
     tall.fill_frame(tall_id, "night.jpg", 40, 40);
     let tall_ratio = tall.ratio.value();
     let tall_frame = tall.frame(tall_id).unwrap();
@@ -1160,7 +1160,7 @@ fn quarter_turns_spin_the_photo_and_keep_the_frame_covered() {
 #[test]
 fn clockwise_turn_moves_the_bottom_of_the_photo_to_the_left() {
     let mut layout = Layout::new(AspectRatio::SQUARE);
-    let id = layout.add_frame();
+    let id = layout.add_frame(0);
     layout.fill_frame(id, "split", 64, 64);
     let mut image = RgbaImage::new(64, 64);
     for (_, y, pixel) in image.enumerate_pixels_mut() {
@@ -1195,7 +1195,7 @@ fn clockwise_turn_moves_the_bottom_of_the_photo_to_the_left() {
 #[test]
 fn free_rotation_still_fills_the_frame() {
     let mut layout = Layout::new(AspectRatio::SQUARE);
-    let id = layout.add_frame();
+    let id = layout.add_frame(0);
     layout.set_frame_rect(id, 0.15, 0.2, 0.7, 0.55);
     layout.fill_frame(id, "red", 48, 32);
     layout.set_rotation(id, std::f32::consts::FRAC_PI_4);
@@ -1236,7 +1236,7 @@ fn proxy_shrink_keeps_original_dimensions() {
 fn proxy_buffer_samples_the_original_split() {
     let mut layout = Layout::new(AspectRatio::SQUARE);
     layout.set_canvas_count(2);
-    let id = layout.add_frame();
+    let id = layout.add_frame(0);
     layout.set_frame_rect(id, 0.0, 0.25, 2.0, 0.5);
     layout.fill_frame(id, "split", 40, 10);
     let mut proxy = RgbaImage::new(20, 5);
@@ -1260,7 +1260,7 @@ fn proxy_buffer_samples_the_original_split() {
 fn export_reports_each_slide_once() {
     let mut layout = Layout::new(AspectRatio::SQUARE);
     layout.set_canvas_count(3);
-    let id = layout.add_frame();
+    let id = layout.add_frame(0);
     layout.fill_frame(id, "solid", 8, 8);
     let mut images = FrameImages::new();
     images.insert(id, Arc::new(solid(8, 8, [20, 30, 40, 255])));
@@ -1327,7 +1327,7 @@ fn parallel_decode_keeps_every_frame() {
 #[test]
 fn jpeg_export_keeps_a_flat_color() {
     let mut layout = Layout::new(AspectRatio::SQUARE);
-    let id = layout.add_frame();
+    let id = layout.add_frame(0);
     layout.fill_frame(id, "red", 32, 32);
     let mut images = FrameImages::new();
     images.insert(id, Arc::new(solid(32, 32, [200, 40, 40, 255])));
@@ -1358,7 +1358,7 @@ fn encoded_bytes_export_matches_the_decoded_image() {
     assert_eq!(pixel(&decoded, 3, 3), [12, 34, 56, 255]);
 
     let mut layout = Layout::new(AspectRatio::SQUARE);
-    let id = layout.add_frame();
+    let id = layout.add_frame(0);
     layout.fill_frame(id, "solid", 8, 8);
     let mut from_image = FrameImages::new();
     from_image.insert(id, Arc::new(image));
@@ -1378,7 +1378,7 @@ fn encoded_bytes_export_matches_the_decoded_image() {
 #[test]
 fn wheel_zoom_scales_the_photo_around_the_pointer() {
     let mut layout = Layout::new(AspectRatio::SQUARE);
-    let id = layout.add_frame();
+    let id = layout.add_frame(0);
     layout.fill_frame(id, "square.png", 40, 40);
     let ratio = layout.ratio.value();
     let frame = layout.frame(id).unwrap();
@@ -1430,7 +1430,7 @@ fn wheel_zoom_scales_the_photo_around_the_pointer() {
 #[test]
 fn zoom_in_shows_the_middle_of_the_photo_and_zoom_out_restores_it() {
     let mut layout = Layout::new(AspectRatio::SQUARE);
-    let id = layout.add_frame();
+    let id = layout.add_frame(0);
     layout.fill_frame(id, "target", 40, 40);
     let mut image = RgbaImage::from_pixel(40, 40, Rgba([20, 160, 40, 255]));
     for y in 10..30 {
@@ -1465,13 +1465,13 @@ fn zoom_in_shows_the_middle_of_the_photo_and_zoom_out_restores_it() {
 fn insert_canvas_opens_a_slot_beside_that_index() {
     let mut layout = Layout::new(AspectRatio::SQUARE);
     layout.set_canvas_count(3);
-    let left = layout.add_frame();
+    let left = layout.add_frame(0);
     layout.set_frame_rect(left, 0.25, 0.2, 0.4, 0.4);
-    let middle = layout.add_frame();
+    let middle = layout.add_frame(0);
     layout.set_frame_rect(middle, 1.0, 0.2, 0.5, 0.5);
-    let right = layout.add_frame();
+    let right = layout.add_frame(0);
     layout.set_frame_rect(right, 2.3, 0.1, 0.4, 0.6);
-    let hung = layout.add_frame();
+    let hung = layout.add_frame(0);
     layout.set_frame_rect(hung, -0.4, 0.0, 0.2, 0.3);
 
     assert!(layout.insert_canvas(1));
@@ -1499,9 +1499,22 @@ fn insert_canvas_opens_a_slot_beside_that_index() {
 }
 
 #[test]
+fn add_frame_lands_on_the_chosen_canvas() {
+    let mut layout = Layout::new(AspectRatio::SQUARE);
+    layout.set_canvas_count(3);
+    let id = layout.add_frame(2);
+    assert!((layout.frame(id).unwrap().x - 2.0).abs() < 1e-6);
+    assert!((layout.frame(id).unwrap().y).abs() < 1e-6);
+    assert!((layout.frame(id).unwrap().w - 1.0).abs() < 1e-6);
+    assert!((layout.frame(id).unwrap().h - 1.0).abs() < 1e-6);
+    let clamped = layout.add_frame(99);
+    assert!((layout.frame(clamped).unwrap().x - 2.0).abs() < 1e-6);
+}
+
+#[test]
 fn add_left_shifts_frames_and_stops_at_the_limit() {
     let mut layout = Layout::new(AspectRatio::SQUARE);
-    let id = layout.add_frame();
+    let id = layout.add_frame(0);
     assert!((layout.frame(id).unwrap().x).abs() < 1e-6);
     assert!(layout.add_canvas_left());
     assert_eq!(layout.canvas_count, 2);
@@ -1517,15 +1530,15 @@ fn add_left_shifts_frames_and_stops_at_the_limit() {
 fn removing_a_canvas_deletes_frames_that_overlap_it() {
     let mut layout = Layout::new(AspectRatio::SQUARE);
     assert!(layout.add_canvas());
-    let keep = layout.add_frame();
-    let drop = layout.add_frame();
+    let keep = layout.add_frame(0);
+    let drop = layout.add_frame(0);
     layout.set_frame_rect(keep, 0.1, 0.1, 0.5, 0.5);
     layout.set_frame_rect(drop, 1.2, 0.2, 0.6, 0.4);
-    let hanging = layout.add_frame();
+    let hanging = layout.add_frame(0);
     layout.set_frame_rect(hanging, 2.2, 0.0, 0.5, 0.5);
-    let above = layout.add_frame();
+    let above = layout.add_frame(0);
     layout.set_frame_rect(above, 1.1, -0.8, 0.4, 0.5);
-    let spanning = layout.add_frame();
+    let spanning = layout.add_frame(0);
     layout.set_frame_rect(spanning, 0.6, 0.1, 0.8, 0.5);
     let removed = layout.remove_canvases(&[1]).unwrap();
     assert_eq!(layout.canvas_count, 1);
@@ -1546,13 +1559,13 @@ fn removing_a_canvas_deletes_frames_that_overlap_it() {
 fn removing_selected_canvases_closes_the_gap() {
     let mut layout = Layout::new(AspectRatio::SQUARE);
     layout.set_canvas_count(4);
-    let left = layout.add_frame();
+    let left = layout.add_frame(0);
     layout.set_frame_rect(left, 0.2, 0.2, 0.5, 0.5);
-    let middle = layout.add_frame();
+    let middle = layout.add_frame(0);
     layout.set_frame_rect(middle, 1.2, 0.2, 0.4, 0.4);
-    let right = layout.add_frame();
+    let right = layout.add_frame(0);
     layout.set_frame_rect(right, 2.2, 0.1, 0.5, 0.6);
-    let span = layout.add_frame();
+    let span = layout.add_frame(0);
     layout.set_frame_rect(span, 1.6, 0.1, 0.8, 0.5);
     let removed = layout.remove_canvases(&[1, 3]).unwrap();
     assert_eq!(layout.canvas_count, 2);
@@ -1568,9 +1581,9 @@ fn removing_selected_canvases_closes_the_gap() {
 fn removing_the_first_canvas_shifts_the_rest_left() {
     let mut layout = Layout::new(AspectRatio::SQUARE);
     layout.set_canvas_count(3);
-    let stay = layout.add_frame();
+    let stay = layout.add_frame(0);
     layout.set_frame_rect(stay, 1.25, 0.0, 0.5, 1.0);
-    let gone = layout.add_frame();
+    let gone = layout.add_frame(0);
     layout.set_frame_rect(gone, 0.1, 0.1, 0.4, 0.4);
     let removed = layout.remove_canvases(&[0]).unwrap();
     assert_eq!(layout.canvas_count, 2);
@@ -1608,8 +1621,8 @@ fn a_span_selects_every_canvas_it_touches() {
 #[test]
 fn move_frame_swaps_order_with_the_neighbor_and_keeps_each_width() {
     let mut layout = Layout::new(AspectRatio::SQUARE);
-    let a = layout.add_frame();
-    let b = layout.add_frame();
+    let a = layout.add_frame(0);
+    let b = layout.add_frame(0);
     layout.set_frame_rect(a, 0.0, 0.2, 1.0, 0.5);
     layout.set_frame_rect(b, 1.0, 0.4, 2.0, 0.8);
     assert!(layout.adjacent_frame(a, false).is_none());
@@ -1632,7 +1645,7 @@ fn move_frame_swaps_order_with_the_neighbor_and_keeps_each_width() {
     assert!((layout.frame(a).unwrap().x - 2.0).abs() < 1e-6);
     assert!((layout.frame(a).unwrap().w - 1.0).abs() < 1e-6);
 
-    let c = layout.add_frame();
+    let c = layout.add_frame(0);
     layout.set_frame_rect(a, 0.0, 0.0, 1.0, 1.0);
     layout.set_frame_rect(b, 1.0, 0.0, 2.0, 1.0);
     layout.set_frame_rect(c, 4.0, 0.3, 1.0, 0.4);

@@ -22,7 +22,10 @@ use crate::library::{
     write_snapshot,
 };
 
-use super::draw::{apply_style, export_folder, save_folder, texture_from_preview, zip_file_name};
+use super::draw::{
+    apply_style, carousel_preview_image, export_folder, save_folder, texture_from_preview,
+    zip_file_name,
+};
 use super::history::{Edit, EditHistory, HISTORY_WINDOW, HistoryKind, photo_stamp};
 use super::{
     Confirm, DEFAULT_EDITOR_ZOOM, DEFAULT_RAIL_WEIGHTS, DecodeTarget, EstimateMsg, EstimateUpdate,
@@ -52,7 +55,6 @@ impl PudduScrollApp {
             route: Route::Home,
             assets: HashMap::new(),
             cover_textures: HashMap::new(),
-            card_previews: HashMap::new(),
             selected: None,
             active_canvas: None,
             edit_frame: false,
@@ -64,11 +66,10 @@ impl PudduScrollApp {
             preview_texture: None,
             preview_key: None,
             preview_job: None,
-            card_jobs: HashMap::new(),
             geometry_revision: 0,
             drag: None,
             gesture: "none".to_string(),
-            status: "Opening library…".to_string(),
+            status: String::new(),
             toaster: super::toast::Toaster::default(),
             estimate_mb: None,
             estimate_for: None,
@@ -95,10 +96,8 @@ impl PudduScrollApp {
             overwrite_names: Vec::new(),
             editor_zoom: DEFAULT_EDITOR_ZOOM,
             zoom_basis: (4, 5),
-            strip_lead: egui::Vec2::ZERO,
-            strip_pad: egui::Vec2::ZERO,
+            strip_pan: egui::Vec2::ZERO,
             reveal_canvas: None,
-            pending_scroll: None,
             strip_wheel_pan: false,
             center_strip: true,
             strip_rect: None,
@@ -455,6 +454,15 @@ impl PudduScrollApp {
         self.estimate_done = 0;
     }
 
+    pub(super) fn open_export(&mut self) {
+        self.preview_index = 0;
+        self.preview_texture = None;
+        self.preview_key = None;
+        self.preview_job = None;
+        self.export_open = true;
+        self.schedule_estimate();
+    }
+
     pub(super) fn proxy_map(&self) -> FrameImages {
         let Route::Carousel(id) = self.route else {
             return FrameImages::new();
@@ -544,9 +552,7 @@ impl PudduScrollApp {
         self.poll_export();
         self.poll_update(ctx);
         self.upload_one(ctx);
-        if !self.library_ready {
-            ctx.request_repaint_after(Duration::from_millis(50));
-        } else if self.photos_busy() {
+        if !self.library_ready || self.photos_busy() {
             ctx.request_repaint_after(Duration::from_millis(16));
         } else if self.estimate_rx.is_some() || self.export_rx.is_some() {
             ctx.request_repaint_after(Duration::from_millis(40));
@@ -719,7 +725,6 @@ impl PudduScrollApp {
             || self.cover_load.is_some()
             || !self.cover_pending.is_empty()
             || self.preview_job.is_some()
-            || !self.card_jobs.is_empty()
             || !self.pending_uploads.is_empty()
     }
 
@@ -752,19 +757,6 @@ impl PudduScrollApp {
                     self.pending_uploads.push_back(PendingUpload::Phone {
                         revision,
                         index,
-                        image,
-                    });
-                }
-            }
-            IncomingPhoto::CardPreview {
-                carousel_id,
-                visuals,
-                image,
-            } => {
-                if self.card_jobs.get(&carousel_id) == Some(&visuals) {
-                    self.pending_uploads.push_back(PendingUpload::Card {
-                        carousel_id,
-                        visuals,
                         image,
                     });
                 }
@@ -817,15 +809,9 @@ impl PudduScrollApp {
                 }
                 self.library = library;
                 self.can_store = true;
-                if self.status == "Opening library…" {
-                    self.status.clear();
-                }
             }
             Err(error) => {
                 self.can_store = false;
-                if self.status == "Opening library…" {
-                    self.status.clear();
-                }
                 self.toast_persist(error);
             }
         }
@@ -836,6 +822,10 @@ impl PudduScrollApp {
         let token = self.next_token();
         match target {
             DecodeTarget::Frame {
+                carousel_id,
+                frame_id,
+            }
+            | DecodeTarget::DiskFrame {
                 carousel_id,
                 frame_id,
             } => {
@@ -894,6 +884,26 @@ impl PudduScrollApp {
                     }
                 }
             }
+            DecodeTarget::DiskFrame {
+                carousel_id,
+                frame_id,
+            } => {
+                if self.loading.get(&(carousel_id, frame_id)) != Some(&token) {
+                    return;
+                }
+                match result {
+                    Ok(blob) => {
+                        if !self.finish_disk_photo(carousel_id, frame_id, token, blob) {
+                            self.loading.remove(&(carousel_id, frame_id));
+                        }
+                    }
+                    Err(error) => {
+                        self.loading.remove(&(carousel_id, frame_id));
+                        self.status.clear();
+                        self.toast(error);
+                    }
+                }
+            }
             DecodeTarget::Cover => {
                 if self.cover_load != Some(token) {
                     return;
@@ -948,6 +958,40 @@ impl PudduScrollApp {
         self.status = format!("{name} added");
         self.note_geometry();
         queued
+    }
+
+    fn finish_disk_photo(
+        &mut self,
+        carousel_id: u64,
+        frame_id: FrameId,
+        token: u64,
+        blob: crate::library::Blob,
+    ) -> bool {
+        let Some(carousel) = self
+            .library
+            .carousels
+            .iter_mut()
+            .find(|carousel| carousel.id == carousel_id)
+        else {
+            return false;
+        };
+        if carousel.layout.frame(frame_id).is_none() {
+            return false;
+        }
+        let name = blob.name.clone();
+        let proxy = blob.screen();
+        carousel.photos.insert(frame_id, blob);
+        if self.route != Route::Carousel(carousel_id) {
+            return false;
+        }
+        self.pending_uploads.push_back(PendingUpload::Frame {
+            carousel_id,
+            frame_id,
+            token,
+            name,
+            proxy,
+        });
+        true
     }
 
     pub(super) fn queue_cover(&mut self, template_id: u64, proxy: Arc<image::RgbaImage>) {
@@ -1137,7 +1181,12 @@ impl PudduScrollApp {
                     .library
                     .templates
                     .iter()
-                    .any(|template| template.id == template_id);
+                    .any(|template| template.id == template_id)
+                    || self
+                        .library
+                        .carousels
+                        .iter()
+                        .any(|carousel| carousel.id == template_id);
                 if present {
                     self.cover_textures.insert(
                         template_id,
@@ -1179,36 +1228,6 @@ impl PudduScrollApp {
                 self.preview_job = None;
                 true
             }
-            PendingUpload::Card {
-                carousel_id,
-                visuals,
-                image,
-            } => {
-                if self.card_jobs.get(&carousel_id) == Some(&visuals) {
-                    self.card_jobs.remove(&carousel_id);
-                }
-                if self.library.visuals != visuals
-                    || self
-                        .library
-                        .carousels
-                        .iter()
-                        .all(|carousel| carousel.id != carousel_id)
-                {
-                    return false;
-                }
-                self.card_previews.insert(
-                    carousel_id,
-                    (
-                        visuals,
-                        texture_from_preview(
-                            ctx,
-                            format!("carousel-{carousel_id}-{visuals}"),
-                            &image,
-                        ),
-                    ),
-                );
-                true
-            }
         }
     }
 
@@ -1232,6 +1251,22 @@ impl PudduScrollApp {
             .iter()
             .map(|(frame_id, blob)| (*frame_id, blob.name.clone(), blob.screen()))
             .collect();
+        let missing: Vec<(FrameId, crate::library::PhotoDisk, String)> = carousel
+            .disk
+            .iter()
+            .filter(|(frame_id, _)| !carousel.photos.contains_key(frame_id))
+            .map(|(frame_id, meta)| {
+                let name = carousel
+                    .layout
+                    .frame(*frame_id)
+                    .and_then(|frame| frame.photo.as_ref())
+                    .map_or_else(
+                        || format!("photo-{}", frame_id.0),
+                        |photo| photo.name.clone(),
+                    );
+                (*frame_id, meta.clone(), name)
+            })
+            .collect();
         for (frame_id, name, proxy) in loaded {
             if self.loading.contains_key(&(carousel_id, frame_id)) {
                 continue;
@@ -1244,6 +1279,25 @@ impl PudduScrollApp {
                 token,
                 name,
                 proxy,
+            });
+        }
+        for (frame_id, meta, name) in missing {
+            if self.loading.contains_key(&(carousel_id, frame_id)) {
+                continue;
+            }
+            let token = self.next_token();
+            self.loading.insert((carousel_id, frame_id), token);
+            let tx = self.photo_tx.clone();
+            crate::host::spawn(move || {
+                let result = crate::library::load_frame_photo(carousel_id, frame_id, &meta, &name);
+                let _ = tx.send(IncomingPhoto::Decoded {
+                    token,
+                    target: DecodeTarget::DiskFrame {
+                        carousel_id,
+                        frame_id,
+                    },
+                    result,
+                });
             });
         }
         ctx.request_repaint();
@@ -1338,6 +1392,8 @@ impl PudduScrollApp {
             name: carousel.name.clone(),
             layout: carousel.layout.clone(),
             photos: carousel.photos.clone(),
+            disk: carousel.disk.clone(),
+            cover: carousel.cover.clone(),
             grid_cells: carousel.grid_cells,
         };
         let file_name = zip_file_name(&packaged.name);
@@ -1628,10 +1684,8 @@ impl PudduScrollApp {
         self.preview_key = None;
         self.preview_job = None;
         self.editor_zoom = DEFAULT_EDITOR_ZOOM;
-        self.strip_lead = egui::Vec2::ZERO;
-        self.strip_pad = egui::Vec2::ZERO;
+        self.strip_pan = egui::Vec2::ZERO;
         self.reveal_canvas = None;
-        self.pending_scroll = Some(egui::Vec2::ZERO);
         self.strip_wheel_pan = false;
         self.center_strip = true;
         self.strip_rect = None;
@@ -1653,10 +1707,49 @@ impl PudduScrollApp {
         self.reload_assets(ctx);
     }
 
+    pub(super) fn refresh_open_carousel_cover(&mut self) {
+        let Route::Carousel(carousel_id) = self.route else {
+            return;
+        };
+        let Some(carousel) = self
+            .library
+            .carousels
+            .iter()
+            .find(|carousel| carousel.id == carousel_id)
+        else {
+            return;
+        };
+        if carousel.disk.is_empty() && carousel.photos.is_empty() {
+            return;
+        }
+        let layout = carousel.layout.clone();
+        let images: FrameImages = carousel
+            .photos
+            .iter()
+            .map(|(frame_id, blob)| (*frame_id, blob.screen()))
+            .collect();
+        let image = carousel_preview_image(&layout, &images);
+        let Ok(cover) = crate::library::blob_from_cover_image(&image) else {
+            return;
+        };
+        self.library.set_cover(carousel_id, cover);
+        self.cover_textures.remove(&carousel_id);
+        self.cover_pending.remove(&carousel_id);
+    }
+
     pub(super) fn go_home(&mut self) {
+        let open = match self.route {
+            Route::Carousel(id) => Some(id),
+            _ => None,
+        };
+        self.refresh_open_carousel_cover();
+        if let Some(id) = open {
+            self.library.clear_photos(id);
+        }
         self.library.visuals = self.library.visuals.wrapping_add(1);
         self.persist();
         self.dismiss_undo_toasts();
+        self.status.clear();
         self.route = Route::Home;
         self.drag = None;
         self.crop_session = None;
@@ -1670,6 +1763,7 @@ impl PudduScrollApp {
         self.confirm = None;
         self.link_open = false;
         self.assets.clear();
+        self.loading.clear();
         self.preview_job = None;
         self.pending_uploads.retain(|pending| {
             !matches!(

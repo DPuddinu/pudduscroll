@@ -28,8 +28,7 @@ impl PudduScrollApp {
                 );
                 self.remember("export", export.rect);
                 if export.clicked() {
-                    self.export_open = true;
-                    self.schedule_estimate();
+                    self.open_export();
                 }
                 if matches!(self.route, Route::Carousel(_)) {
                     let share = ui.add_enabled(!self.sharing, egui::Button::new("Share"));

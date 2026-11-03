@@ -10,9 +10,9 @@ use pudduscroll_core::{
 };
 
 use super::{
-    ACCENT, BG, CROP_HANDLE_HIT, DEFAULT_RAIL_WEIGHTS, EDITOR_ZOOM_SPEED, MAX_EDITOR_ZOOM,
-    MAX_GRID_CELLS, MIN_EDITOR_ZOOM, MIN_GRID_CELLS, MUTED, OUTSIDE_FRAME_ALPHA, PANEL,
-    RAIL_SECTION_MIN, RAIL_SECTIONS, RAIL_SPLIT, TEXT,
+    ACCENT, BG, CROP_HANDLE_HIT, DEFAULT_EDITOR_ZOOM, DEFAULT_RAIL_WEIGHTS, EDITOR_ZOOM_SPEED,
+    MAX_EDITOR_ZOOM, MAX_GRID_CELLS, MIN_EDITOR_ZOOM, MIN_GRID_CELLS, MUTED, OUTSIDE_FRAME_ALPHA,
+    PANEL, RAIL_SECTION_MIN, RAIL_SECTIONS, RAIL_SPLIT, TEXT,
 };
 
 pub(super) fn counted(count: usize, one: &str, many: &str) -> String {
@@ -838,6 +838,17 @@ pub(super) fn next_editor_zoom(current: f32, scroll_y: f32) -> f32 {
     (current * (scroll_y * EDITOR_ZOOM_SPEED).exp()).clamp(MIN_EDITOR_ZOOM, MAX_EDITOR_ZOOM)
 }
 
+pub(super) fn zoom_strip_pan(
+    strip_pan: egui::Vec2,
+    size: egui::Vec2,
+    new_size: egui::Vec2,
+    pointer_in_bounds: egui::Vec2,
+) -> egui::Vec2 {
+    let fx = ((pointer_in_bounds.x - strip_pan.x) / size.x.max(1.0)).clamp(0.0, 1.0);
+    let fy = ((pointer_in_bounds.y - strip_pan.y) / size.y.max(1.0)).clamp(0.0, 1.0);
+    pointer_in_bounds - egui::vec2(fx * new_size.x, fy * new_size.y)
+}
+
 pub(super) fn grid_step(cells: i32) -> f32 {
     1.0 / cells.clamp(MIN_GRID_CELLS, MAX_GRID_CELLS) as f32
 }
@@ -892,70 +903,15 @@ pub(super) fn editor_strip_size(
     egui::vec2(canvas_w * count.max(1) as f32, canvas_h)
 }
 
-pub(super) fn place_strip(
-    desired: egui::Pos2,
-    size: egui::Vec2,
-    view: egui::Rect,
-    pad_min: egui::Vec2,
-    pad_max: egui::Vec2,
-) -> (egui::Vec2, egui::Vec2) {
-    let mut lead = egui::Vec2::ZERO;
-    let mut scroll = egui::Vec2::ZERO;
-    let want = [desired.x - view.min.x, desired.y - view.min.y];
-    let len = [size.x, size.y];
-    let view_len = [view.width(), view.height()];
-    let before = [pad_min.x, pad_min.y];
-    let after = [pad_max.x, pad_max.y];
-    for axis in 0..2 {
-        if len[axis] <= view_len[axis] {
-            let slack = (view_len[axis] - len[axis]).max(0.0);
-            let lead_ideal = want[axis] - before[axis];
-            if (0.0..=slack).contains(&lead_ideal) {
-                lead[axis] = lead_ideal;
-            } else if lead_ideal < 0.0 {
-                let max_scroll = (before[axis] + len[axis] + after[axis] - view_len[axis]).max(0.0);
-                scroll[axis] = (before[axis] - want[axis]).clamp(0.0, max_scroll);
-            } else {
-                lead[axis] = slack;
-                let content = before[axis] + slack + len[axis] + after[axis];
-                let max_scroll = (content - view_len[axis]).max(0.0);
-                scroll[axis] = (before[axis] + slack - want[axis]).clamp(0.0, max_scroll);
-            }
-        } else {
-            let max_scroll = (before[axis] + len[axis] + after[axis] - view_len[axis]).max(0.0);
-            scroll[axis] = (before[axis] - want[axis]).clamp(0.0, max_scroll);
-        }
-    }
-    (lead, scroll)
-}
-
-pub(super) fn center_on_strip(
-    view: egui::Vec2,
-    size: egui::Vec2,
-    pad_min: egui::Vec2,
-    pad_max: egui::Vec2,
-) -> (egui::Vec2, egui::Vec2) {
-    let mut lead = egui::Vec2::ZERO;
-    let mut scroll = egui::Vec2::ZERO;
-    let strip = [size.x, size.y];
-    let before = [pad_min.x, pad_min.y];
-    let after = [pad_max.x, pad_max.y];
-    let view_len = [view.x, view.y];
-    for axis in 0..2 {
-        let content = before[axis] + strip[axis] + after[axis];
-        let max_scroll = (content - view_len[axis]).max(0.0);
-        if strip[axis] <= view_len[axis] {
-            let ideal = (view_len[axis] - strip[axis]) * 0.5;
-            if before[axis] <= ideal {
-                lead[axis] = ideal - before[axis];
-            } else {
-                scroll[axis] = (before[axis] - ideal).clamp(0.0, max_scroll);
-            }
-        } else {
-            scroll[axis] = before[axis].clamp(0.0, max_scroll);
-        }
-    }
-    (lead, scroll)
+pub(super) fn fit_editor_zoom(bounds: egui::Rect, ratio: f32, count: usize) -> f32 {
+    let pad = 36.0;
+    let fit_h = (bounds.height() - pad).max(120.0);
+    let avail_w = (bounds.width() - pad).max(1.0);
+    let strip_w_at_1 = fit_h * ratio * count.max(1) as f32;
+    let zoom_w = avail_w / strip_w_at_1.max(1.0);
+    zoom_w
+        .min(DEFAULT_EDITOR_ZOOM)
+        .clamp(MIN_EDITOR_ZOOM, MAX_EDITOR_ZOOM)
 }
 
 pub(super) fn screen_to_norm(strip: egui::Rect, count: usize, pos: egui::Pos2) -> (f32, f32) {
@@ -1288,10 +1244,27 @@ pub(super) fn apply_style(ctx: &egui::Context) {
 mod tests {
     use eframe::egui;
 
-    use super::frame_outline_bands;
+    use super::{editor_strip_size, frame_outline_bands, zoom_strip_pan};
 
     fn strip() -> egui::Rect {
         egui::Rect::from_min_size(egui::pos2(10.0, 20.0), egui::vec2(300.0, 400.0))
+    }
+
+    #[test]
+    fn zoom_strip_pan_keeps_the_pointer_on_the_same_content_when_size_matches() {
+        let bounds = egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(900.0, 700.0));
+        let zoom = 0.7;
+        let size = editor_strip_size(bounds, zoom, 0.8, 5);
+        let pan = (bounds.size() - size) * 0.5;
+        let pointer = egui::vec2(200.0, 300.0);
+        let new_size = editor_strip_size(bounds, 1.2, 0.8, 5);
+        let new_pan = zoom_strip_pan(pan, size, new_size, pointer);
+        let before = (pointer - pan) / size;
+        let after = (pointer - new_pan) / new_size;
+        assert!((before.x - after.x).abs() < 1.0e-4);
+        assert!((before.y - after.y).abs() < 1.0e-4);
+        let stale = (pointer - new_pan) / size;
+        assert!((stale.x - before.x).abs() > 0.05);
     }
 
     fn canvas(index: usize) -> egui::Rect {

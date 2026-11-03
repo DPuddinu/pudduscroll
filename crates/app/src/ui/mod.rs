@@ -9,6 +9,7 @@ mod rail;
 mod session;
 mod settings;
 mod shell;
+mod skeleton;
 mod strip;
 mod toast;
 mod toolbar;
@@ -155,6 +156,7 @@ struct PhotoAsset {
 #[derive(Clone, Copy)]
 enum DecodeTarget {
     Frame { carousel_id: u64, frame_id: FrameId },
+    DiskFrame { carousel_id: u64, frame_id: FrameId },
     Cover,
 }
 
@@ -172,11 +174,6 @@ enum IncomingPhoto {
     PhonePreview {
         revision: u64,
         index: usize,
-        image: RgbaImage,
-    },
-    CardPreview {
-        carousel_id: u64,
-        visuals: u64,
         image: RgbaImage,
     },
     Saved {
@@ -209,11 +206,6 @@ enum PendingUpload {
         index: usize,
         image: RgbaImage,
     },
-    Card {
-        carousel_id: u64,
-        visuals: u64,
-        image: RgbaImage,
-    },
 }
 
 #[expect(
@@ -227,7 +219,6 @@ pub struct PudduScrollApp {
     route: Route,
     assets: HashMap<FrameId, PhotoAsset>,
     cover_textures: HashMap<u64, egui::TextureHandle>,
-    card_previews: HashMap<u64, (u64, egui::TextureHandle)>,
     selected: Option<FrameId>,
     active_canvas: Option<usize>,
     edit_frame: bool,
@@ -239,7 +230,6 @@ pub struct PudduScrollApp {
     preview_texture: Option<egui::TextureHandle>,
     preview_key: Option<(u64, usize)>,
     preview_job: Option<(u64, usize)>,
-    card_jobs: HashMap<u64, u64>,
     geometry_revision: u64,
     drag: Option<Drag>,
     gesture: String,
@@ -270,10 +260,8 @@ pub struct PudduScrollApp {
     overwrite_names: Vec<String>,
     editor_zoom: f32,
     zoom_basis: (u32, u32),
-    strip_lead: egui::Vec2,
-    strip_pad: egui::Vec2,
+    strip_pan: egui::Vec2,
     reveal_canvas: Option<usize>,
-    pending_scroll: Option<egui::Vec2>,
     strip_wheel_pan: bool,
     center_strip: bool,
     strip_rect: Option<egui::Rect>,

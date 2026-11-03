@@ -357,10 +357,7 @@ impl PudduScrollApp {
         match command {
             Command::NewCarousel => self.new_carousel(ctx),
             Command::Settings => self.toggle_settings(),
-            Command::Export => {
-                self.export_open = true;
-                self.schedule_estimate();
-            }
+            Command::Export => self.open_export(),
             Command::Undo => {
                 if self.crop_session.take().is_some() {
                     self.crop_press = None;
@@ -390,11 +387,15 @@ impl PudduScrollApp {
     }
 
     pub(super) fn add_frame_command(&mut self) {
-        if self.layout().is_none() {
+        let Some(count) = self.layout().map(|layout| layout.canvas_count) else {
             return;
-        }
+        };
+        let canvas = self
+            .active_canvas
+            .filter(|index| *index < count)
+            .unwrap_or(0);
         self.checkpoint();
-        let id = self.layout_mut().map(pudduscroll_core::Layout::add_frame);
+        let id = self.layout_mut().map(|layout| layout.add_frame(canvas));
         if let Some(id) = id {
             self.selected = Some(id);
             self.edit_frame = true;

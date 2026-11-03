@@ -5,11 +5,11 @@ use pudduscroll_core::{
 };
 
 use super::draw::{
-    center_on_strip, cursor_for, editor_strip_size, frame_screen, grid_step, handle_at,
+    cursor_for, editor_strip_size, fit_editor_zoom, frame_screen, grid_step, handle_at,
     handle_points, next_editor_zoom, norm_rect, paint_alignment_grid, paint_clipped_image,
     paint_frame, paint_frame_outline, paint_loading, paint_photo_border, paint_plus,
-    paint_resize_handle, paint_rotate_handle, paint_rotated_photo, photo_screen, place_strip,
-    rotate_handle_hit, screen_to_norm,
+    paint_resize_handle, paint_rotate_handle, paint_rotated_photo, photo_screen, rotate_handle_hit,
+    screen_to_norm, zoom_strip_pan,
 };
 use super::{
     ACCENT, CANVAS_BG, Drag, EDITOR_ZOOM_SPEED, OUTSIDE_FRAME_ALPHA, PudduScrollApp, Route,
@@ -25,14 +25,12 @@ impl PudduScrollApp {
             return;
         }
         self.zoom_basis = basis;
-        self.strip_lead = egui::Vec2::ZERO;
-        self.strip_pad = egui::Vec2::ZERO;
-        self.pending_scroll = Some(egui::Vec2::ZERO);
+        self.strip_pan = egui::Vec2::ZERO;
         self.strip_wheel_pan = false;
         self.center_strip = true;
     }
 
-    pub(super) fn apply_wheel_zoom(&mut self, ui: &egui::Ui, bounds: egui::Rect) {
+    pub(super) fn apply_wheel_zoom(&mut self, ui: &egui::Ui, bounds: egui::Rect, size: egui::Vec2) {
         let Some((ratio, count)) = self.metrics() else {
             return;
         };
@@ -54,16 +52,10 @@ impl PudduScrollApp {
             self.strip_wheel_pan = false;
             return;
         }
-        let Some(strip) = self.strip_rect else {
-            return;
-        };
-        let Some(view) = self.view_rect else {
-            return;
-        };
         let Some(pointer) = pointer else {
             return;
         };
-        if !strip.contains(pointer) {
+        if !bounds.contains(pointer) {
             return;
         }
         if ui
@@ -79,12 +71,9 @@ impl PudduScrollApp {
             self.strip_wheel_pan = true;
         }
         if self.strip_wheel_pan {
-            let id = ui.make_persistent_id(egui::IdSalt::new("canvas-strip"));
-            let mut offset = egui::scroll_area::State::load(ui.ctx(), id)
-                .map_or(egui::Vec2::ZERO, |state| state.clamped_offset());
-            offset.x = (offset.x - (scroll.x + scroll.y)).max(0.0);
-            self.pending_scroll = Some(offset);
+            self.strip_pan += egui::vec2(scroll.x + scroll.y, 0.0);
             self.center_strip = false;
+            self.gesture = "view".to_string();
             return;
         }
         if self.zoom_edited_frame(pointer, scroll.y) {
@@ -94,21 +83,9 @@ impl PudduScrollApp {
         if (zoom - self.editor_zoom).abs() < 1.0e-4 {
             return;
         }
-        let fx = ((pointer.x - strip.min.x) / strip.width().max(1.0)).clamp(0.0, 1.0);
-        let fy = ((pointer.y - strip.min.y) / strip.height().max(1.0)).clamp(0.0, 1.0);
-        self.editor_zoom = zoom;
         let new_size = editor_strip_size(bounds, zoom, ratio, count);
-        let desired = pointer - egui::vec2(fx * new_size.x, fy * new_size.y);
-        let pads = self.frame_overflow(new_size);
-        let (lead, offset) = place_strip(
-            desired,
-            new_size,
-            view,
-            egui::vec2(pads[0], pads[1]),
-            egui::vec2(pads[2], pads[3]),
-        );
-        self.strip_lead = lead;
-        self.pending_scroll = Some(offset);
+        self.strip_pan = zoom_strip_pan(self.strip_pan, size, new_size, pointer - bounds.min);
+        self.editor_zoom = zoom;
         self.center_strip = false;
     }
 
@@ -163,7 +140,7 @@ impl PudduScrollApp {
         !ctx.egui_wants_keyboard_input() && ctx.input(|input| input.key_down(egui::Key::Space))
     }
 
-    pub(super) fn apply_space_pan(&mut self, ui: &egui::Ui, bounds: egui::Rect, size: egui::Vec2) {
+    pub(super) fn apply_space_pan(&mut self, ui: &egui::Ui, bounds: egui::Rect) {
         if self.export_open
             || self.overwrite_dir.is_some()
             || self.create_open
@@ -182,12 +159,9 @@ impl PudduScrollApp {
                 pointer.latest_pos(),
             )
         });
-        let Some(view) = self.view_rect else {
-            return;
-        };
         let over_editor = latest.is_some_and(|pos| bounds.contains(pos));
         let origin = press.filter(|origin| {
-            view.contains(*origin)
+            bounds.contains(*origin)
                 && ui
                     .layer_id_at(*origin)
                     .is_none_or(|layer| layer == ui.layer_id())
@@ -220,109 +194,29 @@ impl PudduScrollApp {
         if delta == egui::Vec2::ZERO {
             return;
         }
-        let id = ui.make_persistent_id(egui::IdSalt::new("canvas-strip"));
-        let stored = egui::scroll_area::State::load(ui.ctx(), id)
-            .map_or(egui::Vec2::ZERO, |state| state.clamped_offset());
-        let pads = self.frame_overflow(size);
-        let offset = self.pending_scroll.unwrap_or(stored);
-        let screen = view.min + self.strip_pad + self.strip_lead - offset;
-        let (lead, scroll) = place_strip(
-            screen + delta,
-            size,
-            view,
-            egui::vec2(pads[0], pads[1]),
-            egui::vec2(pads[2], pads[3]),
-        );
-        self.strip_lead = lead;
-        self.pending_scroll = Some(scroll);
+        self.strip_pan += delta;
         self.center_strip = false;
         self.gesture = "view".to_string();
     }
 
-    fn frame_overflow(&self, size: egui::Vec2) -> [f32; 4] {
-        let Some(layout) = self.layout() else {
-            return [0.0; 4];
-        };
-        let count = layout.canvas_count.max(1) as f32;
-        let mut left = 0.0f32;
-        let mut top = 0.0f32;
-        let mut right = 0.0f32;
-        let mut bottom = 0.0f32;
-        for frame in &layout.frames {
-            left = left.max(-frame.x);
-            top = top.max(-frame.y);
-            right = right.max(frame.x + frame.w - count);
-            bottom = bottom.max(frame.y + frame.h - 1.0);
-        }
-        let canvas_w = size.x / count;
-        let canvas_h = size.y;
-        [
-            left.max(0.0) * canvas_w,
-            top.max(0.0) * canvas_h,
-            right.max(0.0) * canvas_w,
-            bottom.max(0.0) * canvas_h,
-        ]
-    }
-
-    fn sync_scroll(
-        &mut self,
-        ui: &egui::Ui,
-        bounds: egui::Rect,
-        size: egui::Vec2,
-        count: usize,
-    ) -> [f32; 4] {
-        let pads = self.frame_overflow(size);
-        let pad_min = egui::vec2(pads[0], pads[1]);
-        let pad_max = egui::vec2(pads[2], pads[3]);
-        let view_size = self
-            .view_rect
-            .map_or_else(|| bounds.size(), |rect| rect.size());
-        if self.center_strip {
-            let (lead, scroll) = center_on_strip(view_size, size, pad_min, pad_max);
-            self.strip_lead = lead;
-            self.pending_scroll = Some(scroll);
-            self.center_strip = false;
-        } else {
-            self.strip_lead.x = self
-                .strip_lead
-                .x
-                .clamp(0.0, (view_size.x - size.x).max(0.0));
-            self.strip_lead.y = self
-                .strip_lead
-                .y
-                .clamp(0.0, (view_size.y - size.y).max(0.0));
-            let delta = pad_min - self.strip_pad;
-            if self.pending_scroll.is_none() && delta != egui::Vec2::ZERO {
-                let content = egui::vec2(
-                    pad_min.x + self.strip_lead.x + size.x + pad_max.x,
-                    pad_min.y + self.strip_lead.y + size.y + pad_max.y,
-                );
-                let max_scroll = (content - view_size).max(egui::Vec2::ZERO);
-                self.pending_scroll = Some(clamp_scroll(strip_offset(ui) + delta, max_scroll));
-            }
-        }
-        self.strip_pad = pad_min;
+    fn reveal_canvas_pan(&mut self, bounds: egui::Rect, size: egui::Vec2, count: usize) {
         let Some(index) = self.reveal_canvas.take() else {
-            return pads;
+            return;
         };
         let index = index.min(count.saturating_sub(1));
-        let mut offset = self.pending_scroll.unwrap_or_else(|| strip_offset(ui));
         let canvas_w = size.x / count.max(1) as f32;
-        let left = pad_min.x + self.strip_lead.x + index as f32 * canvas_w;
+        let left = self.strip_pan.x + index as f32 * canvas_w;
         let right = left + canvas_w;
-        let content_w = pad_min.x + self.strip_lead.x + size.x + pad_max.x;
-        let max_x = (content_w - view_size.x).max(0.0);
-        let visible = left >= offset.x - 0.5 && right <= offset.x + view_size.x + 0.5;
-        if !visible {
-            offset.x = if canvas_w >= view_size.x || left < offset.x {
-                left
-            } else {
-                right - view_size.x
-            }
-            .clamp(0.0, max_x);
-            self.pending_scroll = Some(offset);
+        let view_w = bounds.width();
+        let visible = left >= -0.5 && right <= view_w + 0.5;
+        if visible {
+            return;
         }
-        pads
+        if canvas_w >= view_w || left < 0.0 {
+            self.strip_pan.x = -(index as f32) * canvas_w;
+        } else {
+            self.strip_pan.x += view_w - right;
+        }
     }
 
     pub(super) fn editor(&mut self, ui: &mut egui::Ui, bounds: egui::Rect) {
@@ -331,40 +225,27 @@ impl PudduScrollApp {
         };
         let bounds = bounds.intersect(ui.clip_rect());
         ui.shrink_clip_rect(bounds);
+        self.view_rect = Some(bounds);
         self.sync_zoom_basis();
-        self.apply_wheel_zoom(ui, bounds);
+        if self.center_strip {
+            self.editor_zoom = fit_editor_zoom(bounds, ratio, count);
+        }
         let size = editor_strip_size(bounds, self.editor_zoom, ratio, count);
-        self.apply_space_pan(ui, bounds, size);
-        let pads = self.sync_scroll(ui, bounds, size, count);
-        let mut scroll_source = egui::scroll_area::ScrollSource::SCROLL_BAR;
-        if self.crop_session.is_none() && !self.claims_strip_pointer(ui.ctx(), bounds) {
-            scroll_source |= egui::scroll_area::ScrollSource::DRAG;
+        if self.center_strip {
+            self.strip_pan = (bounds.size() - size) * 0.5;
+            self.center_strip = false;
         }
-        let mut area = egui::ScrollArea::both()
-            .id_salt("canvas-strip")
-            .auto_shrink([false, false])
-            .scroll_source(scroll_source);
-        if let Some(offset) = self.pending_scroll.take() {
-            area = area.scroll_offset(offset);
-        }
-        let output = area.show(ui, |ui| {
-            ui.shrink_clip_rect(bounds);
+        self.reveal_canvas_pan(bounds, size, count);
+        self.apply_wheel_zoom(ui, bounds, size);
+        let size = editor_strip_size(bounds, self.editor_zoom, ratio, count);
+        self.apply_space_pan(ui, bounds);
+        let _ = ui.allocate_rect(bounds, egui::Sense::hover());
+        let strip_rect = egui::Rect::from_min_size(bounds.min + self.strip_pan, size);
+        ui.scope_builder(egui::UiBuilder::new().max_rect(strip_rect), |ui| {
+            ui.set_clip_rect(bounds.intersect(ui.clip_rect()));
             ui.spacing_mut().item_spacing = egui::Vec2::ZERO;
-            let view = ui.available_size();
-            self.strip_lead.x = self.strip_lead.x.clamp(0.0, (view.x - size.x).max(0.0));
-            self.strip_lead.y = self.strip_lead.y.clamp(0.0, (view.y - size.y).max(0.0));
-            ui.add_space(pads[1]);
-            ui.add_space(self.strip_lead.y);
-            ui.horizontal(|ui| {
-                ui.spacing_mut().item_spacing = egui::Vec2::ZERO;
-                ui.add_space(pads[0]);
-                ui.add_space(self.strip_lead.x);
-                self.paint_strip(ui, size, bounds);
-                ui.add_space(pads[2]);
-            });
-            ui.add_space(pads[3]);
+            self.paint_strip(ui, size, bounds);
         });
-        self.view_rect = Some(output.inner_rect);
     }
 
     pub(super) fn paint_strip(&mut self, ui: &mut egui::Ui, size: egui::Vec2, bounds: egui::Rect) {
@@ -395,39 +276,6 @@ impl PudduScrollApp {
             return;
         }
         self.drag_frame(ctx, rect, editor, layer);
-    }
-
-    pub(super) fn claims_strip_pointer(&self, ctx: &egui::Context, editor: egui::Rect) -> bool {
-        if Self::space_held(ctx) {
-            return true;
-        }
-        if self.crop_session.is_some()
-            || self.export_open
-            || self.overwrite_dir.is_some()
-            || self.confirm.is_some()
-        {
-            return false;
-        }
-        if self.drag.is_some() {
-            return true;
-        }
-        let Some(strip) = self.strip_rect else {
-            return false;
-        };
-        let (down, pos) = ctx.input(|input| {
-            let pointer = &input.pointer;
-            (
-                pointer.primary_down(),
-                pointer
-                    .press_origin()
-                    .or(pointer.interact_pos())
-                    .or(pointer.latest_pos()),
-            )
-        });
-        let Some(pos) = pos else {
-            return false;
-        };
-        down && editor.contains(pos) && self.hits_frame_or_handle(strip, pos)
     }
 
     pub(super) fn hits_frame_or_handle(&self, rect: egui::Rect, pos: egui::Pos2) -> bool {
@@ -522,7 +370,8 @@ impl PudduScrollApp {
                 {
                     let index = self.canvas_index_at(rect, origin);
                     self.active_canvas = index;
-                    if index.is_some() && !self.plus_hit(origin) {
+                    let hit = index.is_some() || self.hits_frame_or_handle(rect, origin);
+                    if hit && !self.plus_hit(origin) {
                         self.begin_drag(rect, origin);
                     }
                 }
@@ -1021,19 +870,6 @@ fn canvas_screen(strip: egui::Rect, count: usize, index: usize) -> egui::Rect {
     egui::Rect::from_min_size(
         egui::pos2(strip.min.x + index as f32 * canvas_w, strip.min.y),
         egui::vec2(canvas_w, strip.height()),
-    )
-}
-
-fn strip_offset(ui: &egui::Ui) -> egui::Vec2 {
-    let id = ui.make_persistent_id(egui::IdSalt::new("canvas-strip"));
-    egui::scroll_area::State::load(ui.ctx(), id)
-        .map_or(egui::Vec2::ZERO, |state| state.clamped_offset())
-}
-
-fn clamp_scroll(offset: egui::Vec2, max_scroll: egui::Vec2) -> egui::Vec2 {
-    egui::vec2(
-        offset.x.clamp(0.0, max_scroll.x),
-        offset.y.clamp(0.0, max_scroll.y),
     )
 }
 

@@ -5,7 +5,7 @@ use eframe::egui;
 use pudduscroll_core::cover_contains_frame;
 
 use super::draw::{frame_screen, handle_name, handle_points};
-use super::{BG, Drag, PANEL, PudduScrollApp, RAIL_W, Route, TEXT, TOOLBAR_H};
+use super::{BG, Drag, PANEL, PudduScrollApp, RAIL_W, Route, TOOLBAR_H};
 
 impl PudduScrollApp {
     pub(super) fn editor_screen(&mut self, ui: &mut egui::Ui, full: egui::Rect) {
@@ -204,14 +204,7 @@ impl eframe::App for PudduScrollApp {
         self.refresh_paste_offer(&ctx);
         let full = ui.max_rect();
         if !self.library_ready {
-            ui.painter().rect_filled(full, 0.0, BG);
-            ui.painter().text(
-                full.center(),
-                egui::Align2::CENTER_CENTER,
-                &self.status,
-                egui::FontId::proportional(18.0),
-                TEXT,
-            );
+            super::skeleton::home(ui, full);
             self.show_toasts(&ctx);
             self.write_probe(&ctx);
             return;
@@ -250,6 +243,7 @@ impl eframe::App for PudduScrollApp {
     }
 
     fn on_exit(&mut self) {
+        self.refresh_open_carousel_cover();
         self.flush_store();
     }
 }
