@@ -17,7 +17,13 @@ mod update {
         dead_code,
         reason = "the desktop updater is the only constructor of these events"
     )]
+    pub(crate) struct Offer {
+        pub(crate) version: String,
+        pub(crate) notes: String,
+    }
+
     pub(crate) enum Event {
+        Available(Offer),
         Installing(String),
         Restart,
         Failed(String),
@@ -25,6 +31,11 @@ mod update {
 
     pub(crate) fn start() -> Option<Receiver<Event>> {
         None
+    }
+
+    pub(crate) fn apply(_offer: Offer) -> Receiver<Event> {
+        let (_tx, rx) = std::sync::mpsc::channel();
+        rx
     }
 }
 mod window_menu;

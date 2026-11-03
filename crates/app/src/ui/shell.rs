@@ -235,6 +235,8 @@ impl eframe::App for PudduScrollApp {
             self.overwrite_modal(&ctx);
             self.confirm_modal(&ctx);
         }
+        self.about_modal(&ctx);
+        self.update_modal(&ctx);
         if self.sharing || self.importing {
             ctx.request_repaint_after(Duration::from_millis(100));
         }

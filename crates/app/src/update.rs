@@ -13,8 +13,17 @@ const LATEST: &str = "https://api.github.com/repos/DPuddinu/pudduscroll/releases
 const MAX_BYTES: u64 = 80 * 1024 * 1024;
 const DOWNLOAD_PREFIX: &str = "https://github.com/DPuddinu/pudduscroll/releases/download/";
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct Offer {
+    pub(crate) version: String,
+    pub(crate) notes: String,
+    tag: String,
+    asset: String,
+}
+
 #[derive(Clone, Debug)]
 pub(crate) enum Event {
+    Available(Offer),
     Installing(String),
     Restart,
     Failed(String),
@@ -28,6 +37,23 @@ pub(crate) fn start() -> Option<Receiver<Event>> {
     let (tx, rx) = mpsc::channel();
     thread::spawn(move || check(&tx));
     Some(rx)
+}
+
+#[must_use]
+pub(crate) fn apply(offer: Offer) -> Receiver<Event> {
+    let (tx, rx) = mpsc::channel();
+    thread::spawn(move || {
+        let _ = tx.send(Event::Installing(offer.version.clone()));
+        match install_offer(&offer) {
+            Ok(()) => {
+                let _ = tx.send(Event::Restart);
+            }
+            Err(error) => {
+                let _ = tx.send(Event::Failed(error));
+            }
+        }
+    });
+    rx
 }
 
 fn check(tx: &Sender<Event>) {
@@ -53,22 +79,17 @@ fn check(tx: &Sender<Event>) {
         Step::Tell(message) => {
             let _ = tx.send(Event::Failed(message));
         }
-        Step::Install {
-            version,
-            tag,
-            asset,
-        } => {
-            let _ = tx.send(Event::Installing(version.to_string()));
-            match install(version, &tag, &asset) {
-                Ok(()) => {
-                    let _ = tx.send(Event::Restart);
-                }
-                Err(error) => {
-                    let _ = tx.send(Event::Failed(error));
-                }
-            }
+        Step::Offer(offer) => {
+            let _ = tx.send(Event::Available(offer));
         }
     }
+}
+
+fn install_offer(offer: &Offer) -> Result<(), String> {
+    let Some(version) = Version::parse(&offer.version) else {
+        return Err("Could not read the update version".to_string());
+    };
+    install(version, &offer.tag, &offer.asset)
 }
 
 fn install(version: Version, tag: &str, asset: &str) -> Result<(), String> {
@@ -129,8 +150,8 @@ fn write_staged(bytes: &[u8]) -> Result<PathBuf, String> {
     {
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755))
-            .map_err(|error| format!("Could not save the update: {error}"))?;
-    }
+            .map_err(|error| format!("Could not save the update: {error}"))?
+    };
     Ok(path)
 }
 
@@ -303,6 +324,8 @@ fn download_url(tag: &str, asset: &str) -> String {
 struct ReleaseBody {
     tag_name: String,
     #[serde(default)]
+    body: String,
+    #[serde(default)]
     assets: Vec<ReleaseAsset>,
 }
 
@@ -347,11 +370,7 @@ enum Step {
     Quiet,
     UpToDate,
     Tell(String),
-    Install {
-        version: Version,
-        tag: String,
-        asset: String,
-    },
+    Offer(Offer),
 }
 
 fn plan(body: &str, installed: &str, os: &str, arch: &str, tried: Option<Version>) -> Step {
@@ -378,11 +397,27 @@ fn plan(body: &str, installed: &str, os: &str, arch: &str, tried: Option<Version
     if !release.assets.iter().any(|item| item.name == asset) {
         return Step::Tell("The latest release has no build for this system".to_string());
     }
-    Step::Install {
-        version: remote,
+    Step::Offer(Offer {
+        version: remote.to_string(),
+        notes: release_notes(&release.body),
         tag: release.tag_name,
         asset: asset.to_owned(),
+    })
+}
+
+fn release_notes(body: &str) -> String {
+    let text = body.trim();
+    if text.is_empty() {
+        return String::new();
     }
+    if let Some(rest) = text
+        .split_once("## New")
+        .map(|(_, rest)| rest.trim())
+        .filter(|rest| !rest.is_empty())
+    {
+        return format!("## New\n{rest}");
+    }
+    text.to_owned()
 }
 
 fn tag_ok(tag: &str) -> bool {
@@ -499,13 +534,15 @@ mod tests {
     use std::io::{Cursor, Write};
 
     use super::{
-        Step, Version, asset_name, binary_rank, download_url, extract_binary, plan, tag_ok,
+        Offer, Step, Version, asset_name, binary_rank, download_url, extract_binary, plan,
+        release_notes, tag_ok,
     };
 
     fn release_json() -> &'static str {
         r#"{
             "tag_name": "v0.3.0",
             "draft": false,
+            "body": "Intro\n\n## Downloads\n\ntable\n\n## New\n\n- Faster boot\n- Lazy decode\n",
             "assets": [
                 {"name": "pudduscroll-windows-x86_64.zip", "browser_download_url": "https://example.invalid/win"},
                 {"name": "pudduscroll-linux-x86_64.tar.gz", "browser_download_url": "https://example.invalid/linux"},
@@ -535,19 +572,20 @@ mod tests {
             Some("pudduscroll-macos-x86_64.zip")
         );
         assert_eq!(asset_name("windows", "aarch64"), None);
-        let Step::Install {
-            version,
-            tag,
-            asset,
-        } = plan(body, "0.2.0", "linux", "x86_64", None)
-        else {
-            panic!("expected an install");
+        let Step::Offer(offer) = plan(body, "0.2.0", "linux", "x86_64", None) else {
+            panic!("expected an offer");
         };
-        assert_eq!(version, Version::parse("0.3.0").unwrap());
-        assert_eq!(tag, "v0.3.0");
-        assert_eq!(asset, "pudduscroll-linux-x86_64.tar.gz");
         assert_eq!(
-            download_url(&tag, &asset),
+            offer,
+            Offer {
+                version: "0.3.0".to_string(),
+                notes: "## New\n- Faster boot\n- Lazy decode".to_string(),
+                tag: "v0.3.0".to_string(),
+                asset: "pudduscroll-linux-x86_64.tar.gz".to_string(),
+            }
+        );
+        assert_eq!(
+            download_url(&offer.tag, &offer.asset),
             "https://github.com/DPuddinu/pudduscroll/releases/download/v0.3.0/pudduscroll-linux-x86_64.tar.gz"
         );
         assert_eq!(
@@ -567,6 +605,8 @@ mod tests {
         assert!(!tag_ok("v0.3.0/extra"));
         assert!(Version::parse("v0.2.0").unwrap() < Version::parse("0.2.1").unwrap());
         assert!(Version::parse("0.2.9").unwrap() < Version::parse("0.10.0").unwrap());
+        assert_eq!(release_notes("plain notes"), "plain notes".to_string());
+        assert_eq!(release_notes(""), String::new());
     }
 
     #[test]

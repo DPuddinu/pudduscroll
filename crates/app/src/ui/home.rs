@@ -397,6 +397,98 @@ impl PudduScrollApp {
         }
     }
 
+    pub(super) fn about_modal(&mut self, ctx: &egui::Context) {
+        if !self.about_open {
+            return;
+        }
+        let modal_id = egui::Id::unique("about");
+        let response = egui::Modal::new(modal_id)
+            .area(egui::Modal::default_area(modal_id).order(egui::Order::Debug))
+            .frame(dialog_frame())
+            .show(ctx, |ui| {
+                ui.set_min_width(360.0);
+                ui.heading("PudduScroll");
+                ui.add_space(6.0);
+                ui.label(format!("Version {}", env!("CARGO_PKG_VERSION")));
+                ui.label(env!("CARGO_PKG_AUTHORS"));
+                ui.label("2026");
+                ui.add_space(6.0);
+                ui.hyperlink_to("GitHub", "https://github.com/DPuddinu/pudduscroll");
+                ui.add_space(12.0);
+                let close = ui.button("Close");
+                close
+                    .clone()
+                    .on_hover_cursor(egui::CursorIcon::PointingHand);
+                self.remember("about-close", close.rect);
+                if close.clicked() {
+                    self.about_open = false;
+                }
+            });
+        ctx.move_to_top(egui::LayerId::new(egui::Order::Debug, modal_id));
+        if response.should_close() {
+            self.about_open = false;
+        }
+    }
+
+    pub(super) fn update_modal(&mut self, ctx: &egui::Context) {
+        let Some(offer) = self.update_offer.clone() else {
+            return;
+        };
+        let modal_id = egui::Id::unique("update-available");
+        let mut accept = false;
+        let response = egui::Modal::new(modal_id)
+            .area(egui::Modal::default_area(modal_id).order(egui::Order::Debug))
+            .frame(dialog_frame())
+            .show(ctx, |ui| {
+                ui.set_min_width(420.0);
+                ui.set_max_width(520.0);
+                ui.heading(format!("Version {} is available", offer.version));
+                ui.add_space(6.0);
+                if offer.notes.is_empty() {
+                    ui.label(
+                        egui::RichText::new("A newer build is ready to install.").color(MUTED),
+                    );
+                } else {
+                    egui::ScrollArea::vertical()
+                        .max_height(280.0)
+                        .show(ui, |ui| {
+                            ui.set_min_width(400.0);
+                            ui.label(&offer.notes);
+                        });
+                }
+                ui.add_space(12.0);
+                ui.horizontal(|ui| {
+                    let later = ui.button("Later");
+                    later
+                        .clone()
+                        .on_hover_cursor(egui::CursorIcon::PointingHand);
+                    self.remember("update-later", later.rect);
+                    if later.clicked() {
+                        self.update_offer = None;
+                    }
+                    let update = ui.add(
+                        egui::Button::new(
+                            egui::RichText::new("Update").color(egui::Color32::BLACK),
+                        )
+                        .fill(ACCENT),
+                    );
+                    update
+                        .clone()
+                        .on_hover_cursor(egui::CursorIcon::PointingHand);
+                    self.remember("update-accept", update.rect);
+                    if update.clicked() {
+                        accept = true;
+                    }
+                });
+            });
+        ctx.move_to_top(egui::LayerId::new(egui::Order::Debug, modal_id));
+        if accept {
+            self.begin_update();
+        } else if response.should_close() {
+            self.update_offer = None;
+        }
+    }
+
     fn confirm_copy(&self) -> Option<ConfirmCopy> {
         match self.confirm.as_ref()? {
             Confirm::DeleteCarousel(id) => {

@@ -15,6 +15,10 @@ impl PudduScrollApp {
         match command {
             crate::window_menu::SystemCommand::NewCarousel => self.new_carousel(ctx),
             crate::window_menu::SystemCommand::Settings => self.open_settings(),
+            crate::window_menu::SystemCommand::Quit => {
+                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+            }
+            crate::window_menu::SystemCommand::About => self.about_open = true,
         }
     }
 
@@ -151,6 +155,7 @@ impl PudduScrollApp {
         let id = self.library.create_carousel();
         self.rebind = None;
         self.settings_open = false;
+        self.about_open = false;
         self.note_geometry();
         self.enter(Route::Carousel(id), ctx);
         self.selected = self
@@ -250,6 +255,7 @@ impl PudduScrollApp {
         self.export_open = false;
         self.link_open = false;
         self.create_open = false;
+        self.about_open = false;
         self.confirm = None;
         self.cancel_overwrite();
         self.rebind = None;
@@ -349,8 +355,10 @@ impl PudduScrollApp {
         self.export_open
             || self.link_open
             || self.create_open
+            || self.about_open
             || self.overwrite_dir.is_some()
             || self.confirm.is_some()
+            || self.update_offer.is_some()
     }
 
     fn apply_command(&mut self, command: Command, ctx: &egui::Context) {

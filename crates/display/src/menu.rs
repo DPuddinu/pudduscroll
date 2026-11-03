@@ -2,22 +2,30 @@
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 #[cfg(any(windows, test))]
-const NEW_CAROUSEL: usize = 0x10;
+const NEW_CAROUSEL: usize = 1001;
 #[cfg(any(windows, test))]
-const SETTINGS: usize = 0x20;
+const SETTINGS: usize = 1002;
+#[cfg(any(windows, test))]
+const QUIT: usize = 1003;
+#[cfg(any(windows, test))]
+const ABOUT: usize = 1004;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum WindowMenuCommand {
     NewCarousel,
     Settings,
+    Quit,
+    About,
 }
 
 #[cfg(any(windows, test))]
 #[must_use]
-pub fn command_from_id(wparam: usize) -> Option<WindowMenuCommand> {
-    match wparam & 0xFFF0 {
+pub fn command_from_id(id: usize) -> Option<WindowMenuCommand> {
+    match id {
         NEW_CAROUSEL => Some(WindowMenuCommand::NewCarousel),
         SETTINGS => Some(WindowMenuCommand::Settings),
+        QUIT => Some(WindowMenuCommand::Quit),
+        ABOUT => Some(WindowMenuCommand::About),
         _ => None,
     }
 }
@@ -61,7 +69,7 @@ fn install_windows(hwnd: isize) -> bool {
         return true;
     }
     // Safety: `hwnd` is the eframe root window. The subclass is installed once and
-    // forwards every message except the two added system-menu ids to the previous procedure.
+    // forwards every message except our File/Help command ids to the previous procedure.
     if unsafe { subclass(hwnd) } {
         INSTALLED.store(true, Ordering::Release);
         true
@@ -74,10 +82,10 @@ fn install_windows(hwnd: isize) -> bool {
 unsafe fn subclass(hwnd: isize) -> bool {
     use windows::Win32::Foundation::HWND;
     use windows::Win32::UI::WindowsAndMessaging::{
-        GWLP_WNDPROC, GetSystemMenu, InsertMenuW, MF_BYPOSITION, MF_SEPARATOR, MF_STRING,
-        SetWindowLongPtrW,
+        AppendMenuW, CreateMenu, CreatePopupMenu, DrawMenuBar, GWLP_WNDPROC, MF_POPUP,
+        MF_SEPARATOR, MF_STRING, SetMenu, SetWindowLongPtrW,
     };
-    use windows::core::{PCWSTR, w};
+    use windows::core::w;
 
     let hwnd = HWND(hwnd as *mut core::ffi::c_void);
     // Safety: `wnd_proc` matches the Win32 window-procedure calling convention.
@@ -87,14 +95,27 @@ unsafe fn subclass(hwnd: isize) -> bool {
         return false;
     }
     PREVIOUS.store(previous as usize, Ordering::Release);
-    let menu = unsafe { GetSystemMenu(hwnd, false) };
-    if menu.is_invalid() {
+
+    // Safety: CreateMenu/CreatePopupMenu allocate HMENUs owned by this window after SetMenu.
+    let Ok(bar) = (unsafe { CreateMenu() }) else {
         return true;
-    }
-    let item = MF_BYPOSITION | MF_STRING;
-    let _ = unsafe { InsertMenuW(menu, 0, item, NEW_CAROUSEL, w!("New carousel")) };
-    let _ = unsafe { InsertMenuW(menu, 1, item, SETTINGS, w!("Settings")) };
-    let _ = unsafe { InsertMenuW(menu, 2, MF_BYPOSITION | MF_SEPARATOR, 0, PCWSTR::null()) };
+    };
+    let Ok(file) = (unsafe { CreatePopupMenu() }) else {
+        return true;
+    };
+    let Ok(help) = (unsafe { CreatePopupMenu() }) else {
+        return true;
+    };
+
+    let _ = unsafe { AppendMenuW(file, MF_STRING, NEW_CAROUSEL, w!("New carousel")) };
+    let _ = unsafe { AppendMenuW(file, MF_STRING, SETTINGS, w!("Settings")) };
+    let _ = unsafe { AppendMenuW(file, MF_SEPARATOR, 0, None) };
+    let _ = unsafe { AppendMenuW(file, MF_STRING, QUIT, w!("Quit")) };
+    let _ = unsafe { AppendMenuW(help, MF_STRING, ABOUT, w!("About")) };
+    let _ = unsafe { AppendMenuW(bar, MF_POPUP, file.0 as usize, w!("File")) };
+    let _ = unsafe { AppendMenuW(bar, MF_POPUP, help.0 as usize, w!("Help")) };
+    let _ = unsafe { SetMenu(hwnd, Some(bar)) };
+    let _ = unsafe { DrawMenuBar(hwnd) };
     true
 }
 
@@ -106,17 +127,20 @@ unsafe extern "system" fn wnd_proc(
     lparam: windows::Win32::Foundation::LPARAM,
 ) -> windows::Win32::Foundation::LRESULT {
     use windows::Win32::Foundation::LRESULT;
-    use windows::Win32::UI::WindowsAndMessaging::{CallWindowProcW, DefWindowProcW, WM_SYSCOMMAND};
+    use windows::Win32::UI::WindowsAndMessaging::{CallWindowProcW, DefWindowProcW, WM_COMMAND};
 
-    if msg == WM_SYSCOMMAND
-        && let Some(command) = command_from_id(wparam.0)
-    {
-        let id = match command {
-            WindowMenuCommand::NewCarousel => NEW_CAROUSEL,
-            WindowMenuCommand::Settings => SETTINGS,
-        };
-        PENDING.store(id, Ordering::Release);
-        return LRESULT(0);
+    if msg == WM_COMMAND {
+        let id = wparam.0 & 0xFFFF;
+        if let Some(command) = command_from_id(id) {
+            let stored = match command {
+                WindowMenuCommand::NewCarousel => NEW_CAROUSEL,
+                WindowMenuCommand::Settings => SETTINGS,
+                WindowMenuCommand::Quit => QUIT,
+                WindowMenuCommand::About => ABOUT,
+            };
+            PENDING.store(stored, Ordering::Release);
+            return LRESULT(0);
+        }
     }
     let previous = PREVIOUS.load(Ordering::Acquire);
     if previous == 0 {
@@ -140,13 +164,13 @@ mod tests {
     use super::{WindowMenuCommand, command_from_id};
 
     #[test]
-    fn system_menu_ids_ignore_the_low_bits_windows_uses() {
-        assert_eq!(
-            command_from_id(0x10 | 0x3),
-            Some(WindowMenuCommand::NewCarousel)
-        );
-        assert_eq!(command_from_id(0x20), Some(WindowMenuCommand::Settings));
-        assert_eq!(command_from_id(0xF060), None);
+    fn menu_command_ids_map_from_wm_command_low_word() {
+        assert_eq!(command_from_id(1001), Some(WindowMenuCommand::NewCarousel));
+        assert_eq!(command_from_id(1002), Some(WindowMenuCommand::Settings));
+        assert_eq!(command_from_id(1003), Some(WindowMenuCommand::Quit));
+        assert_eq!(command_from_id(1004), Some(WindowMenuCommand::About));
+        assert_eq!(command_from_id(1001 | (1 << 16)), None);
         assert_eq!(command_from_id(0), None);
+        assert_eq!(command_from_id(0xF060), None);
     }
 }

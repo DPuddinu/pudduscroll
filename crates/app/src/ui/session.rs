@@ -83,6 +83,7 @@ impl PudduScrollApp {
             photo_tx,
             photo_rx,
             update_rx: crate::update::start(),
+            update_offer: None,
             save_tx,
             pending_uploads: VecDeque::new(),
             loading: HashMap::new(),
@@ -111,6 +112,7 @@ impl PudduScrollApp {
             grid_cells: DEFAULT_GRID_CELLS,
             rail_weights: DEFAULT_RAIL_WEIGHTS,
             create_open: false,
+            about_open: false,
             confirm: None,
             link_open: false,
             link_url: String::new(),
@@ -564,7 +566,11 @@ impl PudduScrollApp {
         let mut close = false;
         for event in events {
             match event {
+                crate::update::Event::Available(offer) => {
+                    self.update_offer = Some(offer);
+                }
                 crate::update::Event::Installing(version) => {
+                    self.update_offer = None;
                     self.status = format!("Updating to {version}…");
                     self.toast(format!("Updating to {version}…"));
                 }
@@ -586,6 +592,13 @@ impl PudduScrollApp {
         if waiting && self.update_rx.is_some() {
             ctx.request_repaint_after(Duration::from_millis(200));
         }
+    }
+
+    pub(super) fn begin_update(&mut self) {
+        let Some(offer) = self.update_offer.take() else {
+            return;
+        };
+        self.update_rx = Some(crate::update::apply(offer));
     }
 
     fn drain_update(&mut self) -> (Vec<crate::update::Event>, bool) {
