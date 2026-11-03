@@ -122,7 +122,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           cat > release-notes.md << 'ENDNOTES'
-          PudduScroll 0.3.2 opens the library much faster. Home loads cover images only; full carousel photos decode when you open a carousel. Startup still checks GitHub for a newer build for this computer.
+          PudduScroll 0.3.3 add menu bar
 
           ## Downloads
 
