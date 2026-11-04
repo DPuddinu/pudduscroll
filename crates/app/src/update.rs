@@ -57,14 +57,21 @@ pub(crate) fn apply(offer: Offer) -> Receiver<Event> {
 }
 
 fn check(tx: &Sender<Event>) {
-    let Ok(body) = fetch_bytes(
+    let body = match fetch_bytes(
         LATEST,
         Duration::from_secs(20),
         "application/vnd.github+json",
-    ) else {
-        return;
+    ) {
+        Ok(body) => body,
+        Err(error) => {
+            let _ = tx.send(Event::Failed(error));
+            return;
+        }
     };
     let Ok(text) = String::from_utf8(body) else {
+        let _ = tx.send(Event::Failed(
+            "Could not read the GitHub release".to_string(),
+        ));
         return;
     };
     match plan(
@@ -188,7 +195,7 @@ fn launch_replacer(current: &Path, staged: &Path, script: &Path) -> Result<(), S
     #[cfg(unix)]
     detach(&mut command);
     #[cfg(windows)]
-    hide_and_detach(&mut command);
+    hide_window(&mut command);
     command
         .spawn()
         .map_err(|error| format!("Could not start the update: {error}"))?;
@@ -197,7 +204,12 @@ fn launch_replacer(current: &Path, staged: &Path, script: &Path) -> Result<(), S
 
 fn replacer_command(script: &Path) -> Command {
     if cfg!(windows) {
-        let mut command = Command::new("powershell.exe");
+        let mut command = Command::new("cmd.exe");
+        command.arg("/C");
+        command.arg("start");
+        command.arg("");
+        command.arg("/B");
+        command.arg("powershell.exe");
         command.args([
             "-NoProfile",
             "-WindowStyle",
@@ -222,27 +234,37 @@ fn detach(command: &mut Command) {
 }
 
 #[cfg(windows)]
-fn hide_and_detach(command: &mut Command) {
+fn hide_window(command: &mut Command) {
     use std::os::windows::process::CommandExt;
     const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-    const DETACHED_PROCESS: u32 = 0x0000_0008;
-    let _ = command.creation_flags(CREATE_NO_WINDOW | DETACHED_PROCESS);
+    const CREATE_BREAKAWAY_FROM_JOB: u32 = 0x0100_0000;
+    let _ = command.creation_flags(CREATE_NO_WINDOW | CREATE_BREAKAWAY_FROM_JOB);
 }
 
-const WINDOWS_SCRIPT: &str = r"$ErrorActionPreference = 'Stop'
-$deadline = (Get-Date).AddMinutes(2)
-do {
+const WINDOWS_SCRIPT: &str = r#"$ErrorActionPreference = 'Stop'
+Wait-Process -Id ([int]$env:PUDDU_PID) -Timeout 120 -ErrorAction SilentlyContinue
+$old = $env:PUDDU_OLD
+$new = $env:PUDDU_NEW
+$bak = "$old.puddu-bak"
+Remove-Item -LiteralPath $bak -Force -ErrorAction SilentlyContinue
+$moved = $false
+foreach ($try in 1..400) {
   try {
-    Move-Item -LiteralPath $env:PUDDU_NEW -Destination $env:PUDDU_OLD -Force
+    if (Test-Path -LiteralPath $old) {
+      Move-Item -LiteralPath $old -Destination $bak -Force
+    }
+    Move-Item -LiteralPath $new -Destination $old -Force
+    $moved = $true
     break
   } catch {
-    if ((Get-Date) -ge $deadline) { exit 1 }
     Start-Sleep -Milliseconds 300
   }
-} while ($true)
-Start-Process -FilePath $env:PUDDU_OLD
+}
+if (-not $moved) { exit 1 }
+Start-Process -FilePath $old
+Remove-Item -LiteralPath $bak -Force -ErrorAction SilentlyContinue
 Remove-Item -LiteralPath $env:PUDDU_SCRIPT -Force -ErrorAction SilentlyContinue
-";
+"#;
 
 const UNIX_SCRIPT: &str = r#"#!/bin/sh
 set -u
@@ -410,14 +432,23 @@ fn release_notes(body: &str) -> String {
     if text.is_empty() {
         return String::new();
     }
-    if let Some(rest) = text
-        .split_once("## New")
-        .map(|(_, rest)| rest.trim())
-        .filter(|rest| !rest.is_empty())
-    {
-        return format!("## New\n{rest}");
+    let section = text.split_once("## New").map_or(text, |(_, rest)| rest);
+    let mut lines = Vec::new();
+    for line in section.lines() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let item = line
+            .strip_prefix('-')
+            .or_else(|| line.strip_prefix('*'))
+            .map_or(line, str::trim);
+        if item.is_empty() {
+            continue;
+        }
+        lines.push(format!("• {item}"));
     }
-    text.to_owned()
+    lines.join("\n\n")
 }
 
 fn tag_ok(tag: &str) -> bool {
@@ -579,7 +610,7 @@ mod tests {
             offer,
             Offer {
                 version: "0.3.0".to_string(),
-                notes: "## New\n- Faster boot\n- Lazy decode".to_string(),
+                notes: "• Faster boot\n\n• Lazy decode".to_string(),
                 tag: "v0.3.0".to_string(),
                 asset: "pudduscroll-linux-x86_64.tar.gz".to_string(),
             }
@@ -605,7 +636,11 @@ mod tests {
         assert!(!tag_ok("v0.3.0/extra"));
         assert!(Version::parse("v0.2.0").unwrap() < Version::parse("0.2.1").unwrap());
         assert!(Version::parse("0.2.9").unwrap() < Version::parse("0.10.0").unwrap());
-        assert_eq!(release_notes("plain notes"), "plain notes".to_string());
+        assert_eq!(release_notes("plain notes"), "• plain notes".to_string());
+        assert_eq!(
+            release_notes("Intro\n\n## New\n\n- One\n- Two\n"),
+            "• One\n\n• Two".to_string()
+        );
         assert_eq!(release_notes(""), String::new());
     }
 

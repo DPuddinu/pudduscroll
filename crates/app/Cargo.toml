@@ -1,6 +1,6 @@
 [package]
 name = "pudduscroll"
-version = "0.3.5"
+version.workspace = true
 description = "PudduScroll Instagram carousel composer"
 edition.workspace = true
 license.workspace = true
@@ -17,14 +17,14 @@ tar = "0.4"
 image = { workspace = true, features = ["png", "jpeg", "webp"] }
 moxcms = "0.8.1"
 pudduscroll-core = { workspace = true }
-pudduscroll-display = { path = "../display", version = "0.3.5" }
+pudduscroll-display = { path = "../display" }
 rfd = { workspace = true }
 web-time = "1"
 zip = { version = "2", default-features = false, features = ["deflate"] }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 arboard = "3.7"
-ureq = { version = "2", default-features = false, features = ["rustls"] }
+ureq = { version = "2", default-features = false, features = ["tls"] }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 js-sys = "0.3"

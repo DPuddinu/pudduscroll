@@ -506,7 +506,14 @@ impl PudduScrollApp {
                         .max_height(280.0)
                         .show(ui, |ui| {
                             ui.set_min_width(400.0);
-                            ui.label(&offer.notes);
+                            for (index, line) in offer.notes.lines().enumerate() {
+                                if index > 0 && !line.is_empty() {
+                                    ui.add_space(6.0);
+                                }
+                                if !line.is_empty() {
+                                    ui.label(egui::RichText::new(line).color(TEXT));
+                                }
+                            }
                         });
                 }
                 ui.add_space(12.0);
