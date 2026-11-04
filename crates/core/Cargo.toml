@@ -1,6 +1,6 @@
 [package]
 name = "pudduscroll-core"
-version = "0.3.4"
+version = "0.3.5"
 description = "Placement, crop, layering, clipping, and export for PudduScroll"
 edition.workspace = true
 license.workspace = true

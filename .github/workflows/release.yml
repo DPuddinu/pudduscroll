@@ -122,7 +122,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           cat > release-notes.md << 'ENDNOTES'
-          PudduScroll 0.3.4 simplifies templates on Home.
+          PudduScroll 0.3.5 adds carousel snapshots and a leaner editor rail.
 
           ## Downloads
 
@@ -152,8 +152,8 @@ jobs:
 
           ## New
 
-          - Creating a template no longer asks for a cover or saves a carousel; cards start with a blank cover.
-          - Rename templates inline on Home; Use opens a carousel from the template, and Edit opens the template itself.
+          - Save named snapshots of a carousel and reapply them from the editor rail; snapshots persist with the library and travel in share packages.
+          - Editor rail uses a tool grid (Canvas, Frame, Photo, Crop, Snapshots) with one active panel, pinned Layers, and resizable panes.
           ENDNOTES
           gh release create "${GITHUB_REF_NAME}" dist/* \
             --repo "${GITHUB_REPOSITORY}" \

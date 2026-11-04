@@ -594,6 +594,26 @@ impl PudduScrollApp {
                 body: "This photo will be removed.".to_string(),
                 action: "Remove",
             }),
+            Confirm::DeleteSnapshot(id) => {
+                let Route::Carousel(carousel_id) = self.route else {
+                    return None;
+                };
+                let name = self
+                    .library
+                    .carousels
+                    .iter()
+                    .find(|carousel| carousel.id == carousel_id)?
+                    .snapshots
+                    .iter()
+                    .find(|snapshot| snapshot.id == *id)?
+                    .name
+                    .clone();
+                Some(ConfirmCopy {
+                    title: "Delete snapshot?",
+                    body: format!("{} will be removed.", short_name(&name)),
+                    action: "Delete",
+                })
+            }
         }
     }
 
@@ -614,6 +634,49 @@ impl PudduScrollApp {
             Confirm::RemoveCanvases(indices) => self.remove_canvases(&indices),
             Confirm::RemoveFrame(id) => self.remove_frame(id),
             Confirm::RemovePhoto(id) => self.remove_photo(id),
+            Confirm::DeleteSnapshot(id) => self.delete_named_snapshot(id),
+        }
+    }
+
+    pub(super) fn snapshot_modal(&mut self, ctx: &egui::Context) {
+        if !self.snapshot_open {
+            return;
+        }
+        let modal_id = egui::Id::unique("new-snapshot");
+        let response = egui::Modal::new(modal_id)
+            .area(egui::Modal::default_area(modal_id).order(egui::Order::Debug))
+            .frame(dialog_frame())
+            .show(ctx, |ui| {
+                ui.set_min_width(420.0);
+                ui.heading("New Snapshot");
+                ui.add_space(6.0);
+                ui.horizontal(|ui| {
+                    ui.label("Snapshot Name:");
+                    let name = ui.add(
+                        egui::TextEdit::singleline(&mut self.snapshot_name)
+                            .id_salt("snapshot-name")
+                            .desired_width(260.0),
+                    );
+                    self.remember("snapshot-name", name.rect);
+                });
+                ui.add_space(12.0);
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    let cancel = ui.button("Cancel");
+                    self.remember("cancel-snapshot", cancel.rect);
+                    if cancel.clicked() {
+                        self.snapshot_open = false;
+                    }
+                    let ready = !self.snapshot_name.trim().is_empty();
+                    let create = ui.add_enabled(ready, egui::Button::new("Create"));
+                    self.remember("create-snapshot", create.rect);
+                    if create.clicked() {
+                        self.create_named_snapshot();
+                    }
+                });
+            });
+        ctx.move_to_top(egui::LayerId::new(egui::Order::Debug, modal_id));
+        if response.should_close() {
+            self.snapshot_open = false;
         }
     }
 }

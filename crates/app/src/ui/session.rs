@@ -31,7 +31,8 @@ use super::draw::{
 use super::history::{Edit, EditHistory, HISTORY_WINDOW, HistoryKind, photo_stamp};
 use super::{
     Confirm, DEFAULT_EDITOR_ZOOM, DEFAULT_RAIL_WEIGHTS, DecodeTarget, EstimateMsg, EstimateUpdate,
-    ExportUpdate, IncomingPhoto, PendingUpload, PhotoAsset, PudduScrollApp, Route, UNDO_LIMIT,
+    ExportUpdate, IncomingPhoto, PendingUpload, PhotoAsset, PudduScrollApp, RailTool, Route,
+    UNDO_LIMIT,
 };
 
 impl PudduScrollApp {
@@ -112,8 +113,11 @@ impl PudduScrollApp {
             show_grid: true,
             snap_to_grid: true,
             grid_cells: DEFAULT_GRID_CELLS,
+            rail_tool: RailTool::Canvas,
             rail_weights: DEFAULT_RAIL_WEIGHTS,
             create_open: false,
+            snapshot_open: false,
+            snapshot_name: String::new(),
             about_open: false,
             confirm: None,
             link_open: false,
@@ -1374,6 +1378,7 @@ impl PudduScrollApp {
             disk: carousel.disk.clone(),
             cover: carousel.cover.clone(),
             grid_cells: carousel.grid_cells,
+            snapshots: carousel.snapshots.clone(),
         };
         let file_name = zip_file_name(&packaged.name);
         #[cfg(target_arch = "wasm32")]
@@ -1682,6 +1687,8 @@ impl PudduScrollApp {
         self.export_open = false;
         self.cancel_overwrite();
         self.create_open = false;
+        self.snapshot_open = false;
+        self.rail_tool = RailTool::Canvas;
         self.confirm = None;
         self.link_open = false;
         self.show_grid = true;
@@ -1691,6 +1698,72 @@ impl PudduScrollApp {
             self.zoom_basis = (layout.ratio.width, layout.ratio.height);
         }
         self.reload_assets(ctx);
+    }
+
+    pub(super) fn open_snapshot_modal(&mut self) {
+        self.snapshot_name = default_snapshot_name();
+        self.snapshot_open = true;
+    }
+
+    pub(super) fn create_named_snapshot(&mut self) {
+        let Route::Carousel(id) = self.route else {
+            return;
+        };
+        let name = self.snapshot_name.trim().to_string();
+        if name.is_empty() {
+            return;
+        }
+        if self.library.create_snapshot(id, &name).is_some() {
+            self.snapshot_open = false;
+            self.status = "Snapshot created".to_string();
+            self.persist();
+        }
+    }
+
+    pub(super) fn apply_named_snapshot(&mut self, snapshot_id: u64, ctx: &egui::Context) {
+        let Route::Carousel(id) = self.route else {
+            return;
+        };
+        self.checkpoint();
+        if !self.library.apply_snapshot(id, snapshot_id) {
+            return;
+        }
+        if let Some(cells) = self
+            .library
+            .carousels
+            .iter()
+            .find(|carousel| carousel.id == id)
+            .map(|carousel| carousel.grid_cells)
+        {
+            self.set_grid_cells(cells);
+        }
+        let selected_ok = self.selected.is_some_and(|frame| {
+            self.layout()
+                .is_some_and(|layout| layout.frame(frame).is_some())
+        });
+        if !selected_ok {
+            self.selected = None;
+            self.edit_frame = false;
+        }
+        self.clamp_active_canvas();
+        self.drag = None;
+        self.drag_origin = None;
+        self.crop_session = None;
+        self.crop_press = None;
+        self.reload_assets(ctx);
+        self.note_geometry();
+        self.status = "Snapshot applied".to_string();
+        self.persist();
+    }
+
+    pub(super) fn delete_named_snapshot(&mut self, snapshot_id: u64) {
+        let Route::Carousel(id) = self.route else {
+            return;
+        };
+        if self.library.delete_snapshot(id, snapshot_id) {
+            self.status = "Snapshot deleted".to_string();
+            self.persist();
+        }
     }
 
     pub(super) fn refresh_open_carousel_cover(&mut self) {
@@ -1983,6 +2056,33 @@ fn deliver_save(request: SaveRequest, photo_tx: &Sender<IncomingPhoto>) {
     if let Some(ack) = request.ack {
         let _ = ack.send(result);
     }
+}
+
+fn default_snapshot_name() -> String {
+    let secs = web_time::SystemTime::now()
+        .duration_since(web_time::UNIX_EPOCH)
+        .map_or(0, |duration| duration.as_secs());
+    let days = (secs / 86_400) as i32;
+    let tod = secs % 86_400;
+    let hh = tod / 3_600;
+    let mm = (tod % 3_600) / 60;
+    let ss = tod % 60;
+    let (year, month, day) = civil_from_days(days);
+    format!("{day:02}/{month:02}/{year} {hh:02}:{mm:02}:{ss:02}")
+}
+
+fn civil_from_days(days: i32) -> (i32, u32, u32) {
+    let z = days + 719_468;
+    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
+    let doe = (z - era * 146_097) as u32;
+    let yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 146_096) / 365;
+    let y = yoe as i32 + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = if m <= 2 { y + 1 } else { y };
+    (y, m, d)
 }
 
 #[cfg(target_arch = "wasm32")]

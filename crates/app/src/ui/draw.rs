@@ -10,10 +10,9 @@ use pudduscroll_core::{
 };
 
 use super::{
-    ACCENT, COVER_EMPTY, CROP_HANDLE_HIT, DEFAULT_EDITOR_ZOOM, DEFAULT_RAIL_WEIGHTS,
-    EDITOR_ZOOM_SPEED, EXTREME, HAIRLINE, MAX_EDITOR_ZOOM, MAX_GRID_CELLS, MIN_EDITOR_ZOOM,
-    MIN_GRID_CELLS, MUTED, OUTSIDE_FRAME_ALPHA, PANEL, PLUS_FILL, RAIL_SECTION_MIN, RAIL_SECTIONS,
-    RAIL_SPLIT, SELECT_BG, TEXT,
+    ACCENT, COVER_EMPTY, CROP_HANDLE_HIT, DEFAULT_EDITOR_ZOOM, EDITOR_ZOOM_SPEED, EXTREME,
+    HAIRLINE, MAX_EDITOR_ZOOM, MAX_GRID_CELLS, MIN_EDITOR_ZOOM, MIN_GRID_CELLS, MUTED,
+    OUTSIDE_FRAME_ALPHA, PANEL, PLUS_FILL, RAIL_PANES, RAIL_SPLIT, SELECT_BG, TEXT,
 };
 
 pub(super) fn counted(count: usize, one: &str, many: &str) -> String {
@@ -133,180 +132,6 @@ pub(super) fn paint_crop_veil(painter: &egui::Painter, image: egui::Rect, crop: 
             painter.rect_filled(region, 0.0, veil);
         }
     }
-}
-
-const fn rail_room(total: f32) -> f32 {
-    (total - RAIL_SPLIT * (RAIL_SECTIONS - 1) as f32).max(0.0)
-}
-
-const fn rail_min(room: f32) -> f32 {
-    if room <= 0.0 {
-        0.0
-    } else {
-        RAIL_SECTION_MIN.min(room / RAIL_SECTIONS as f32)
-    }
-}
-
-const RAIL_PROBE: f32 = 4096.0;
-
-pub(super) const fn rail_at_default(weights: [f32; RAIL_SECTIONS]) -> bool {
-    let mut index = 0;
-    while index < RAIL_SECTIONS {
-        if (weights[index] - DEFAULT_RAIL_WEIGHTS[index]).abs() > f32::EPSILON {
-            return false;
-        }
-        index += 1;
-    }
-    true
-}
-
-pub(super) fn rail_fit_body(inner: egui::Rect, scroll: f32) -> egui::Rect {
-    egui::Rect::from_min_size(
-        egui::pos2(inner.left(), inner.top() - scroll),
-        egui::vec2(inner.width(), RAIL_PROBE * (RAIL_SECTIONS as f32 + 1.0)),
-    )
-}
-
-pub(super) const fn rail_scroll_to(extent: f32, viewport_h: f32, scroll: f32, wheel: f32) -> f32 {
-    let max_scroll = (extent - viewport_h).max(0.0);
-    if max_scroll <= 1.0 {
-        0.0
-    } else {
-        (scroll - wheel).clamp(0.0, max_scroll)
-    }
-}
-
-pub(super) fn apply_rail_drag(
-    mut heights: [f32; RAIL_SECTIONS],
-    index: usize,
-    delta: f32,
-    total: f32,
-) -> [f32; RAIL_SECTIONS] {
-    if index + 1 >= RAIL_SECTIONS {
-        return heights;
-    }
-    let pair = heights[index] + heights[index + 1];
-    let min = rail_min(rail_room(total)).min(pair * 0.5);
-    if pair <= min * 2.0 + 0.01 {
-        return heights;
-    }
-    let grown = (heights[index] + delta).clamp(min, pair - min);
-    heights[index] = grown;
-    heights[index + 1] = pair - grown;
-    heights
-}
-
-pub(super) fn rail_splitter(ui: &mut egui::Ui) -> Option<f32> {
-    let (rect, response) = ui.allocate_exact_size(
-        egui::vec2(ui.available_width(), RAIL_SPLIT),
-        egui::Sense::drag(),
-    );
-    let hot = response.hovered() || response.dragged();
-    if hot {
-        ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeVertical);
-    }
-    let color = if hot {
-        egui::Color32::from_rgb(120, 110, 98)
-    } else {
-        egui::Color32::from_rgb(48, 48, 48)
-    };
-    ui.painter().hline(
-        rect.x_range(),
-        rect.center().y,
-        egui::Stroke::new(1.0, color),
-    );
-    let delta = response.drag_delta().y;
-    response.dragged().then_some(delta)
-}
-
-fn place_rail_section(
-    ui: &mut egui::Ui,
-    rect: egui::Rect,
-    id: &str,
-    divider: bool,
-    add: impl FnOnce(&mut egui::Ui),
-) -> f32 {
-    let clip = rect.intersect(ui.clip_rect());
-    let mut child = ui.new_child(
-        egui::UiBuilder::new()
-            .id_salt(id)
-            .max_rect(rect)
-            .layout(egui::Layout::top_down(egui::Align::Min)),
-    );
-    child.set_clip_rect(clip);
-    if divider && clip.height() > 1.0 {
-        child.painter().hline(
-            clip.x_range(),
-            clip.top(),
-            egui::Stroke::new(1.0, egui::Color32::from_rgb(48, 48, 48)),
-        );
-    }
-    add(&mut child);
-    let measured = child.min_rect();
-    if measured.max.y.is_finite() {
-        (measured.max.y - rect.top()).max(0.0)
-    } else {
-        0.0
-    }
-}
-
-pub(super) fn rail_section(
-    ui: &mut egui::Ui,
-    height: f32,
-    fit: bool,
-    id: &str,
-    divider: bool,
-    add: impl FnOnce(&mut egui::Ui),
-) -> f32 {
-    let width = ui.available_width();
-    if fit {
-        let origin = ui.available_rect_before_wrap().min;
-        let probe = egui::Rect::from_min_size(origin, egui::vec2(width, RAIL_PROBE));
-        let used = place_rail_section(ui, probe, id, divider, add);
-        ui.advance_cursor_after_rect(egui::Rect::from_min_size(origin, egui::vec2(width, used)));
-        return used;
-    }
-    let (_space_id, rect) = ui.allocate_space(egui::vec2(width, height.max(0.0)));
-    place_rail_section(ui, rect, id, divider, add);
-    height.max(0.0)
-}
-
-pub(super) fn rail_bar(
-    ui: &mut egui::Ui,
-    gutter: egui::Rect,
-    viewport_h: f32,
-    extent: f32,
-    mut scroll: f32,
-) -> f32 {
-    let max_scroll = (extent - viewport_h).max(0.0);
-    if max_scroll <= 1.0 || gutter.width() < 4.0 || gutter.height() < 8.0 {
-        return 0.0;
-    }
-    let response = ui.interact(gutter, ui.scope_id().with("rail-bar"), egui::Sense::drag());
-    if response.hovered() || response.dragged() {
-        ui.ctx().set_cursor_icon(if response.dragged() {
-            egui::CursorIcon::Grabbing
-        } else {
-            egui::CursorIcon::Grab
-        });
-    }
-    let track = gutter.shrink2(egui::vec2(4.0, 6.0));
-    let handle_h = (viewport_h / extent.max(1.0) * track.height()).clamp(28.0, track.height());
-    let travel = (track.height() - handle_h).max(1.0);
-    scroll = scroll.clamp(0.0, max_scroll);
-    if response.dragged() {
-        let next = (scroll + response.drag_delta().y * max_scroll / travel).clamp(0.0, max_scroll);
-        if (next - scroll).abs() > 0.1 {
-            ui.ctx().request_repaint();
-        }
-        scroll = next;
-    }
-    let handle = egui::Rect::from_min_size(
-        egui::pos2(track.left(), track.top() + scroll / max_scroll * travel),
-        egui::vec2(track.width(), handle_h),
-    );
-    ui.painter().rect_filled(handle, 2.0, MUTED);
-    scroll
 }
 
 pub(super) fn paint_frame(
@@ -1003,6 +828,11 @@ pub(super) enum Glyph {
     RotateCw,
     RotateFree,
     Bin,
+    ToolCanvas,
+    ToolFrame,
+    ToolPhoto,
+    ToolCrop,
+    ToolSnapshot,
 }
 
 pub(super) fn icon_button(
@@ -1067,7 +897,168 @@ pub(super) fn paint_glyph(
         Glyph::RotateCw => circular_arrow(painter, rect, true, stroke),
         Glyph::RotateFree => free_rotate(painter, rect, stroke),
         Glyph::Bin => paint_bin(painter, rect, stroke),
+        Glyph::ToolCanvas => paint_tool_canvas(painter, rect, stroke),
+        Glyph::ToolFrame => paint_tool_frame(painter, rect, stroke),
+        Glyph::ToolPhoto => paint_tool_photo(painter, rect, stroke),
+        Glyph::ToolCrop => paint_tool_crop(painter, rect, stroke),
+        Glyph::ToolSnapshot => paint_tool_snapshot(painter, rect, stroke),
     }
+}
+
+fn paint_tool_canvas(painter: &egui::Painter, rect: egui::Rect, stroke: egui::Stroke) {
+    let box_rect = rect.shrink(rect.width() * 0.12);
+    painter.rect_stroke(box_rect, 1.0, stroke, egui::StrokeKind::Outside);
+}
+
+fn paint_tool_frame(painter: &egui::Painter, rect: egui::Rect, stroke: egui::Stroke) {
+    let outer = rect.shrink(rect.width() * 0.08);
+    let inner = rect.shrink(rect.width() * 0.28);
+    painter.rect_stroke(outer, 1.0, stroke, egui::StrokeKind::Outside);
+    painter.rect_stroke(inner, 1.0, stroke, egui::StrokeKind::Outside);
+}
+
+fn paint_tool_photo(painter: &egui::Painter, rect: egui::Rect, stroke: egui::Stroke) {
+    let frame = rect.shrink(rect.width() * 0.1);
+    painter.rect_stroke(frame, 1.5, stroke, egui::StrokeKind::Outside);
+    let w = frame.width();
+    let h = frame.height();
+    let sun = egui::pos2(frame.left() + w * 0.72, frame.top() + h * 0.28);
+    painter.circle_stroke(sun, w * 0.11, stroke);
+    let ground = frame.bottom() - h * 0.18;
+    let mountain = [
+        egui::pos2(frame.left() + w * 0.08, ground),
+        egui::pos2(frame.left() + w * 0.32, frame.top() + h * 0.42),
+        egui::pos2(frame.left() + w * 0.48, frame.top() + h * 0.58),
+        egui::pos2(frame.left() + w * 0.7, frame.top() + h * 0.36),
+        egui::pos2(frame.right() - w * 0.08, ground),
+    ];
+    for pair in mountain.windows(2) {
+        painter.line_segment([pair[0], pair[1]], stroke);
+    }
+}
+
+pub(super) fn rail_splitter(ui: &mut egui::Ui) -> Option<f32> {
+    let (rect, response) = ui.allocate_exact_size(
+        egui::vec2(ui.available_width(), RAIL_SPLIT),
+        egui::Sense::drag(),
+    );
+    let hot = response.hovered() || response.dragged();
+    if hot {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeVertical);
+    }
+    let color = if hot {
+        egui::Color32::from_rgb(120, 110, 98)
+    } else {
+        HAIRLINE
+    };
+    ui.painter().hline(
+        rect.x_range(),
+        rect.center().y,
+        egui::Stroke::new(1.0, color),
+    );
+    response.dragged().then_some(response.drag_delta().y)
+}
+
+pub(super) fn apply_rail_drag(
+    mut heights: [f32; RAIL_PANES],
+    index: usize,
+    delta: f32,
+    mins: [f32; RAIL_PANES],
+) -> [f32; RAIL_PANES] {
+    if index + 1 >= RAIL_PANES {
+        return heights;
+    }
+    let pair = heights[index] + heights[index + 1];
+    let min_a = mins[index];
+    let min_b = mins[index + 1];
+    if pair < min_a + min_b {
+        return heights;
+    }
+    let grown = (heights[index] + delta).clamp(min_a, pair - min_b);
+    heights[index] = grown;
+    heights[index + 1] = pair - grown;
+    heights
+}
+
+pub(super) fn rail_pane_heights(
+    total: f32,
+    weights: [f32; RAIL_PANES],
+    mins: [f32; RAIL_PANES],
+) -> [f32; RAIL_PANES] {
+    let room = (total - RAIL_SPLIT * (RAIL_PANES - 1) as f32).max(0.0);
+    let min_sum: f32 = mins.iter().sum();
+    if room <= min_sum {
+        if min_sum <= 0.0 {
+            return [0.0; RAIL_PANES];
+        }
+        let scale = room / min_sum;
+        return std::array::from_fn(|i| mins[i] * scale);
+    }
+    let mut heights = std::array::from_fn(|i| (room * weights[i]).max(mins[i]));
+    let used: f32 = heights.iter().sum();
+    if used > room {
+        let mut overflow = used - room;
+        for index in 0..RAIL_PANES {
+            let spare = (heights[index] - mins[index]).max(0.0);
+            let take = spare.min(overflow);
+            heights[index] -= take;
+            overflow -= take;
+            if overflow <= 0.0 {
+                break;
+            }
+        }
+    } else if used < room {
+        heights[RAIL_PANES - 1] += room - used;
+    }
+    heights
+}
+
+pub(super) fn rail_weights_from(heights: [f32; RAIL_PANES]) -> [f32; RAIL_PANES] {
+    let sum: f32 = heights.iter().sum();
+    if sum <= 0.0 {
+        return super::DEFAULT_RAIL_WEIGHTS;
+    }
+    std::array::from_fn(|i| heights[i] / sum)
+}
+
+fn paint_tool_crop(painter: &egui::Painter, rect: egui::Rect, stroke: egui::Stroke) {
+    let inset = rect.width() * 0.18;
+    let a = rect.shrink(inset);
+    painter.line_segment(
+        [
+            egui::pos2(a.left(), a.top()),
+            egui::pos2(a.left() + inset, a.top()),
+        ],
+        stroke,
+    );
+    painter.line_segment(
+        [
+            egui::pos2(a.left(), a.top()),
+            egui::pos2(a.left(), a.top() + inset),
+        ],
+        stroke,
+    );
+    painter.line_segment(
+        [
+            egui::pos2(a.right(), a.bottom()),
+            egui::pos2(a.right() - inset, a.bottom()),
+        ],
+        stroke,
+    );
+    painter.line_segment(
+        [
+            egui::pos2(a.right(), a.bottom()),
+            egui::pos2(a.right(), a.bottom() - inset),
+        ],
+        stroke,
+    );
+}
+
+fn paint_tool_snapshot(painter: &egui::Painter, rect: egui::Rect, stroke: egui::Stroke) {
+    let back = rect.shrink2(egui::vec2(rect.width() * 0.22, rect.height() * 0.28));
+    let front = back.translate(egui::vec2(rect.width() * 0.1, rect.height() * 0.12));
+    painter.rect_stroke(back, 1.0, stroke, egui::StrokeKind::Outside);
+    painter.rect_stroke(front, 1.0, stroke, egui::StrokeKind::Outside);
 }
 
 fn paint_bin(painter: &egui::Painter, rect: egui::Rect, stroke: egui::Stroke) {

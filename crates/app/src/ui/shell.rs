@@ -160,6 +160,7 @@ impl eframe::App for PudduScrollApp {
                 self.apply_home(&action, &ctx);
             }
             self.create_modal(&ctx);
+            self.snapshot_modal(&ctx);
             self.link_modal(&ctx);
             self.export_modal(&ctx);
             self.overwrite_modal(&ctx);

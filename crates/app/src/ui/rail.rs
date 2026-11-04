@@ -2,14 +2,19 @@ use eframe::egui;
 use pudduscroll_core::{CROP_PRESETS, Crop, FrameId, LayerMove, render_layout};
 
 const EXPORT_PREVIEW_WIDTH: u32 = 1280;
+const TOOL_COLS: usize = 3;
+const TOOL_CELL_H: f32 = 64.0;
+const TILES_MIN_H: f32 = TOOL_CELL_H * 2.0;
+const TOOL_MIN_H: f32 = 72.0;
+const LAYERS_MIN_H: f32 = 200.0;
 
 use super::draw::{
-    Glyph, apply_rail_drag, counted, icon_button, rail_at_default, rail_bar, rail_fit_body,
-    rail_scroll_to, rail_section, rail_splitter, section_scroll, short_name,
+    Glyph, apply_rail_drag, counted, icon_button, paint_glyph, rail_pane_heights, rail_splitter,
+    rail_weights_from, section_scroll, short_name,
 };
 use super::{
-    ACCENT, COVER_EMPTY, IncomingPhoto, MUTED, PANEL, PudduScrollApp, RAIL_SECTIONS, Route,
-    SELECT_BG, TEXT,
+    ACCENT, COVER_EMPTY, IncomingPhoto, MUTED, PANEL, PudduScrollApp, RailTool, Route, SELECT_BG,
+    TEXT,
 };
 
 impl PudduScrollApp {
@@ -102,30 +107,30 @@ impl PudduScrollApp {
                         },
                         if selected { SELECT_BG } else { PANEL },
                     );
-                    let moves = [
+                    for (slot, (glyph, movement, enabled)) in [
                         (Glyph::Up, LayerMove::Up, index > 0),
                         (Glyph::Down, LayerMove::Down, index + 1 < count),
                         (Glyph::Top, LayerMove::Top, index > 0),
                         (Glyph::Bottom, LayerMove::Bottom, index + 1 < count),
-                    ];
-                    let y = row.center().y - button * 0.5;
-                    for (slot, (glyph, movement, enabled)) in moves.into_iter().enumerate() {
+                    ]
+                    .into_iter()
+                    .enumerate()
+                    {
                         let rect = egui::Rect::from_min_size(
-                            egui::pos2(origin_x + (button + gap) * slot as f32, y),
+                            egui::pos2(
+                                origin_x + slot as f32 * (button + gap),
+                                row.center().y - button * 0.5,
+                            ),
                             egui::vec2(button, button),
                         );
                         if icon_button(ui, rect, ("layer-move", id.0, slot), enabled, false, glyph)
                             .clicked()
                             && enabled
-                            && self.layout().is_some()
-                        {
-                            self.checkpoint();
-                            if self
+                            && self
                                 .layout_mut()
                                 .is_some_and(|layout| layout.move_layer(id, movement))
-                            {
-                                self.note_geometry();
-                            }
+                        {
+                            self.note_geometry();
                         }
                     }
                 }
@@ -179,6 +184,77 @@ impl PudduScrollApp {
                     }
                 }
             });
+        });
+        ui.add_space(8.0);
+    }
+
+    pub(super) fn snapshot_panel(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
+        ui.add_space(8.0);
+        ui.heading("Snapshots");
+        let Route::Carousel(carousel_id) = self.route else {
+            ui.label("Open a carousel to use snapshots.");
+            return;
+        };
+        let create = ui.button("New snapshot");
+        self.remember("new-snapshot", create.rect);
+        if create.clicked() {
+            self.open_snapshot_modal();
+        }
+        ui.add_space(6.0);
+        let rows: Vec<(u64, String)> = self
+            .library
+            .carousels
+            .iter()
+            .find(|carousel| carousel.id == carousel_id)
+            .map(|carousel| {
+                carousel
+                    .snapshots
+                    .iter()
+                    .map(|snapshot| (snapshot.id, snapshot.name.clone()))
+                    .collect()
+            })
+            .unwrap_or_default();
+        ui.label(egui::RichText::new(counted(rows.len(), "snapshot", "snapshots")).color(MUTED));
+        if rows.is_empty() {
+            ui.label("No snapshots yet.");
+            return;
+        }
+        section_scroll(ui, "snapshot-list").show(ui, |ui| {
+            for (id, name) in rows {
+                let (row, response) = ui.allocate_exact_size(
+                    egui::vec2(ui.available_width(), 40.0),
+                    egui::Sense::click(),
+                );
+                if response.clicked() {
+                    self.apply_named_snapshot(id, ctx);
+                }
+                response
+                    .clone()
+                    .on_hover_cursor(egui::CursorIcon::PointingHand);
+                ui.painter().text(
+                    row.min + egui::vec2(8.0, 11.0),
+                    egui::Align2::LEFT_TOP,
+                    short_name(&name),
+                    egui::FontId::proportional(14.0),
+                    TEXT,
+                );
+                let pointer_on_row = ui.input(|input| {
+                    input
+                        .pointer
+                        .latest_pos()
+                        .is_some_and(|pos| row.contains(pos))
+                });
+                if ui.rect_contains_pointer(row) || pointer_on_row {
+                    let button = 22.0;
+                    let rect = egui::Rect::from_min_size(
+                        egui::pos2(row.right() - 4.0 - button, row.center().y - button * 0.5),
+                        egui::vec2(button, button),
+                    );
+                    if icon_button(ui, rect, ("snap-del", id), true, false, Glyph::Bin).clicked() {
+                        self.confirm = Some(super::Confirm::DeleteSnapshot(id));
+                    }
+                }
+            }
         });
         ui.add_space(8.0);
     }
@@ -245,91 +321,136 @@ impl PudduScrollApp {
             egui::pos2(rail_rect.left() + 12.0, rail_rect.top() + 8.0),
             egui::pos2(rail_rect.right() - 12.0, rail_rect.bottom() - 8.0),
         );
-        let fitting = rail_at_default(self.rail_weights);
-        let scroll_id = rail_ui.scope_id().with("rail-scroll");
-        let extent_id = rail_ui.scope_id().with("rail-extent");
-        let stored_extent = rail_ui
-            .ctx()
-            .data(|data| data.get_temp::<f32>(extent_id))
-            .unwrap_or(0.0);
-        let stored_scroll = rail_ui
-            .ctx()
-            .data(|data| data.get_temp::<f32>(scroll_id))
-            .unwrap_or(0.0);
-        let wheel = if rail_ui.rect_contains_pointer(rail_rect) {
-            rail_ui.input(|input| input.smooth_scroll_delta().y)
-        } else {
-            0.0
-        };
-        let mut scroll = rail_scroll_to(stored_extent, inner.height(), stored_scroll, wheel);
-        if (scroll - stored_scroll).abs() > 0.1 {
-            rail_ui.ctx().request_repaint();
-        }
+        let ctx = rail_ui.ctx().clone();
         let mut content = rail_ui.new_child(
             egui::UiBuilder::new()
                 .id_salt("rail-content")
-                .max_rect(rail_fit_body(inner, scroll))
+                .max_rect(inner)
                 .layout(egui::Layout::top_down(egui::Align::Min)),
         );
         content.set_clip_rect(inner);
-        let mut heights = if fitting {
-            [0.0; RAIL_SECTIONS]
-        } else {
-            self.rail_weights
-        };
+
+        let mins = [TILES_MIN_H, TOOL_MIN_H, LAYERS_MIN_H];
+        let mut heights = rail_pane_heights(inner.height(), self.rail_weights, mins);
         let mut drag = None;
-        heights[0] = rail_section(&mut content, heights[0], fitting, "canvas", false, |ui| {
-            self.canvas_panel(ui);
-        });
-        if let Some(delta) = rail_splitter(&mut content)
-            && drag.is_none()
-        {
+
+        let tiles_rect = egui::Rect::from_min_size(
+            content.cursor().left_top(),
+            egui::vec2(inner.width(), heights[0]),
+        );
+        self.paint_tool_tiles(&mut content, tiles_rect);
+        content.allocate_rect(tiles_rect, egui::Sense::hover());
+
+        if let Some(delta) = rail_splitter(&mut content) {
             drag = Some((0, delta));
         }
-        heights[1] = rail_section(&mut content, heights[1], fitting, "frame", false, |ui| {
-            self.frame_panel(ui);
-        });
+
+        let tool_rect = egui::Rect::from_min_size(
+            content.cursor().left_top(),
+            egui::vec2(inner.width(), heights[1]),
+        );
+        let mut tool_ui = content.new_child(
+            egui::UiBuilder::new()
+                .id_salt("rail-tool-body")
+                .max_rect(tool_rect)
+                .layout(egui::Layout::top_down(egui::Align::Min)),
+        );
+        tool_ui.set_clip_rect(tool_rect);
+        egui::ScrollArea::vertical()
+            .id_salt("rail-tool-scroll")
+            .show(&mut tool_ui, |ui| match self.rail_tool {
+                RailTool::Canvas => self.canvas_panel(ui),
+                RailTool::Frame => self.frame_panel(ui),
+                RailTool::Photo => self.photo_panel(ui),
+                RailTool::Crop => self.crop_panel(ui),
+                RailTool::Snapshots => self.snapshot_panel(ui, &ctx),
+            });
+        content.allocate_rect(tool_rect, egui::Sense::hover());
+
         if let Some(delta) = rail_splitter(&mut content)
             && drag.is_none()
         {
             drag = Some((1, delta));
         }
-        heights[2] = rail_section(&mut content, heights[2], fitting, "photo", false, |ui| {
-            self.photo_panel(ui);
-        });
-        if let Some(delta) = rail_splitter(&mut content)
-            && drag.is_none()
-        {
-            drag = Some((2, delta));
-        }
-        heights[3] = rail_section(&mut content, heights[3], fitting, "crop", false, |ui| {
-            self.crop_panel(ui);
-        });
-        if let Some(delta) = rail_splitter(&mut content)
-            && drag.is_none()
-        {
-            drag = Some((3, delta));
-        }
-        heights[4] = rail_section(&mut content, heights[4], fitting, "layers", false, |ui| {
-            self.layer_panel(ui);
-        });
-        let measured = content.min_rect();
-        let extent = if measured.max.y.is_finite() {
-            (measured.max.y - (inner.top() - scroll)).max(0.0)
-        } else {
-            0.0
-        };
-        let gutter = egui::Rect::from_min_max(
-            egui::pos2(inner.right(), inner.top()),
-            egui::pos2(rail_rect.right(), inner.bottom()),
+
+        let layers_rect = egui::Rect::from_min_size(
+            content.cursor().left_top(),
+            egui::vec2(inner.width(), heights[2]),
         );
-        scroll = rail_bar(&mut rail_ui, gutter, inner.height(), extent, scroll);
-        rail_ui.ctx().data_mut(|data| {
-            data.insert_temp(scroll_id, scroll);
-            data.insert_temp(extent_id, extent);
-        });
+        let mut layers_ui = content.new_child(
+            egui::UiBuilder::new()
+                .id_salt("rail-layers-body")
+                .max_rect(layers_rect)
+                .layout(egui::Layout::top_down(egui::Align::Min)),
+        );
+        layers_ui.set_clip_rect(layers_rect);
+        self.layer_panel(&mut layers_ui);
+        content.allocate_rect(layers_rect, egui::Sense::hover());
+
         if let Some((index, delta)) = drag {
-            self.rail_weights = apply_rail_drag(heights, index, delta, inner.height());
+            heights = apply_rail_drag(heights, index, delta, mins);
+            self.rail_weights = rail_weights_from(heights);
+        }
+    }
+
+    fn paint_tool_tiles(&mut self, ui: &mut egui::Ui, rect: egui::Rect) {
+        let tools = [
+            (RailTool::Canvas, "canvas", Glyph::ToolCanvas),
+            (RailTool::Frame, "frame", Glyph::ToolFrame),
+            (RailTool::Photo, "photo", Glyph::ToolPhoto),
+            (RailTool::Crop, "crop", Glyph::ToolCrop),
+            (RailTool::Snapshots, "snapshots", Glyph::ToolSnapshot),
+        ];
+        let rows = tools.len().div_ceil(TOOL_COLS);
+        let grid_h = (rows as f32 * TOOL_CELL_H).min(rect.height());
+        let grid_rect = egui::Rect::from_min_size(rect.min, egui::vec2(rect.width(), grid_h));
+        let cell_w = grid_rect.width() / TOOL_COLS as f32;
+        for (index, (tool, label, glyph)) in tools.into_iter().enumerate() {
+            let col = index % TOOL_COLS;
+            let row = index / TOOL_COLS;
+            let cell = egui::Rect::from_min_size(
+                egui::pos2(
+                    grid_rect.left() + col as f32 * cell_w,
+                    grid_rect.top() + row as f32 * TOOL_CELL_H,
+                ),
+                egui::vec2(cell_w, TOOL_CELL_H),
+            );
+            if cell.bottom() > rect.bottom() + 0.5 {
+                continue;
+            }
+            let selected = self.rail_tool == tool;
+            let response = ui.interact(
+                cell,
+                ui.scope_id().with(("rail-tool", label)),
+                egui::Sense::click(),
+            );
+            if response.clicked() {
+                self.rail_tool = tool;
+            }
+            response
+                .clone()
+                .on_hover_cursor(egui::CursorIcon::PointingHand);
+            if selected {
+                ui.painter().rect_filled(cell.shrink(2.0), 6.0, SELECT_BG);
+            }
+            let icon = egui::Rect::from_center_size(
+                egui::pos2(cell.center().x, cell.top() + 22.0),
+                egui::vec2(22.0, 22.0),
+            );
+            paint_glyph(
+                ui.painter(),
+                icon,
+                glyph,
+                if selected { ACCENT } else { TEXT },
+            );
+            ui.painter().text(
+                egui::pos2(cell.center().x, cell.bottom() - 14.0),
+                egui::Align2::CENTER_CENTER,
+                label,
+                egui::FontId::proportional(13.0),
+                if selected { ACCENT } else { MUTED },
+            );
+            self.remember(format!("rail-tool-{label}"), cell);
         }
     }
 }

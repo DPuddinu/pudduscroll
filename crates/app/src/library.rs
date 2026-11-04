@@ -83,6 +83,17 @@ pub struct PhotoDisk {
     pub source: Option<String>,
 }
 
+#[derive(Clone)]
+pub struct Snapshot {
+    pub id: u64,
+    pub name: String,
+    pub layout: Layout,
+    pub photos: HashMap<FrameId, Blob>,
+    pub disk: HashMap<FrameId, PhotoDisk>,
+    pub cover: Option<Blob>,
+    pub grid_cells: i32,
+}
+
 pub struct Carousel {
     pub id: u64,
     pub name: String,
@@ -91,6 +102,7 @@ pub struct Carousel {
     pub disk: HashMap<FrameId, PhotoDisk>,
     pub cover: Option<Blob>,
     pub grid_cells: i32,
+    pub snapshots: Vec<Snapshot>,
 }
 
 pub struct Library {
@@ -160,7 +172,7 @@ impl Library {
     }
 
     pub fn duplicate_carousel(&mut self, id: u64) -> Option<u64> {
-        let (name, layout, photos, disk, cover, grid_cells) = {
+        let (name, layout, photos, disk, cover, grid_cells, snapshot_seed) = {
             let source = self.carousels.iter().find(|carousel| carousel.id == id)?;
             (
                 format!("{} copy", source.name),
@@ -169,6 +181,21 @@ impl Library {
                 source.disk.clone(),
                 source.cover.clone(),
                 source.grid_cells,
+                source
+                    .snapshots
+                    .iter()
+                    .map(|snapshot| {
+                        (
+                            snapshot.id,
+                            snapshot.name.clone(),
+                            snapshot.layout.clone(),
+                            snapshot.photos.clone(),
+                            snapshot.disk.clone(),
+                            snapshot.cover.clone(),
+                            snapshot.grid_cells,
+                        )
+                    })
+                    .collect::<Vec<_>>(),
             )
         };
         let index = self
@@ -177,6 +204,20 @@ impl Library {
             .position(|carousel| carousel.id == id)?;
         let new_id = self.alloc();
         copy_carousel_files(id, new_id, &disk, cover.as_ref());
+        let mut snapshots = Vec::with_capacity(snapshot_seed.len());
+        for (old_sid, name, layout, photos, disk, cover, grid_cells) in snapshot_seed {
+            let snapshot_id = self.alloc();
+            copy_snapshot_files(id, old_sid, new_id, snapshot_id, &disk, cover.as_ref());
+            snapshots.push(Snapshot {
+                id: snapshot_id,
+                name,
+                layout,
+                photos,
+                disk,
+                cover,
+                grid_cells,
+            });
+        }
         self.carousels.insert(
             index + 1,
             Carousel {
@@ -187,6 +228,7 @@ impl Library {
                 disk,
                 cover,
                 grid_cells,
+                snapshots,
             },
         );
         self.touch_images();
@@ -205,6 +247,85 @@ impl Library {
         let before = self.carousels.len();
         self.carousels.retain(|carousel| carousel.id != id);
         let removed = self.carousels.len() != before;
+        if removed {
+            self.touch_images();
+        }
+        removed
+    }
+
+    pub fn create_snapshot(&mut self, carousel_id: u64, name: &str) -> Option<u64> {
+        let name = name.trim().to_string();
+        if name.is_empty() {
+            return None;
+        }
+        let snapshot_id = self.alloc();
+        let carousel = self
+            .carousels
+            .iter_mut()
+            .find(|carousel| carousel.id == carousel_id)?;
+        copy_live_to_snapshot(
+            carousel_id,
+            snapshot_id,
+            &carousel.disk,
+            carousel.cover.as_ref(),
+        );
+        carousel.snapshots.push(Snapshot {
+            id: snapshot_id,
+            name,
+            layout: carousel.layout.clone(),
+            photos: carousel.photos.clone(),
+            disk: carousel.disk.clone(),
+            cover: carousel.cover.clone(),
+            grid_cells: carousel.grid_cells,
+        });
+        self.touch_images();
+        Some(snapshot_id)
+    }
+
+    pub fn apply_snapshot(&mut self, carousel_id: u64, snapshot_id: u64) -> bool {
+        let Some(carousel) = self
+            .carousels
+            .iter_mut()
+            .find(|carousel| carousel.id == carousel_id)
+        else {
+            return false;
+        };
+        let Some(index) = carousel
+            .snapshots
+            .iter()
+            .position(|snapshot| snapshot.id == snapshot_id)
+        else {
+            return false;
+        };
+        let snapshot = &carousel.snapshots[index];
+        let layout = snapshot.layout.clone();
+        let photos = snapshot.photos.clone();
+        let disk = snapshot.disk.clone();
+        let cover = snapshot.cover.clone();
+        let grid_cells = snapshot.grid_cells;
+        copy_snapshot_to_live(carousel_id, snapshot_id, &disk, cover.as_ref());
+        carousel.layout = layout;
+        carousel.photos = photos;
+        carousel.disk = disk;
+        carousel.cover = cover;
+        carousel.grid_cells = grid_cells;
+        self.touch_images();
+        true
+    }
+
+    pub fn delete_snapshot(&mut self, carousel_id: u64, snapshot_id: u64) -> bool {
+        let Some(carousel) = self
+            .carousels
+            .iter_mut()
+            .find(|carousel| carousel.id == carousel_id)
+        else {
+            return false;
+        };
+        let before = carousel.snapshots.len();
+        carousel
+            .snapshots
+            .retain(|snapshot| snapshot.id != snapshot_id);
+        let removed = carousel.snapshots.len() != before;
         if removed {
             self.touch_images();
         }
@@ -235,6 +356,7 @@ impl Library {
             disk: HashMap::new(),
             cover: None,
             grid_cells: DEFAULT_GRID_CELLS,
+            snapshots: Vec::new(),
         });
         id
     }
@@ -258,6 +380,7 @@ impl Library {
             disk: HashMap::new(),
             cover: None,
             grid_cells: DEFAULT_GRID_CELLS,
+            snapshots: Vec::new(),
         });
         Some(id)
     }
@@ -466,6 +589,14 @@ fn photo_file(carousel_id: u64, frame_id: FrameId, ext: &str) -> String {
     format!("c{carousel_id}-f{}.{ext}", frame_id.0)
 }
 
+fn snapshot_photo_file(carousel_id: u64, snapshot_id: u64, frame_id: FrameId, ext: &str) -> String {
+    format!("c{carousel_id}-s{snapshot_id}-f{}.{ext}", frame_id.0)
+}
+
+fn snapshot_cover_file(carousel_id: u64, snapshot_id: u64, ext: &str) -> String {
+    format!("c{carousel_id}-s{snapshot_id}-cover.{ext}")
+}
+
 fn referenced_image_names(library: &Library) -> HashSet<String> {
     let mut names = HashSet::new();
     for template in &library.templates {
@@ -477,6 +608,19 @@ fn referenced_image_names(library: &Library) -> HashSet<String> {
         }
         for (frame_id, meta) in &carousel.disk {
             names.insert(photo_file(carousel.id, *frame_id, &meta.ext));
+        }
+        for snapshot in &carousel.snapshots {
+            if let Some(cover) = &snapshot.cover {
+                names.insert(snapshot_cover_file(carousel.id, snapshot.id, &cover.ext));
+            }
+            for (frame_id, meta) in &snapshot.disk {
+                names.insert(snapshot_photo_file(
+                    carousel.id,
+                    snapshot.id,
+                    *frame_id,
+                    &meta.ext,
+                ));
+            }
         }
     }
     names
@@ -503,6 +647,24 @@ fn image_files(library: &Library) -> Vec<(String, Arc<[u8]>)> {
                 photo_file(carousel.id, *frame_id, ext),
                 Arc::clone(&blob.bytes),
             ));
+        }
+        for snapshot in &carousel.snapshots {
+            if let Some(cover) = &snapshot.cover {
+                files.push((
+                    snapshot_cover_file(carousel.id, snapshot.id, &cover.ext),
+                    Arc::clone(&cover.bytes),
+                ));
+            }
+            for (frame_id, blob) in &snapshot.photos {
+                let ext = snapshot
+                    .disk
+                    .get(frame_id)
+                    .map_or(blob.ext.as_str(), |meta| meta.ext.as_str());
+                files.push((
+                    snapshot_photo_file(carousel.id, snapshot.id, *frame_id, ext),
+                    Arc::clone(&blob.bytes),
+                ));
+            }
         }
     }
     files
@@ -560,6 +722,113 @@ fn copy_carousel_files(
     }
 }
 
+fn copy_snapshot_files(
+    from_carousel: u64,
+    from_snapshot: u64,
+    to_carousel: u64,
+    to_snapshot: u64,
+    disk: &HashMap<FrameId, PhotoDisk>,
+    cover: Option<&Blob>,
+) {
+    let dir = library_directory().join("images");
+    for (frame_id, meta) in disk {
+        let from = dir.join(snapshot_photo_file(
+            from_carousel,
+            from_snapshot,
+            *frame_id,
+            &meta.ext,
+        ));
+        let to = dir.join(snapshot_photo_file(
+            to_carousel,
+            to_snapshot,
+            *frame_id,
+            &meta.ext,
+        ));
+        if crate::disk::exists(&from)
+            && let Ok(bytes) = crate::disk::read(&from)
+        {
+            let _ = crate::disk::write(&to, bytes);
+        }
+    }
+    if let Some(cover) = cover {
+        let from = dir.join(snapshot_cover_file(
+            from_carousel,
+            from_snapshot,
+            &cover.ext,
+        ));
+        let to = dir.join(snapshot_cover_file(to_carousel, to_snapshot, &cover.ext));
+        if crate::disk::exists(&from)
+            && let Ok(bytes) = crate::disk::read(&from)
+        {
+            let _ = crate::disk::write(&to, bytes);
+        }
+    }
+}
+
+fn copy_live_to_snapshot(
+    carousel_id: u64,
+    snapshot_id: u64,
+    disk: &HashMap<FrameId, PhotoDisk>,
+    cover: Option<&Blob>,
+) {
+    let dir = library_directory().join("images");
+    for (frame_id, meta) in disk {
+        let from = dir.join(photo_file(carousel_id, *frame_id, &meta.ext));
+        let to = dir.join(snapshot_photo_file(
+            carousel_id,
+            snapshot_id,
+            *frame_id,
+            &meta.ext,
+        ));
+        if crate::disk::exists(&from)
+            && let Ok(bytes) = crate::disk::read(&from)
+        {
+            let _ = crate::disk::write(&to, bytes);
+        }
+    }
+    if let Some(cover) = cover {
+        let from = dir.join(carousel_cover_file(carousel_id, &cover.ext));
+        let to = dir.join(snapshot_cover_file(carousel_id, snapshot_id, &cover.ext));
+        if crate::disk::exists(&from)
+            && let Ok(bytes) = crate::disk::read(&from)
+        {
+            let _ = crate::disk::write(&to, bytes);
+        }
+    }
+}
+
+fn copy_snapshot_to_live(
+    carousel_id: u64,
+    snapshot_id: u64,
+    disk: &HashMap<FrameId, PhotoDisk>,
+    cover: Option<&Blob>,
+) {
+    let dir = library_directory().join("images");
+    for (frame_id, meta) in disk {
+        let from = dir.join(snapshot_photo_file(
+            carousel_id,
+            snapshot_id,
+            *frame_id,
+            &meta.ext,
+        ));
+        let to = dir.join(photo_file(carousel_id, *frame_id, &meta.ext));
+        if crate::disk::exists(&from)
+            && let Ok(bytes) = crate::disk::read(&from)
+        {
+            let _ = crate::disk::write(&to, bytes);
+        }
+    }
+    if let Some(cover) = cover {
+        let from = dir.join(snapshot_cover_file(carousel_id, snapshot_id, &cover.ext));
+        let to = dir.join(carousel_cover_file(carousel_id, &cover.ext));
+        if crate::disk::exists(&from)
+            && let Ok(bytes) = crate::disk::read(&from)
+        {
+            let _ = crate::disk::write(&to, bytes);
+        }
+    }
+}
+
 fn serialize(library: &Library) -> String {
     let mut out = String::new();
     out.push_str("pudduscroll 1\n");
@@ -607,10 +876,31 @@ fn push_carousel(out: &mut String, carousel: &Carousel) {
     if let Some(cover) = &carousel.cover {
         let _ = writeln!(out, "cover {}", cover.ext);
     }
-    push_frames(out, &carousel.layout, Some(carousel));
+    push_frames(out, &carousel.layout, Some(&carousel.disk));
+    for snapshot in &carousel.snapshots {
+        push_snapshot(out, snapshot);
+    }
 }
 
-fn push_frames(out: &mut String, layout: &Layout, carousel: Option<&Carousel>) {
+fn push_snapshot(out: &mut String, snapshot: &Snapshot) {
+    let _ = writeln!(out, "snapshot {}", snapshot.id);
+    out.push_str("name ");
+    push_quoted(out, &snapshot.name);
+    out.push('\n');
+    let _ = writeln!(
+        out,
+        "ratio {} {}",
+        snapshot.layout.ratio.width, snapshot.layout.ratio.height
+    );
+    let _ = writeln!(out, "canvases {}", snapshot.layout.canvas_count);
+    let _ = writeln!(out, "squares {}", clamp_grid_cells(snapshot.grid_cells));
+    if let Some(cover) = &snapshot.cover {
+        let _ = writeln!(out, "cover {}", cover.ext);
+    }
+    push_frames(out, &snapshot.layout, Some(&snapshot.disk));
+}
+
+fn push_frames(out: &mut String, layout: &Layout, disk: Option<&HashMap<FrameId, PhotoDisk>>) {
     for frame in &layout.frames {
         let _ = writeln!(
             out,
@@ -629,10 +919,10 @@ fn push_frames(out: &mut String, layout: &Layout, carousel: Option<&Carousel>) {
         let Some(photo) = &frame.photo else {
             continue;
         };
-        let Some(carousel) = carousel else {
+        let Some(disk) = disk else {
             continue;
         };
-        let Some(meta) = carousel.disk.get(&frame.id) else {
+        let Some(meta) = disk.get(&frame.id) else {
             continue;
         };
         out.push_str("photo ");
@@ -733,6 +1023,22 @@ fn parse_library(text: &str, root: &Path) -> Result<Library, String> {
                     grid_cells: DEFAULT_GRID_CELLS,
                     cover_ext: String::new(),
                     frames: Vec::new(),
+                    snapshots: Vec::new(),
+                    open_snapshot: None,
+                });
+            }
+            "snapshot" => {
+                let build = carousel_mut(&mut carousel, place)?;
+                build.seal_snapshot();
+                kind = Some(ItemKind::Snapshot);
+                build.open_snapshot = Some(SnapshotBuild {
+                    id: parse_u64(rest, place)?,
+                    name: String::new(),
+                    ratio: AspectRatio::FOUR_FIVE,
+                    canvases: 1,
+                    grid_cells: DEFAULT_GRID_CELLS,
+                    cover_ext: String::new(),
+                    frames: Vec::new(),
                 });
             }
             "name" => match kind {
@@ -742,6 +1048,9 @@ fn parse_library(text: &str, root: &Path) -> Result<Library, String> {
                 Some(ItemKind::Carousel) => {
                     carousel_mut(&mut carousel, place)?.name = parse_quoted(rest, place)?;
                 }
+                Some(ItemKind::Snapshot) => {
+                    snapshot_mut(&mut carousel, place)?.name = parse_quoted(rest, place)?;
+                }
                 None => return Err(format!("line {place}: name without an item")),
             },
             "ratio" => {
@@ -749,6 +1058,7 @@ fn parse_library(text: &str, root: &Path) -> Result<Library, String> {
                 match kind {
                     Some(ItemKind::Template) => template_mut(&mut template, place)?.ratio = ratio,
                     Some(ItemKind::Carousel) => carousel_mut(&mut carousel, place)?.ratio = ratio,
+                    Some(ItemKind::Snapshot) => snapshot_mut(&mut carousel, place)?.ratio = ratio,
                     None => return Err(format!("line {place}: ratio without an item")),
                 }
             }
@@ -761,6 +1071,9 @@ fn parse_library(text: &str, root: &Path) -> Result<Library, String> {
                     Some(ItemKind::Carousel) => {
                         carousel_mut(&mut carousel, place)?.canvases = count;
                     }
+                    Some(ItemKind::Snapshot) => {
+                        snapshot_mut(&mut carousel, place)?.canvases = count;
+                    }
                     None => return Err(format!("line {place}: canvases without an item")),
                 }
             }
@@ -771,6 +1084,9 @@ fn parse_library(text: &str, root: &Path) -> Result<Library, String> {
                 Some(ItemKind::Carousel) => {
                     carousel_mut(&mut carousel, place)?.cover_ext = rest.to_string();
                 }
+                Some(ItemKind::Snapshot) => {
+                    snapshot_mut(&mut carousel, place)?.cover_ext = rest.to_string();
+                }
                 None => return Err(format!("line {place}: cover without an item")),
             },
             "squares" => {
@@ -778,6 +1094,9 @@ fn parse_library(text: &str, root: &Path) -> Result<Library, String> {
                 match kind {
                     Some(ItemKind::Carousel) => {
                         carousel_mut(&mut carousel, place)?.grid_cells = cells;
+                    }
+                    Some(ItemKind::Snapshot) => {
+                        snapshot_mut(&mut carousel, place)?.grid_cells = cells;
                     }
                     Some(ItemKind::Template) | None => {
                         return Err(format!("line {place}: squares without a carousel"));
@@ -793,27 +1112,61 @@ fn parse_library(text: &str, root: &Path) -> Result<Library, String> {
                     Some(ItemKind::Carousel) => {
                         carousel_mut(&mut carousel, place)?.frames.push(frame);
                     }
+                    Some(ItemKind::Snapshot) => {
+                        snapshot_mut(&mut carousel, place)?.frames.push(frame);
+                    }
                     None => return Err(format!("line {place}: frame without an item")),
                 }
             }
             "photo" => {
                 let photo = parse_photo(rest, place)?;
-                let build = carousel_mut(&mut carousel, place)?;
-                let Some(frame) = build.frames.last_mut() else {
-                    return Err(format!("line {place}: photo without a frame"));
-                };
-                frame.photo = Some(photo);
+                match kind {
+                    Some(ItemKind::Carousel) => {
+                        let build = carousel_mut(&mut carousel, place)?;
+                        let Some(frame) = build.frames.last_mut() else {
+                            return Err(format!("line {place}: photo without a frame"));
+                        };
+                        frame.photo = Some(photo);
+                    }
+                    Some(ItemKind::Snapshot) => {
+                        let build = snapshot_mut(&mut carousel, place)?;
+                        let Some(frame) = build.frames.last_mut() else {
+                            return Err(format!("line {place}: photo without a frame"));
+                        };
+                        frame.photo = Some(photo);
+                    }
+                    Some(ItemKind::Template) | None => {
+                        return Err(format!("line {place}: photo without a carousel"));
+                    }
+                }
             }
             "source" => {
                 let source = parse_quoted(rest, place)?;
-                let build = carousel_mut(&mut carousel, place)?;
-                let Some(frame) = build.frames.last_mut() else {
-                    return Err(format!("line {place}: source without a frame"));
-                };
-                let Some(photo) = frame.photo.as_mut() else {
-                    return Err(format!("line {place}: source without a photo"));
-                };
-                photo.source = Some(source);
+                match kind {
+                    Some(ItemKind::Carousel) => {
+                        let build = carousel_mut(&mut carousel, place)?;
+                        let Some(frame) = build.frames.last_mut() else {
+                            return Err(format!("line {place}: source without a frame"));
+                        };
+                        let Some(photo) = frame.photo.as_mut() else {
+                            return Err(format!("line {place}: source without a photo"));
+                        };
+                        photo.source = Some(source);
+                    }
+                    Some(ItemKind::Snapshot) => {
+                        let build = snapshot_mut(&mut carousel, place)?;
+                        let Some(frame) = build.frames.last_mut() else {
+                            return Err(format!("line {place}: source without a frame"));
+                        };
+                        let Some(photo) = frame.photo.as_mut() else {
+                            return Err(format!("line {place}: source without a photo"));
+                        };
+                        photo.source = Some(source);
+                    }
+                    Some(ItemKind::Template) | None => {
+                        return Err(format!("line {place}: source without a carousel"));
+                    }
+                }
             }
             _ => return Err(format!("line {place}: unknown {word}")),
         }
@@ -835,6 +1188,9 @@ fn parse_library(text: &str, root: &Path) -> Result<Library, String> {
     }
     for carousel in &library.carousels {
         max_id = max_id.max(carousel.id);
+        for snapshot in &carousel.snapshots {
+            max_id = max_id.max(snapshot.id);
+        }
     }
     library.next_id = library.next_id.max(max_id.saturating_add(1)).max(1);
     Ok(library)
@@ -848,6 +1204,11 @@ enum CoverJob {
     },
     Carousel {
         index: usize,
+        path: PathBuf,
+    },
+    Snapshot {
+        carousel: usize,
+        snapshot: usize,
         path: PathBuf,
     },
 }
@@ -867,11 +1228,18 @@ fn finish(
         covers.push(CoverJob::Template { index, path, name });
     }
     if let Some(build) = carousel.take() {
-        let (built, path) = build.finish(root)?;
+        let finished = build.finish(root)?;
         let index = library.carousels.len();
-        library.carousels.push(built);
-        if let Some(path) = path {
+        library.carousels.push(finished.carousel);
+        if let Some(path) = finished.cover_path {
             covers.push(CoverJob::Carousel { index, path });
+        }
+        for (snapshot, path) in finished.snapshot_covers {
+            covers.push(CoverJob::Snapshot {
+                carousel: index,
+                snapshot,
+                path,
+            });
         }
     }
     Ok(())
@@ -896,6 +1264,14 @@ fn fill_covers(library: &mut Library, jobs: Vec<CoverJob>) -> Result<(), String>
                         let blob = load_blob(&path)?;
                         Ok((CoverKind::Carousel(index), blob))
                     }
+                    CoverJob::Snapshot {
+                        carousel,
+                        snapshot,
+                        path,
+                    } => {
+                        let blob = load_blob(&path)?;
+                        Ok((CoverKind::Snapshot { carousel, snapshot }, blob))
+                    }
                 })
             })
             .collect();
@@ -909,6 +1285,9 @@ fn fill_covers(library: &mut Library, jobs: Vec<CoverJob>) -> Result<(), String>
                 }
                 CoverKind::Carousel(index) => {
                     library.carousels[index].cover = Some(blob);
+                }
+                CoverKind::Snapshot { carousel, snapshot } => {
+                    library.carousels[carousel].snapshots[snapshot].cover = Some(blob);
                 }
             }
         }
@@ -926,6 +1305,13 @@ fn fill_covers(library: &mut Library, jobs: Vec<CoverJob>) -> Result<(), String>
                 CoverJob::Carousel { index, path } => {
                     library.carousels[index].cover = Some(load_blob(&path)?);
                 }
+                CoverJob::Snapshot {
+                    carousel,
+                    snapshot,
+                    path,
+                } => {
+                    library.carousels[carousel].snapshots[snapshot].cover = Some(load_blob(&path)?);
+                }
             }
         }
         Ok(())
@@ -935,12 +1321,14 @@ fn fill_covers(library: &mut Library, jobs: Vec<CoverJob>) -> Result<(), String>
 enum CoverKind {
     Template(usize),
     Carousel(usize),
+    Snapshot { carousel: usize, snapshot: usize },
 }
 
 #[derive(Clone, Copy)]
 enum ItemKind {
     Template,
     Carousel,
+    Snapshot,
 }
 
 struct FrameBuild {
@@ -986,6 +1374,18 @@ struct CarouselBuild {
     grid_cells: i32,
     cover_ext: String,
     frames: Vec<FrameBuild>,
+    snapshots: Vec<SnapshotBuild>,
+    open_snapshot: Option<SnapshotBuild>,
+}
+
+struct SnapshotBuild {
+    id: u64,
+    name: String,
+    ratio: AspectRatio,
+    canvases: usize,
+    grid_cells: i32,
+    cover_ext: String,
+    frames: Vec<FrameBuild>,
 }
 
 impl TemplateBuild {
@@ -1015,7 +1415,14 @@ impl TemplateBuild {
 }
 
 impl CarouselBuild {
-    fn finish(self, root: &Path) -> Result<(Carousel, Option<PathBuf>), String> {
+    fn seal_snapshot(&mut self) {
+        if let Some(snapshot) = self.open_snapshot.take() {
+            self.snapshots.push(snapshot);
+        }
+    }
+
+    fn finish(mut self, root: &Path) -> Result<CarouselFinish, String> {
+        self.seal_snapshot();
         if self.name.trim().is_empty() {
             return Err(format!("carousel {} has no name", self.id));
         }
@@ -1027,8 +1434,53 @@ impl CarouselBuild {
             root.join("images")
                 .join(carousel_cover_file(self.id, &self.cover_ext))
         });
+        let mut snapshot_covers = Vec::new();
+        let mut snapshots = Vec::with_capacity(self.snapshots.len());
+        for (index, build) in self.snapshots.into_iter().enumerate() {
+            let (snapshot, cover) = build.finish(root, self.id)?;
+            if let Some(path) = cover {
+                snapshot_covers.push((index, path));
+            }
+            snapshots.push(snapshot);
+        }
+        Ok(CarouselFinish {
+            carousel: Carousel {
+                id: self.id,
+                name: self.name,
+                layout,
+                photos: HashMap::new(),
+                disk,
+                cover: None,
+                grid_cells: clamp_grid_cells(self.grid_cells),
+                snapshots,
+            },
+            cover_path,
+            snapshot_covers,
+        })
+    }
+}
+
+struct CarouselFinish {
+    carousel: Carousel,
+    cover_path: Option<PathBuf>,
+    snapshot_covers: Vec<(usize, PathBuf)>,
+}
+
+impl SnapshotBuild {
+    fn finish(self, root: &Path, carousel_id: u64) -> Result<(Snapshot, Option<PathBuf>), String> {
+        if self.name.trim().is_empty() {
+            return Err(format!("snapshot {} has no name", self.id));
+        }
+        let mut disk = HashMap::new();
+        let mut layout = Layout::new(self.ratio);
+        layout.set_canvas_count(self.canvases);
+        push_meta_frames(&mut layout, &self.frames, Some(&mut disk));
+        let cover_path = (!self.cover_ext.is_empty()).then(|| {
+            root.join("images")
+                .join(snapshot_cover_file(carousel_id, self.id, &self.cover_ext))
+        });
         Ok((
-            Carousel {
+            Snapshot {
                 id: self.id,
                 name: self.name,
                 layout,
@@ -1115,6 +1567,16 @@ fn carousel_mut(
     carousel
         .as_mut()
         .ok_or_else(|| format!("line {line}: missing carousel"))
+}
+
+fn snapshot_mut(
+    carousel: &mut Option<CarouselBuild>,
+    line: usize,
+) -> Result<&mut SnapshotBuild, String> {
+    carousel_mut(carousel, line)?
+        .open_snapshot
+        .as_mut()
+        .ok_or_else(|| format!("line {line}: missing snapshot"))
 }
 
 fn split_word(line: &str) -> (&str, &str) {
@@ -1408,6 +1870,35 @@ pub(crate) fn carousel_package(carousel: &Carousel) -> Result<Vec<u8>, String> {
             .write_all(cover.bytes.as_ref())
             .map_err(|error| error.to_string())?;
     }
+    for snapshot in &carousel.snapshots {
+        for (frame_id, meta) in &snapshot.disk {
+            let name = snapshot_photo_file(carousel.id, snapshot.id, *frame_id, &meta.ext);
+            let bytes = if let Some(blob) = snapshot.photos.get(frame_id) {
+                Arc::clone(&blob.bytes)
+            } else {
+                let path = images.join(&name);
+                Arc::from(
+                    crate::disk::read(&path)
+                        .map_err(|error| format!("Could not share the carousel: {error}"))?,
+                )
+            };
+            writer
+                .start_file(format!("images/{name}"), options)
+                .map_err(|error| format!("Could not share the carousel: {error}"))?;
+            writer
+                .write_all(bytes.as_ref())
+                .map_err(|error| error.to_string())?;
+        }
+        if let Some(cover) = &snapshot.cover {
+            let name = snapshot_cover_file(carousel.id, snapshot.id, &cover.ext);
+            writer
+                .start_file(format!("images/{name}"), options)
+                .map_err(|error| format!("Could not share the carousel: {error}"))?;
+            writer
+                .write_all(cover.bytes.as_ref())
+                .map_err(|error| error.to_string())?;
+        }
+    }
     writer
         .finish()
         .map_err(|error| format!("Could not share the carousel: {error}"))
@@ -1680,16 +2171,28 @@ fn image_file_name(name: &str) -> bool {
     if !matches!(ext, "png" | "jpg" | "webp") {
         return false;
     }
-    let Some((carousel, frame)) = stem.split_once("-f") else {
+    let Some(rest) = stem.strip_prefix('c') else {
         return false;
     };
-    let Some(carousel) = carousel.strip_prefix('c') else {
-        return false;
-    };
-    !carousel.is_empty()
-        && carousel.chars().all(|ch| ch.is_ascii_digit())
-        && !frame.is_empty()
-        && frame.chars().all(|ch| ch.is_ascii_digit())
+    let digits = |text: &str| !text.is_empty() && text.chars().all(|ch| ch.is_ascii_digit());
+    if let Some((carousel, frame)) = rest.split_once("-f") {
+        return digits(carousel) && digits(frame);
+    }
+    if let Some((carousel, cover)) = rest.split_once("-cover") {
+        return cover.is_empty() && digits(carousel);
+    }
+    if let Some((carousel, after)) = rest.split_once("-s") {
+        if !digits(carousel) {
+            return false;
+        }
+        if let Some((snapshot, frame)) = after.split_once("-f") {
+            return digits(snapshot) && digits(frame);
+        }
+        if let Some((snapshot, cover)) = after.split_once("-cover") {
+            return cover.is_empty() && digits(snapshot);
+        }
+    }
+    false
 }
 
 fn package_shape(text: &str) -> Result<(), String> {
@@ -1713,11 +2216,22 @@ fn package_shape(text: &str) -> Result<(), String> {
 }
 
 fn photo_names(carousel: &Carousel) -> HashSet<String> {
-    carousel
+    let mut names: HashSet<String> = carousel
         .disk
         .iter()
         .map(|(frame_id, meta)| photo_file(carousel.id, *frame_id, &meta.ext))
-        .collect()
+        .collect();
+    for snapshot in &carousel.snapshots {
+        for (frame_id, meta) in &snapshot.disk {
+            names.insert(snapshot_photo_file(
+                carousel.id,
+                snapshot.id,
+                *frame_id,
+                &meta.ext,
+            ));
+        }
+    }
+    names
 }
 
 pub(crate) fn load_carousel_photos(carousel: &mut Carousel, root: &Path) -> Result<(), String> {
@@ -1745,6 +2259,37 @@ pub(crate) fn load_carousel_photos(carousel: &mut Carousel, root: &Path) -> Resu
         blob.name = name;
         blob.source.clone_from(&meta.source);
         carousel.photos.insert(frame_id, blob);
+    }
+    let carousel_id = carousel.id;
+    for snapshot in &mut carousel.snapshots {
+        let pending: Vec<(FrameId, PhotoDisk, String)> = snapshot
+            .disk
+            .iter()
+            .filter(|(frame_id, _)| !snapshot.photos.contains_key(frame_id))
+            .map(|(frame_id, meta)| {
+                let name = snapshot
+                    .layout
+                    .frame(*frame_id)
+                    .and_then(|frame| frame.photo.as_ref())
+                    .map_or_else(
+                        || format!("photo-{}", frame_id.0),
+                        |photo| photo.name.clone(),
+                    );
+                (*frame_id, meta.clone(), name)
+            })
+            .collect();
+        for (frame_id, meta, name) in pending {
+            let path = root.join("images").join(snapshot_photo_file(
+                carousel_id,
+                snapshot.id,
+                frame_id,
+                &meta.ext,
+            ));
+            let mut blob = load_blob(&path)?;
+            blob.name = name;
+            blob.source.clone_from(&meta.source);
+            snapshot.photos.insert(frame_id, blob);
+        }
     }
     Ok(())
 }
@@ -1941,6 +2486,83 @@ mod tests {
         assert!((photo.pan_y - 0.7).abs() < 1e-4);
         assert!(copy.photos.contains_key(&frame));
         assert!(library.duplicate_carousel(99).is_none());
+    }
+
+    #[test]
+    fn snapshot_roundtrip_create_apply_and_persist() {
+        let root =
+            std::env::temp_dir().join(format!("pudduscroll-snapshot-test-{}", std::process::id()));
+        let _ = crate::disk::remove_dir_all(&root);
+        let mut library = Library::empty();
+        let template_id = library.create_template(
+            "Sea".to_string(),
+            AspectRatio::FOUR_FIVE,
+            sample_blob("dune.png"),
+        );
+        let carousel_id = library.instantiate(template_id).unwrap();
+        let frame = library
+            .carousels
+            .iter_mut()
+            .find(|carousel| carousel.id == carousel_id)
+            .unwrap()
+            .layout
+            .add_frame(0);
+        library.set_photo(carousel_id, frame, sample_blob("night.jpg"));
+        library
+            .carousels
+            .iter_mut()
+            .find(|carousel| carousel.id == carousel_id)
+            .unwrap()
+            .layout
+            .set_pan(frame, 0.2, 0.7);
+        let snap_id = library
+            .create_snapshot(carousel_id, "04/11/2026 16:01:53")
+            .unwrap();
+        library
+            .carousels
+            .iter_mut()
+            .find(|carousel| carousel.id == carousel_id)
+            .unwrap()
+            .layout
+            .set_pan(frame, 0.9, 0.1);
+        assert!(library.apply_snapshot(carousel_id, snap_id));
+        let pan = library
+            .carousels
+            .iter()
+            .find(|carousel| carousel.id == carousel_id)
+            .unwrap()
+            .layout
+            .frame(frame)
+            .unwrap()
+            .photo
+            .as_ref()
+            .unwrap()
+            .pan_x;
+        assert!((pan - 0.2).abs() < 1e-4);
+        library.store_to(&root).unwrap();
+        let loaded = Library::load_from(&root).unwrap();
+        let carousel = loaded
+            .carousels
+            .iter()
+            .find(|carousel| carousel.id == carousel_id)
+            .unwrap();
+        assert_eq!(carousel.snapshots.len(), 1);
+        assert_eq!(carousel.snapshots[0].name, "04/11/2026 16:01:53");
+        assert_eq!(carousel.snapshots[0].disk.len(), 1);
+        let ext = &carousel.snapshots[0].disk[&frame].ext;
+        let keep = referenced_image_names(&loaded);
+        assert!(keep.contains(&format!("c{carousel_id}-s{snap_id}-f{}.{ext}", frame.0)));
+        assert!(library.delete_snapshot(carousel_id, snap_id));
+        assert!(
+            library
+                .carousels
+                .iter()
+                .find(|carousel| carousel.id == carousel_id)
+                .unwrap()
+                .snapshots
+                .is_empty()
+        );
+        let _ = crate::disk::remove_dir_all(&root);
     }
 
     #[test]

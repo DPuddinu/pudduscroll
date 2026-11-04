@@ -57,11 +57,19 @@ const CROP_HANDLE_HIT: f32 = 12.0;
 const MENU_H: f32 = 28.0;
 const TOOLBAR_H: f32 = 48.0;
 const RAIL_W: f32 = 320.0;
-const RAIL_SECTIONS: usize = 5;
-const RAIL_SECTION_MIN: f32 = 72.0;
+const RAIL_PANES: usize = 3;
 const RAIL_SPLIT: f32 = 8.0;
-const DEFAULT_RAIL_WEIGHTS: [f32; RAIL_SECTIONS] = [0.16, 0.18, 0.16, 0.22, 0.28];
+const DEFAULT_RAIL_WEIGHTS: [f32; RAIL_PANES] = [0.26, 0.28, 0.46];
 const HOME_NAV_W: f32 = 168.0;
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum RailTool {
+    Canvas,
+    Frame,
+    Photo,
+    Crop,
+    Snapshots,
+}
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Route {
@@ -92,6 +100,7 @@ enum Confirm {
     RemoveCanvases(Vec<usize>),
     RemoveFrame(FrameId),
     RemovePhoto(FrameId),
+    DeleteSnapshot(u64),
 }
 
 #[derive(Clone, Copy)]
@@ -283,8 +292,11 @@ pub struct PudduScrollApp {
     show_grid: bool,
     snap_to_grid: bool,
     grid_cells: i32,
-    rail_weights: [f32; RAIL_SECTIONS],
+    rail_tool: RailTool,
+    rail_weights: [f32; RAIL_PANES],
     create_open: bool,
+    snapshot_open: bool,
+    snapshot_name: String,
     about_open: bool,
     confirm: Option<Confirm>,
     link_open: bool,

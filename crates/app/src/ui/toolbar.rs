@@ -380,7 +380,7 @@ impl PudduScrollApp {
                         .is_some_and(|id| self.loading.contains_key(&(carousel_id, id)));
                     let from_link = ui.add_enabled(
                         self.selected.is_some() && !busy,
-                        egui::Button::new("From link"),
+                        egui::Button::new("Paste from link"),
                     );
                     self.remember("from-link", from_link.rect);
                     if from_link.clicked() {
@@ -409,7 +409,7 @@ impl PudduScrollApp {
             .frame(dialog_frame())
             .show(ctx, |ui| {
                 ui.set_min_width(420.0);
-                ui.heading("Photo from link");
+                ui.heading("Paste image from link");
                 ui.add_space(6.0);
                 ui.label("Image link");
                 let field = ui.add(

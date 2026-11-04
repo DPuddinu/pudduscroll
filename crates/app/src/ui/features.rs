@@ -255,24 +255,21 @@ fn an_empty_carousel_frame_shows_a_plus() {
     assert_eq!(frames, 1);
     assert_eq!(plus_names(&app).len(), 1);
     empty_frames_hold_a_visible_plus(&app);
+    for name in ["home", "export", "share"] {
+        assert!(shown(&app, name), "{name} missing");
+    }
+    for name in ["canvas-1:1", "canvas-4:5", "canvas-3:4", "canvas-9:16"] {
+        assert!(shown(&app, name), "{name} missing");
+    }
+    click(&mut app, &ctx, "rail-tool-frame");
+    settle(&mut app, &ctx);
     for name in [
-        "home",
-        "export",
-        "share",
-        "add-frame",
-        "edit-frame",
-        "remove-frame",
         "grid",
         "snap",
         "grid-squares",
-        "from-link",
-        "rotate-ccw",
-        "rotate-cw",
-        "rotate-free",
-        "canvas-1:1",
-        "canvas-4:5",
-        "canvas-3:4",
-        "canvas-9:16",
+        "add-frame",
+        "edit-frame",
+        "remove-frame",
         "frame-aspect-1:1",
         "frame-aspect-4:5",
         "frame-aspect-3:4",
@@ -280,6 +277,12 @@ fn an_empty_carousel_frame_shows_a_plus() {
     ] {
         assert!(shown(&app, name), "{name} missing");
     }
+    click(&mut app, &ctx, "rail-tool-photo");
+    settle(&mut app, &ctx);
+    for name in ["from-link", "rotate-ccw", "rotate-cw", "rotate-free"] {
+        assert!(shown(&app, name), "{name} missing");
+    }
+    assert!(shown(&app, "rail-tool-snapshots"));
 }
 
 #[test]
@@ -294,6 +297,8 @@ fn add_frame_lands_on_the_active_canvas_and_undo_removes_it() {
     settle(&mut app, &ctx);
     assert_eq!(app.layout().expect("layout").canvas_count, 2);
     assert_eq!(app.active_canvas, Some(0));
+    click(&mut app, &ctx, "rail-tool-frame");
+    settle(&mut app, &ctx);
     click(&mut app, &ctx, "add-frame");
     settle(&mut app, &ctx);
     let layout = app.layout().expect("layout");
@@ -326,8 +331,12 @@ fn a_template_frame_has_no_plus() {
     assert_eq!(app.layout().expect("layout").frames.len(), 1);
     assert_eq!(plus_names(&app), Vec::<String>::new());
     assert!(!shown(&app, "share"));
+    click(&mut app, &ctx, "rail-tool-photo");
+    settle(&mut app, &ctx);
     assert!(!shown(&app, "from-link"));
     assert!(!shown(&app, "rotate-ccw"));
+    click(&mut app, &ctx, "rail-tool-frame");
+    settle(&mut app, &ctx);
     assert!(shown(&app, "add-frame"));
 }
 
@@ -352,6 +361,7 @@ fn creating_a_template_does_not_save_a_carousel() {
 #[test]
 fn settings_keep_export_format_and_bindings() {
     let (ctx, mut app) = ready();
+    app.settings.format = pudduscroll_core::ExportFormat::Jpeg;
     app.settings_open = true;
     settle(&mut app, &ctx);
     for name in [

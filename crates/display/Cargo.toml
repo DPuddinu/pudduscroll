@@ -1,6 +1,6 @@
 [package]
 name = "pudduscroll-display"
-version = "0.3.4"
+version = "0.3.5"
 description = "Read the operating system display color profile"
 edition.workspace = true
 license.workspace = true

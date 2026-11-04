@@ -2666,7 +2666,7 @@ checksum = "3d595e54a326bc53c1c197b32d295e14b169e3cfeaa8dc82b529f947fba6bcf5"
 
 [[package]]
 name = "pudduscroll"
-version = "0.3.4"
+version = "0.3.5"
 dependencies = [
  "arboard",
  "clipboard-win",
@@ -2693,7 +2693,7 @@ dependencies = [
 
 [[package]]
 name = "pudduscroll-core"
-version = "0.3.4"
+version = "0.3.5"
 dependencies = [
  "fast_image_resize",
  "image",
@@ -2702,7 +2702,7 @@ dependencies = [
 
 [[package]]
 name = "pudduscroll-display"
-version = "0.3.4"
+version = "0.3.5"
 dependencies = [
  "windows",
  "x11rb 0.14.0",
