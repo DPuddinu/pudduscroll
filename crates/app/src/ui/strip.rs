@@ -678,7 +678,7 @@ impl PudduScrollApp {
                 Route::Carousel(carousel_id) if self.loading.contains_key(&(carousel_id, frame.id))
             );
             if loading_here {
-                paint_loading(ui, painter, screen, clip);
+                paint_loading(ui, screen, clip);
             } else if frame.photo.is_none() && matches!(self.route, Route::Carousel(_)) {
                 let center = screen.center();
                 let radius = 16.0;

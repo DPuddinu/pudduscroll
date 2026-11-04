@@ -616,12 +616,7 @@ pub(super) fn texture_from_preview(
     ctx.load_texture(name, color, egui::TextureOptions::LINEAR)
 }
 
-pub(super) fn paint_loading(
-    ui: &egui::Ui,
-    painter: &egui::Painter,
-    screen: egui::Rect,
-    clip: egui::Rect,
-) {
+pub(super) fn paint_loading(ui: &egui::Ui, screen: egui::Rect, clip: egui::Rect) {
     let center = screen.center();
     if !clip.contains(center) {
         return;
@@ -631,20 +626,6 @@ pub(super) fn paint_loading(
         .size(28.0)
         .color(ACCENT)
         .paint_at(ui, spin);
-    let label =
-        egui::Rect::from_center_size(center + egui::vec2(0.0, 28.0), egui::vec2(88.0, 22.0));
-    let visible = label.intersect(clip);
-    if !visible.is_positive() {
-        return;
-    }
-    painter.rect_filled(visible, 4.0, PLUS_FILL);
-    painter.text(
-        label.center(),
-        egui::Align2::CENTER_CENTER,
-        "Loading",
-        egui::FontId::proportional(14.0),
-        TEXT,
-    );
 }
 
 pub(super) fn next_editor_zoom(current: f32, scroll_y: f32) -> f32 {
