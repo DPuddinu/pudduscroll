@@ -8,9 +8,9 @@ Colors, type, and chrome sizes live in `crates/app/src/ui/mod.rs`. Motion uses `
 
 ## Color and type
 
-- Paint with `BG`, `PANEL`, `CANVAS_BG`, `ACCENT`, `TEXT`, `MUTED`, and `SELECT_BG`. A new color joins that warm set in `mod.rs`. `ACCENT` is the only highlight.
-- Names use `RichText::strong` and `TEXT`. Secondary lines use `MUTED`. Text on an accent fill is black, as Create and Choose folder are.
-- Reuse the sizes already on screen: title 22, name 16, body 14, meta 13.
+- Paint with `BG`, `PANEL`, `CANVAS_BG`, `ACCENT`, `TEXT`, `MUTED`, `SELECT_BG`, `HAIRLINE`, `COVER_EMPTY`, `SKELETON_BONE`, `EXTREME`, `PLUS_FILL`, and `INK`. A new color joins that warm set in `mod.rs`. `ACCENT` is the only highlight. Theme widgets through `apply_style`.
+- Names use `RichText::strong` and `TEXT`. Secondary lines use `MUTED`. Text on an accent fill is `INK`, as Create and Choose folder are.
+- Type scale is locked in `apply_style`: title/heading 22, name 16, body/button 14, meta/small 13.
 
 ## Layout
 

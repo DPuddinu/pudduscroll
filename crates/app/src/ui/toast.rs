@@ -3,7 +3,7 @@ use std::time::Duration;
 use eframe::egui;
 
 use super::draw::dialog_frame;
-use super::{ACCENT, PudduScrollApp, TEXT};
+use super::{ACCENT, INK, PudduScrollApp, TEXT};
 
 const TOAST_LIFE: Duration = Duration::from_millis(4_000);
 const TOAST_MARGIN: f32 = 24.0;
@@ -233,12 +233,8 @@ fn toast_body(ui: &mut egui::Ui, text: &str, undoable: bool) -> bool {
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             let undo = ui
                 .add(
-                    egui::Button::new(
-                        egui::RichText::new("Undo")
-                            .color(egui::Color32::BLACK)
-                            .size(14.0),
-                    )
-                    .fill(ACCENT),
+                    egui::Button::new(egui::RichText::new("Undo").color(INK).size(14.0))
+                        .fill(ACCENT),
                 )
                 .on_hover_cursor(egui::CursorIcon::PointingHand);
             if undo.clicked() {

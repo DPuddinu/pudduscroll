@@ -10,9 +10,10 @@ use pudduscroll_core::{
 };
 
 use super::{
-    ACCENT, BG, CROP_HANDLE_HIT, DEFAULT_EDITOR_ZOOM, DEFAULT_RAIL_WEIGHTS, EDITOR_ZOOM_SPEED,
-    MAX_EDITOR_ZOOM, MAX_GRID_CELLS, MIN_EDITOR_ZOOM, MIN_GRID_CELLS, MUTED, OUTSIDE_FRAME_ALPHA,
-    PANEL, RAIL_SECTION_MIN, RAIL_SECTIONS, RAIL_SPLIT, TEXT,
+    ACCENT, COVER_EMPTY, CROP_HANDLE_HIT, DEFAULT_EDITOR_ZOOM, DEFAULT_RAIL_WEIGHTS,
+    EDITOR_ZOOM_SPEED, EXTREME, HAIRLINE, MAX_EDITOR_ZOOM, MAX_GRID_CELLS, MIN_EDITOR_ZOOM,
+    MIN_GRID_CELLS, MUTED, OUTSIDE_FRAME_ALPHA, PANEL, PLUS_FILL, RAIL_SECTION_MIN, RAIL_SECTIONS,
+    RAIL_SPLIT, SELECT_BG, TEXT,
 };
 
 pub(super) fn counted(count: usize, one: &str, many: &str) -> String {
@@ -41,7 +42,7 @@ pub(super) fn dialog_frame() -> egui::Frame {
         .fill(PANEL)
         .inner_margin(16)
         .corner_radius(8)
-        .stroke(egui::Stroke::new(1.0, egui::Color32::from_rgb(58, 58, 58)))
+        .stroke(egui::Stroke::new(1.0, HAIRLINE))
 }
 
 pub(super) fn fitted_rect(bounds: egui::Rect, width: f32, height: f32) -> egui::Rect {
@@ -56,7 +57,7 @@ pub(super) fn fitted_rect(bounds: egui::Rect, width: f32, height: f32) -> egui::
 }
 
 pub(super) fn paint_plus(painter: &egui::Painter, center: egui::Pos2, radius: f32) {
-    painter.circle_filled(center, radius, egui::Color32::from_rgb(28, 28, 28));
+    painter.circle_filled(center, radius, PLUS_FILL);
     painter.circle_stroke(center, radius, egui::Stroke::new(2.0, ACCENT));
     let arm = radius * 0.46;
     let stroke = egui::Stroke::new(2.0, ACCENT);
@@ -824,7 +825,7 @@ pub(super) fn paint_loading(
     if !visible.is_positive() {
         return;
     }
-    painter.rect_filled(visible, 4.0, egui::Color32::from_rgb(28, 28, 28));
+    painter.rect_filled(visible, 4.0, PLUS_FILL);
     painter.text(
         label.center(),
         egui::Align2::CENTER_CENTER,
@@ -1215,26 +1216,69 @@ pub(super) fn capped(painter: &egui::Painter, rect: egui::Rect, angle: f32, stro
 }
 
 pub(super) fn apply_style(ctx: &egui::Context) {
+    let square = egui::CornerRadius::ZERO;
+    let hairline = egui::Stroke::new(1.0, HAIRLINE);
     let mut visuals = egui::Visuals::dark();
-    visuals.panel_fill = PANEL;
-    visuals.window_fill = BG;
-    visuals.extreme_bg_color = egui::Color32::from_rgb(12, 12, 12);
-    visuals.faint_bg_color = egui::Color32::from_rgb(32, 32, 32);
+    visuals.dark_mode = true;
     visuals.override_text_color = None;
+    visuals.weak_text_color = Some(MUTED);
     visuals.hyperlink_color = ACCENT;
-    visuals.selection.bg_fill = ACCENT;
-    visuals.selection.stroke = egui::Stroke::new(1.0, egui::Color32::BLACK);
-    visuals.widgets.noninteractive.fg_stroke = egui::Stroke::new(1.0, TEXT);
+    visuals.warn_fg_color = ACCENT;
+    visuals.panel_fill = PANEL;
+    visuals.window_fill = PANEL;
+    visuals.window_stroke = hairline;
+    visuals.window_corner_radius = egui::CornerRadius::same(8);
+    visuals.window_shadow = egui::Shadow::NONE;
+    visuals.popup_shadow = egui::Shadow::NONE;
+    visuals.menu_corner_radius = square;
+    visuals.extreme_bg_color = EXTREME;
+    visuals.text_edit_bg_color = Some(EXTREME);
+    visuals.faint_bg_color = COVER_EMPTY;
+    visuals.selection.bg_fill = SELECT_BG;
+    visuals.selection.stroke = egui::Stroke::new(1.0, ACCENT);
+    for widget in [
+        &mut visuals.widgets.noninteractive,
+        &mut visuals.widgets.inactive,
+        &mut visuals.widgets.hovered,
+        &mut visuals.widgets.active,
+        &mut visuals.widgets.open,
+    ] {
+        widget.corner_radius = square;
+        widget.expansion = 0.0;
+    }
+    visuals.widgets.noninteractive.weak_bg_fill = PANEL;
     visuals.widgets.noninteractive.bg_fill = PANEL;
-    visuals.widgets.inactive.bg_fill = egui::Color32::from_rgb(38, 38, 38);
-    visuals.widgets.hovered.bg_fill = egui::Color32::from_rgb(50, 46, 42);
-    visuals.widgets.active.bg_fill = egui::Color32::from_rgb(64, 52, 42);
+    visuals.widgets.noninteractive.bg_stroke = hairline;
+    visuals.widgets.noninteractive.fg_stroke = egui::Stroke::new(1.0, TEXT);
+    visuals.widgets.inactive.weak_bg_fill = COVER_EMPTY;
+    visuals.widgets.inactive.bg_fill = COVER_EMPTY;
+    visuals.widgets.inactive.bg_stroke = egui::Stroke::NONE;
     visuals.widgets.inactive.fg_stroke = egui::Stroke::new(1.0, TEXT);
-    visuals.widgets.hovered.fg_stroke = egui::Stroke::new(1.0, egui::Color32::WHITE);
-    visuals.widgets.active.fg_stroke = egui::Stroke::new(1.0, egui::Color32::WHITE);
+    visuals.widgets.hovered.weak_bg_fill = SELECT_BG;
+    visuals.widgets.hovered.bg_fill = SELECT_BG;
+    visuals.widgets.hovered.bg_stroke = hairline;
+    visuals.widgets.hovered.fg_stroke = egui::Stroke::new(1.0, TEXT);
+    visuals.widgets.active.weak_bg_fill = SELECT_BG;
+    visuals.widgets.active.bg_fill = SELECT_BG;
+    visuals.widgets.active.bg_stroke = egui::Stroke::new(1.0, ACCENT);
+    visuals.widgets.active.fg_stroke = egui::Stroke::new(1.5, TEXT);
+    visuals.widgets.open.weak_bg_fill = PANEL;
+    visuals.widgets.open.bg_fill = PANEL;
+    visuals.widgets.open.bg_stroke = hairline;
+    visuals.widgets.open.fg_stroke = egui::Stroke::new(1.0, TEXT);
     ctx.set_visuals(visuals);
 
     ctx.global_style_mut(|style| {
+        use egui::FontFamily::{Monospace, Proportional};
+        use egui::TextStyle::{Body, Button, Heading, Monospace as MonoStyle, Small};
+        style.text_styles = [
+            (Heading, egui::FontId::new(22.0, Proportional)),
+            (Body, egui::FontId::new(14.0, Proportional)),
+            (Button, egui::FontId::new(14.0, Proportional)),
+            (Small, egui::FontId::new(13.0, Proportional)),
+            (MonoStyle, egui::FontId::new(13.0, Monospace)),
+        ]
+        .into();
         style.spacing.item_spacing = egui::vec2(8.0, 6.0);
         style.spacing.button_padding = egui::vec2(10.0, 5.0);
     });

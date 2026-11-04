@@ -1,8 +1,6 @@
 use eframe::egui;
 
-use super::{BG, PANEL};
-
-const BONE: egui::Color32 = egui::Color32::from_rgb(40, 38, 36);
+use super::{BG, HAIRLINE, PANEL, SKELETON_BONE};
 const CARD_INNER_W: f32 = 212.0;
 const CARD_INNER_H: f32 = 248.0;
 const COVER_H: f32 = 132.0;
@@ -29,7 +27,7 @@ pub(super) fn home(ui: &mut egui::Ui, full: egui::Rect) {
 
 pub(super) fn bone(ui: &mut egui::Ui, size: egui::Vec2, radius: f32) -> egui::Response {
     let (rect, response) = ui.allocate_exact_size(size, egui::Sense::hover());
-    paint(ui.ctx(), ui.painter(), rect, radius, BONE);
+    paint(ui.ctx(), ui.painter(), rect, radius, SKELETON_BONE);
     response
 }
 
@@ -91,10 +89,7 @@ fn card(ui: &mut egui::Ui, index: usize) {
             .fill(PANEL)
             .inner_margin(CARD_MARGIN)
             .corner_radius(12)
-            .stroke(egui::Stroke::new(
-                CARD_STROKE,
-                egui::Color32::from_rgb(58, 58, 58),
-            ))
+            .stroke(egui::Stroke::new(CARD_STROKE, HAIRLINE))
             .show(ui, |ui| {
                 ui.set_width(CARD_INNER_W);
                 let (body, _) = ui.allocate_exact_size(

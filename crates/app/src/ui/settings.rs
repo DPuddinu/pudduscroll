@@ -5,7 +5,7 @@ use crate::settings::{
     Command, QUALITY_MAX, QUALITY_MIN, normalize_shortcut, redo_alias, shortcut_rank,
 };
 
-use super::{ACCENT, MUTED, PudduScrollApp, Route};
+use super::{ACCENT, INK, MUTED, PudduScrollApp, Route};
 
 impl PudduScrollApp {
     pub(super) fn settings_screen(&mut self, ui: &mut egui::Ui, full: egui::Rect) {
@@ -52,10 +52,8 @@ impl PudduScrollApp {
                     }
                     ui.horizontal(|ui| {
                         let choose = ui.add(
-                            egui::Button::new(
-                                egui::RichText::new("Choose folder").color(egui::Color32::BLACK),
-                            )
-                            .fill(ACCENT),
+                            egui::Button::new(egui::RichText::new("Choose folder").color(INK))
+                                .fill(ACCENT),
                         );
                         choose
                             .clone()

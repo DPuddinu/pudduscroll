@@ -1,0 +1,320 @@
+{
+  "schemaVersion": 2,
+  "generatedAt": "2026-11-04T12:45:00.000Z",
+  "title": "Design System: PudduScroll",
+  "extensions": {
+    "colorMeta": {
+      "apricot-ember": {
+        "role": "primary",
+        "displayName": "Apricot Ember",
+        "canonical": "#e8a060",
+        "tonalRamp": [
+          "#3a2414",
+          "#5c3a1e",
+          "#85542c",
+          "#b07440",
+          "#e8a060",
+          "#efb984",
+          "#f5d0ab",
+          "#fbe8d6"
+        ]
+      },
+      "charcoal-void": {
+        "role": "neutral",
+        "displayName": "Charcoal Void",
+        "canonical": "#101010",
+        "tonalRamp": [
+          "#080808",
+          "#101010",
+          "#181818",
+          "#242424",
+          "#3a3a3a",
+          "#5c5c5c",
+          "#8a8a8a",
+          "#c8c8c8"
+        ]
+      },
+      "charcoal-panel": {
+        "role": "neutral",
+        "displayName": "Charcoal Panel",
+        "canonical": "#181818",
+        "tonalRamp": [
+          "#0c0c0c",
+          "#121212",
+          "#181818",
+          "#242424",
+          "#3a3a3a",
+          "#585858",
+          "#868686",
+          "#c4c4c4"
+        ]
+      },
+      "warm-paper": {
+        "role": "neutral",
+        "displayName": "Warm Paper",
+        "canonical": "#f4f1ec",
+        "tonalRamp": [
+          "#2a2620",
+          "#4a443c",
+          "#6e675c",
+          "#9a9286",
+          "#c4bdb2",
+          "#ddd6cc",
+          "#f4f1ec",
+          "#fbf9f6"
+        ]
+      },
+      "ivory-text": {
+        "role": "neutral",
+        "displayName": "Ivory Text",
+        "canonical": "#f0ece6",
+        "tonalRamp": [
+          "#2c2924",
+          "#4e4941",
+          "#726c62",
+          "#9a9388",
+          "#c2bbb0",
+          "#dbd5cc",
+          "#f0ece6",
+          "#faf8f5"
+        ]
+      },
+      "dust-taupe": {
+        "role": "neutral",
+        "displayName": "Dust Taupe",
+        "canonical": "#a49e94",
+        "tonalRamp": [
+          "#24221e",
+          "#3e3b36",
+          "#5c574f",
+          "#7a746a",
+          "#a49e94",
+          "#c0bbb3",
+          "#ddd9d3",
+          "#f2f0ed"
+        ]
+      },
+      "ember-select": {
+        "role": "neutral",
+        "displayName": "Ember Select",
+        "canonical": "#30261e",
+        "tonalRamp": [
+          "#14100c",
+          "#201812",
+          "#30261e",
+          "#48382c",
+          "#685040",
+          "#8e7260",
+          "#b8a090",
+          "#e0d4c8"
+        ]
+      },
+      "hairline": {
+        "role": "neutral",
+        "displayName": "Hairline",
+        "canonical": "#3a3a3a",
+        "tonalRamp": [
+          "#101010",
+          "#1c1c1c",
+          "#2a2a2a",
+          "#3a3a3a",
+          "#585858",
+          "#7a7a7a",
+          "#a8a8a8",
+          "#d6d6d6"
+        ]
+      },
+      "skeleton-bone": {
+        "role": "neutral",
+        "displayName": "Skeleton Bone",
+        "canonical": "#282624",
+        "tonalRamp": [
+          "#100f0e",
+          "#1a1917",
+          "#282624",
+          "#3c3936",
+          "#585450",
+          "#7a756f",
+          "#a8a39c",
+          "#d6d2cc"
+        ]
+      },
+      "cover-empty": {
+        "role": "neutral",
+        "displayName": "Cover Empty",
+        "canonical": "#242424",
+        "tonalRamp": [
+          "#0c0c0c",
+          "#161616",
+          "#242424",
+          "#363636",
+          "#525252",
+          "#747474",
+          "#a0a0a0",
+          "#d0d0d0"
+        ]
+      },
+      "ink-on-accent": {
+        "role": "neutral",
+        "displayName": "Ink on Accent",
+        "canonical": "#000000",
+        "tonalRamp": [
+          "#000000",
+          "#1a1a1a",
+          "#333333",
+          "#4d4d4d",
+          "#666666",
+          "#999999",
+          "#cccccc",
+          "#ffffff"
+        ]
+      }
+    },
+    "typographyMeta": {
+      "title": { "displayName": "Title", "purpose": "Section and modal headings (22)." },
+      "name": { "displayName": "Name", "purpose": "Card and object names (16, strong)." },
+      "body": { "displayName": "Body", "purpose": "Buttons, dialogs, toasts, general UI (14)." },
+      "meta": { "displayName": "Meta", "purpose": "Counts, secondary strip labels, muted status (13)." }
+    },
+    "shadows": [
+      {
+        "name": "toast-lift",
+        "value": "0 4px 16px rgba(0,0,0,0.376)",
+        "purpose": "Ephemeral toast lift only; not used on resting chrome."
+      }
+    ],
+    "motion": [
+      {
+        "name": "hover-scale",
+        "value": "1.0 + 0.06 * t over 0.18s",
+        "purpose": "Cover hover scale via animate_bool_with_time."
+      },
+      {
+        "name": "entrance",
+        "value": "0.1–0.25s, starts fast",
+        "purpose": "Appear / press; near full size with fade."
+      },
+      {
+        "name": "immediate",
+        "value": "same-frame",
+        "purpose": "Drag, zoom, nudge, and undo update without easing lag."
+      }
+    ],
+    "breakpoints": []
+  },
+  "components": [
+    {
+      "name": "Primary Button",
+      "kind": "button",
+      "refersTo": "button-primary",
+      "description": "Apricot fill with black label for decisive actions.",
+      "html": "<button class=\"ds-btn-primary\">Create template</button>",
+      "css": ".ds-btn-primary { background: #e8a060; color: #000000; padding: 6px 14px; border: none; border-radius: 0; font: 400 14px system-ui, sans-serif; cursor: pointer; transition: filter 0.15s ease; } .ds-btn-primary:hover { filter: brightness(1.06); } .ds-btn-primary:focus-visible { outline: 2px solid #e8a060; outline-offset: 2px; } .ds-btn-primary:active { filter: brightness(0.96); }"
+    },
+    {
+      "name": "Secondary Button",
+      "kind": "button",
+      "refersTo": "button-secondary",
+      "description": "Quiet charcoal control for Cancel and ordinary actions.",
+      "html": "<button class=\"ds-btn-secondary\">Cancel</button>",
+      "css": ".ds-btn-secondary { background: #181818; color: #f0ece6; padding: 6px 14px; border: 1px solid #3a3a3a; border-radius: 0; font: 400 14px system-ui, sans-serif; cursor: pointer; transition: background 0.15s ease; } .ds-btn-secondary:hover { background: #242424; } .ds-btn-secondary:focus-visible { outline: 2px solid #e8a060; outline-offset: 2px; }"
+    },
+    {
+      "name": "Library Card",
+      "kind": "card",
+      "refersTo": "card-library",
+      "description": "Template/carousel card with cover, name, and action row.",
+      "html": "<article class=\"ds-card\"><div class=\"ds-card-cover\"></div><h3 class=\"ds-card-name\">Summer</h3><p class=\"ds-card-meta\">3 canvases</p><div class=\"ds-card-actions\"><button class=\"ds-btn-secondary\">Edit</button></div></article>",
+      "css": ".ds-card { width: 212px; background: #181818; color: #f0ece6; border: 1px solid #3a3a3a; border-radius: 12px; padding: 12px; font: 400 14px system-ui, sans-serif; } .ds-card-cover { height: 132px; border-radius: 10px; background: #242424; transition: transform 0.18s ease; } .ds-card:hover .ds-card-cover { transform: scale(1.06); } .ds-card-name { margin: 8px 0 0; font-size: 16px; font-weight: 600; color: #f0ece6; } .ds-card-meta { margin: 4px 0 0; font-size: 13px; color: #a49e94; } .ds-card-actions { margin-top: 12px; height: 32px; display: flex; align-items: flex-end; } .ds-btn-secondary { background: #181818; color: #f0ece6; padding: 6px 14px; border: 1px solid #3a3a3a; border-radius: 0; font: 400 14px system-ui, sans-serif; cursor: pointer; } .ds-btn-secondary:hover { background: #242424; } .ds-btn-secondary:focus-visible { outline: 2px solid #e8a060; outline-offset: 2px; }"
+    },
+    {
+      "name": "Dialog",
+      "kind": "custom",
+      "refersTo": "dialog",
+      "description": "Modal frame for create, confirm, about, and settings prompts.",
+      "html": "<div class=\"ds-dialog\" role=\"dialog\"><h2 class=\"ds-dialog-title\">Delete template?</h2><p class=\"ds-dialog-body\">This cannot be undone.</p><div class=\"ds-dialog-actions\"><button class=\"ds-btn-secondary\">Cancel</button><button class=\"ds-btn-primary\">Delete</button></div></div>",
+      "css": ".ds-dialog { min-width: 420px; background: #181818; color: #f0ece6; border: 1px solid #3a3a3a; border-radius: 8px; padding: 16px; font: 400 14px system-ui, sans-serif; } .ds-dialog-title { margin: 0; font-size: 22px; font-weight: 600; } .ds-dialog-body { margin: 6px 0 0; color: #f0ece6; } .ds-dialog-actions { margin-top: 12px; display: flex; gap: 8px; } .ds-btn-primary { background: #e8a060; color: #000; padding: 6px 14px; border: none; border-radius: 0; font: 400 14px system-ui, sans-serif; cursor: pointer; } .ds-btn-primary:hover { filter: brightness(1.06); } .ds-btn-primary:focus-visible { outline: 2px solid #e8a060; outline-offset: 2px; } .ds-btn-secondary { background: #181818; color: #f0ece6; padding: 6px 14px; border: 1px solid #3a3a3a; border-radius: 0; font: 400 14px system-ui, sans-serif; cursor: pointer; } .ds-btn-secondary:hover { background: #242424; } .ds-btn-secondary:focus-visible { outline: 2px solid #e8a060; outline-offset: 2px; }"
+    },
+    {
+      "name": "Toast",
+      "kind": "custom",
+      "refersTo": "dialog",
+      "description": "Ephemeral feedback; only chrome that uses a drop shadow.",
+      "html": "<div class=\"ds-toast\"><span class=\"ds-toast-text\">Carousel deleted.</span><button class=\"ds-btn-primary\">Undo</button></div>",
+      "css": ".ds-toast { display: flex; align-items: center; gap: 12px; max-width: 360px; background: #181818; color: #f0ece6; border: 1px solid #3a3a3a; border-radius: 8px; padding: 16px; box-shadow: 0 4px 16px rgba(0,0,0,0.376); font: 400 14px system-ui, sans-serif; } .ds-toast-text { flex: 1; color: #f0ece6; } .ds-btn-primary { background: #e8a060; color: #000; padding: 6px 14px; border: none; border-radius: 0; font: 400 14px system-ui, sans-serif; cursor: pointer; } .ds-btn-primary:hover { filter: brightness(1.06); } .ds-btn-primary:focus-visible { outline: 2px solid #e8a060; outline-offset: 2px; }"
+    },
+    {
+      "name": "App Menu Bar",
+      "kind": "nav",
+      "refersTo": "button-secondary",
+      "description": "Square File/Help menu chrome on charcoal void.",
+      "html": "<nav class=\"ds-menu\"><button class=\"ds-menu-item\">File</button><button class=\"ds-menu-item\">Help</button></nav>",
+      "css": ".ds-menu { display: flex; height: 28px; background: #101010; border-bottom: 1px solid #3a3a3a; } .ds-menu-item { background: transparent; color: #f0ece6; border: none; border-radius: 0; padding: 6px 14px; font: 400 14px system-ui, sans-serif; cursor: pointer; } .ds-menu-item:hover { background: #181818; } .ds-menu-item:focus-visible { outline: 2px solid #e8a060; outline-offset: -2px; }"
+    },
+    {
+      "name": "Canvas Surface",
+      "kind": "custom",
+      "refersTo": "canvas-surface",
+      "description": "Warm paper slide on charcoal; apricot empty-frame plus.",
+      "html": "<div class=\"ds-canvas\"><button class=\"ds-frame-plus\" aria-label=\"Add photo\"></button></div>",
+      "css": ".ds-canvas { width: 240px; height: 300px; background: #f4f1ec; display: grid; place-items: center; } .ds-frame-plus { width: 44px; height: 44px; border-radius: 50%; background: #1c1c1c; border: 2px solid #e8a060; position: relative; cursor: pointer; } .ds-frame-plus::before, .ds-frame-plus::after { content: \"\"; position: absolute; left: 50%; top: 50%; background: #e8a060; transform: translate(-50%, -50%); } .ds-frame-plus::before { width: 18px; height: 2px; } .ds-frame-plus::after { width: 2px; height: 18px; } .ds-frame-plus:hover { filter: brightness(1.08); } .ds-frame-plus:focus-visible { outline: 2px solid #e8a060; outline-offset: 3px; }"
+    }
+  ],
+  "narrative": {
+    "northStar": "Apricot on Charcoal",
+    "overview": "PudduScroll’s interface is a warm, classy desktop tool: charcoal chrome around a cream print surface, with apricot as the only highlight. The mood is refined and restrained. Brand lives in precise details — one accent, flat tonal layers, and quiet motion — not in decoration.\n\nThe continuous strip is the stage; the chrome stays out of its way. Menus are squared and native-feeling. Library cards are the softest corners in the system. Anti-references are neon cyber UI, purple SaaS gradients, and Instagram-clone chrome.",
+    "keyCharacteristics": [
+      "Single accent (Apricot Ember) on charcoal; cream paper only for the canvas",
+      "Flat tonal depth; shadows reserved for toasts",
+      "Square chrome, gently rounded cards and dialogs",
+      "Type scale locked to 22 / 16 / 14 / 13",
+      "Motion small and fast; interaction updates stay immediate"
+    ],
+    "rules": [
+      {
+        "name": "The One Accent Rule",
+        "body": "Apricot Ember is the only highlight. New colors join the warm set in crates/app/src/ui/mod.rs; they do not compete with ACCENT.",
+        "section": "colors"
+      },
+      {
+        "name": "The Paper-Only Rule",
+        "body": "Warm Paper is for canvases. Do not use it as app chrome fill.",
+        "section": "colors"
+      },
+      {
+        "name": "The Locked Scale Rule",
+        "body": "Reuse 22 / 16 / 14 / 13. Do not invent a fifth size for ordinary chrome.",
+        "section": "typography"
+      },
+      {
+        "name": "The Chrome Trinity Rule",
+        "body": "Toolbar, editor, rail. Home cards use card_frame; editor chrome sits flat on Charcoal Void and Charcoal Panel.",
+        "section": "colors"
+      },
+      {
+        "name": "The Flat-By-Default Rule",
+        "body": "Surfaces rest flat. Shadows appear only for toast feedback, not for cards, panels, or buttons.",
+        "section": "elevation"
+      },
+      {
+        "name": "The Square Chrome Rule",
+        "body": "Menus and primary tool chrome stay square. Rounding belongs to cards, covers, and dialogs — not to the menu bar.",
+        "section": "colors"
+      }
+    ],
+    "dos": [
+      "Do paint with the warm set in ui/mod.rs (BG, PANEL, CANVAS_BG, ACCENT, TEXT, MUTED, SELECT_BG).",
+      "Do put black text on apricot fills.",
+      "Do name buttons as actions (“Create template”) and empty states as what’s missing (“No templates yet.”).",
+      "Do keep hover/open motion in 0.1–0.25s; keep drag, zoom, nudge, and undo on the same frame.",
+      "Do route long names through short_name so rows still read with extreme lengths."
+    ],
+    "donts": [
+      "Don't introduce neon cyber UI, purple SaaS gradients, or Instagram-clone chrome.",
+      "Don't add a second accent color or use Warm Paper as app chrome.",
+      "Don't put drop shadows on resting cards, panels, or buttons.",
+      "Don't invent type sizes outside 22 / 16 / 14 / 13 for ordinary UI.",
+      "Don't round the menu bar or treat the editor as a nested card stack."
+    ]
+  }
+}

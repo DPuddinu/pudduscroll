@@ -1,8 +1,8 @@
 use eframe::egui;
 
-use super::PANEL;
 use super::draw::fitted_rect;
 use super::skeleton;
+use super::{HAIRLINE, PANEL, SKELETON_BONE};
 
 pub(super) const CARD_INNER_W: f32 = 212.0;
 const CARD_INNER_H: f32 = 248.0;
@@ -97,7 +97,7 @@ impl Card {
                 &painter,
                 shown,
                 COVER_RADIUS * scale,
-                egui::Color32::from_rgb(40, 38, 36),
+                SKELETON_BONE,
             );
             ui.ctx().request_repaint();
         }
@@ -128,10 +128,7 @@ fn card_frame() -> egui::Frame {
         .fill(PANEL)
         .inner_margin(CARD_MARGIN)
         .corner_radius(12)
-        .stroke(egui::Stroke::new(
-            CARD_STROKE,
-            egui::Color32::from_rgb(58, 58, 58),
-        ))
+        .stroke(egui::Stroke::new(CARD_STROKE, HAIRLINE))
 }
 
 fn hover_scale(ctx: &egui::Context, id: egui::Id, hovered: bool) -> f32 {

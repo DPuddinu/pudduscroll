@@ -3,7 +3,9 @@ use pudduscroll_core::{AspectRatio, CANVAS_PRESETS};
 
 use super::card::{self, CARD_INNER_W, Card};
 use super::draw::{counted, dialog_frame, section_scroll, short_name};
-use super::{ACCENT, BG, CANVAS_BG, Confirm, HomeAction, MUTED, PudduScrollApp, Route};
+use super::{
+    ACCENT, BG, CANVAS_BG, COVER_EMPTY, Confirm, HomeAction, INK, MUTED, PudduScrollApp, Route,
+};
 
 impl PudduScrollApp {
     pub(super) fn home_screen(
@@ -110,7 +112,7 @@ impl PudduScrollApp {
             kind: "template",
             id,
             image,
-            fill: egui::Color32::from_rgb(36, 36, 36),
+            fill: COVER_EMPTY,
             loading,
         }
         .show(ui, |content, buttons| {
@@ -298,10 +300,8 @@ impl PudduScrollApp {
                     let ready = !self.create_name.trim().is_empty();
                     let create = ui.add_enabled(
                         ready,
-                        egui::Button::new(
-                            egui::RichText::new("Create template").color(egui::Color32::BLACK),
-                        )
-                        .fill(ACCENT),
+                        egui::Button::new(egui::RichText::new("Create template").color(INK))
+                            .fill(ACCENT),
                     );
                     self.remember("create-template", create.rect);
                     if create.clicked() {
@@ -344,10 +344,7 @@ impl PudduScrollApp {
                         self.confirm = None;
                     }
                     let action = ui.add(
-                        egui::Button::new(
-                            egui::RichText::new(copy.action).color(egui::Color32::BLACK),
-                        )
-                        .fill(ACCENT),
+                        egui::Button::new(egui::RichText::new(copy.action).color(INK)).fill(ACCENT),
                     );
                     action
                         .clone()
@@ -438,10 +435,7 @@ impl PudduScrollApp {
                         self.update_offer = None;
                     }
                     let update = ui.add(
-                        egui::Button::new(
-                            egui::RichText::new("Update").color(egui::Color32::BLACK),
-                        )
-                        .fill(ACCENT),
+                        egui::Button::new(egui::RichText::new("Update").color(INK)).fill(ACCENT),
                     );
                     update
                         .clone()

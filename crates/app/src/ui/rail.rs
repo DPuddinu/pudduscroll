@@ -8,7 +8,8 @@ use super::draw::{
     rail_scroll_to, rail_section, rail_splitter, section_scroll, short_name,
 };
 use super::{
-    ACCENT, IncomingPhoto, MUTED, PANEL, PudduScrollApp, RAIL_SECTIONS, Route, SELECT_BG, TEXT,
+    ACCENT, COVER_EMPTY, IncomingPhoto, MUTED, PANEL, PudduScrollApp, RAIL_SECTIONS, Route,
+    SELECT_BG, TEXT,
 };
 
 impl PudduScrollApp {
@@ -58,7 +59,7 @@ impl PudduScrollApp {
                         row.min + egui::vec2(6.0, 4.0),
                         egui::vec2(40.0, 40.0),
                     );
-                    painter.rect_filled(thumb, 2.0, egui::Color32::from_rgb(36, 36, 36));
+                    painter.rect_filled(thumb, 2.0, COVER_EMPTY);
                     if let Some(crop) = crop
                         && let Some(asset) = self.assets.get(&id)
                     {

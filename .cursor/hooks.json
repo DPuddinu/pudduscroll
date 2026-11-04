@@ -20,6 +20,13 @@
         "matcher": "git(\\s+\\S+)*\\s+commit",
         "failClosed": true
       }
+    ],
+    "postToolUse": [
+      {
+        "command": "[ ! -f \"C:\\\\Users\\\\dario\\\\.cursor\\\\skills\\\\impeccable\\\\scripts\\\\impeccable\" ] || \"C:\\\\Users\\\\dario\\\\.cursor\\\\skills\\\\impeccable\\\\scripts\\\\impeccable\" hook",
+        "matcher": "^Write$",
+        "timeout": 5
+      }
     ]
   }
 }

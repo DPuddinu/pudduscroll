@@ -3,7 +3,9 @@ use pudduscroll_core::{CANVAS_PRESETS, MAX_CANVASES, Turn, canvas_file_name, lay
 
 use super::draw::{Glyph, dialog_frame, fitted_rect, icon_button, section_scroll, short_name};
 use super::history::HistoryKind;
-use super::{ACCENT, MAX_GRID_CELLS, MIN_GRID_CELLS, MUTED, PudduScrollApp, RAIL_W, Route, TEXT};
+use super::{
+    ACCENT, INK, MAX_GRID_CELLS, MIN_GRID_CELLS, MUTED, PudduScrollApp, RAIL_W, Route, TEXT,
+};
 
 impl PudduScrollApp {
     pub(super) fn toolbar(&mut self, ui: &mut egui::Ui) {
@@ -427,8 +429,7 @@ impl PudduScrollApp {
                     let ready = !self.link_url.trim().is_empty();
                     let add = ui.add_enabled(
                         ready,
-                        egui::Button::new(egui::RichText::new("Add").color(egui::Color32::BLACK))
-                            .fill(ACCENT),
+                        egui::Button::new(egui::RichText::new("Add").color(INK)).fill(ACCENT),
                     );
                     self.remember("add-link", add.rect);
                     let submit = add.clicked()
@@ -522,10 +523,8 @@ impl PudduScrollApp {
                     {
                         let confirm = ui.add_enabled(
                             !self.exporting,
-                            egui::Button::new(
-                                egui::RichText::new("Download").color(egui::Color32::BLACK),
-                            )
-                            .fill(ACCENT),
+                            egui::Button::new(egui::RichText::new("Download").color(INK))
+                                .fill(ACCENT),
                         );
                         self.remember("export-go", confirm.rect);
                         if confirm.clicked() {
@@ -547,10 +546,7 @@ impl PudduScrollApp {
                         let label = if saved { "Export" } else { "Choose folder" };
                         let confirm = ui.add_enabled(
                             !self.exporting,
-                            egui::Button::new(
-                                egui::RichText::new(label).color(egui::Color32::BLACK),
-                            )
-                            .fill(ACCENT),
+                            egui::Button::new(egui::RichText::new(label).color(INK)).fill(ACCENT),
                         );
                         self.remember("export-go", confirm.rect);
                         if confirm.clicked() {
@@ -605,10 +601,7 @@ impl PudduScrollApp {
                         self.cancel_overwrite();
                     }
                     let overwrite = ui.add(
-                        egui::Button::new(
-                            egui::RichText::new("Overwrite").color(egui::Color32::BLACK),
-                        )
-                        .fill(ACCENT),
+                        egui::Button::new(egui::RichText::new("Overwrite").color(INK)).fill(ACCENT),
                     );
                     self.remember("confirm-overwrite", overwrite.rect);
                     if overwrite.clicked() {
