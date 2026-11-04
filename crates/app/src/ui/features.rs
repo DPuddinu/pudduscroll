@@ -233,8 +233,15 @@ fn delete_removes_the_active_canvas() {
 fn home_offers_a_template_and_an_import() {
     let (ctx, mut app) = ready();
     settle(&mut app, &ctx);
-    assert!(shown(&app, "new-template"));
+    assert!(shown(&app, "nav-carousels"));
+    assert!(shown(&app, "nav-templates"));
     assert!(shown(&app, "import-carousel"));
+    assert!(shown(&app, "browse-templates"));
+    assert!(!shown(&app, "new-template"));
+    click(&mut app, &ctx, "nav-templates");
+    settle(&mut app, &ctx);
+    assert!(shown(&app, "new-template"));
+    assert!(!shown(&app, "import-carousel"));
     assert_eq!(plus_names(&app), Vec::<String>::new());
     assert!(!shown(&app, "share"));
 }

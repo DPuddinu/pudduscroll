@@ -61,12 +61,19 @@ const RAIL_SECTIONS: usize = 5;
 const RAIL_SECTION_MIN: f32 = 72.0;
 const RAIL_SPLIT: f32 = 8.0;
 const DEFAULT_RAIL_WEIGHTS: [f32; RAIL_SECTIONS] = [0.16, 0.18, 0.16, 0.22, 0.28];
+const HOME_NAV_W: f32 = 168.0;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Route {
     Home,
     Template(u64),
     Carousel(u64),
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum HomeSection {
+    Carousels,
+    Templates,
 }
 
 #[derive(Clone, Copy)]
@@ -219,6 +226,7 @@ pub struct PudduScrollApp {
     library_ready: bool,
     can_store: bool,
     route: Route,
+    home_section: HomeSection,
     assets: HashMap<FrameId, PhotoAsset>,
     cover_textures: HashMap<u64, egui::TextureHandle>,
     selected: Option<FrameId>,

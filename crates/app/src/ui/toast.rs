@@ -294,14 +294,6 @@ impl PudduScrollApp {
             self.undo_edit(ctx);
         }
     }
-
-    pub(super) fn toast_messages(&self) -> impl Iterator<Item = &str> + '_ {
-        self.toaster
-            .items
-            .iter()
-            .filter(|toast| toast.open)
-            .map(|toast| toast.text.as_str())
-    }
 }
 
 #[cfg(test)]

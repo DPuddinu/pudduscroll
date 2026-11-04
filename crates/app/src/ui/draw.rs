@@ -24,19 +24,6 @@ pub(super) fn counted(count: usize, one: &str, many: &str) -> String {
     }
 }
 
-pub(super) fn handle_name(handle: Handle) -> &'static str {
-    match handle {
-        Handle::N => "N",
-        Handle::S => "S",
-        Handle::E => "E",
-        Handle::W => "W",
-        Handle::Ne => "Ne",
-        Handle::Nw => "Nw",
-        Handle::Se => "Se",
-        Handle::Sw => "Sw",
-    }
-}
-
 pub(super) fn dialog_frame() -> egui::Frame {
     egui::Frame::new()
         .fill(PANEL)

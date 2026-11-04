@@ -1,5 +1,3 @@
-use std::fmt::Write;
-
 use eframe::egui;
 use pudduscroll_core::{
     Crop, CropPreset, FrameId, begin_crop_rect, crop_lock_ratio, move_crop_inside,
@@ -304,58 +302,6 @@ impl PudduScrollApp {
         let image = self.session_image_screen(strip)?;
         let crop = self.crop_session.as_ref()?.crop;
         Some(crop_to_screen(image, crop))
-    }
-
-    pub(super) fn write_crop_probe(&self, ctx: &egui::Context, editor: egui::Rect) {
-        let Some(strip) = self.strip_rect else {
-            return;
-        };
-        let Some((ratio, count)) = self.metrics() else {
-            return;
-        };
-        let canvas_w = strip.width() / count.max(1) as f32;
-        let mut text = format!(
-            "ppp={}\nviewport={:?}\neditor={:?}\nstrip={:?}\n",
-            ctx.pixels_per_point(),
-            ctx.viewport_rect(),
-            editor,
-            strip
-        );
-        for index in 0..count {
-            let canvas = egui::Rect::from_min_size(
-                egui::pos2(strip.min.x + index as f32 * canvas_w, strip.min.y),
-                egui::vec2(canvas_w, strip.height()),
-            );
-            let _ = writeln!(text, "canvas {index} {canvas:?}");
-        }
-        if let Some(layout) = self.layout() {
-            for frame in &layout.frames {
-                let screen = frame_screen(strip, count, frame);
-                let _ = writeln!(
-                    text,
-                    "frame {} x={} y={} w={} h={} crop={:?} screen={:?} ratio={ratio}",
-                    frame.id.0,
-                    frame.x,
-                    frame.y,
-                    frame.w,
-                    frame.h,
-                    frame.photo.as_ref().map(|photo| photo.crop),
-                    screen
-                );
-            }
-        }
-        if let Some(session) = &self.crop_session {
-            let screen = self.session_crop_screen(strip);
-            let _ = writeln!(
-                text,
-                "session {:?} crop={:?} screen={:?}",
-                session.preset, session.crop, screen
-            );
-        }
-        let _ = std::fs::write(
-            r"C:\Users\dario\AppData\Local\Temp\pudduscroll-crop.txt",
-            text,
-        );
     }
 
     pub(super) fn pointer_hits_crop_photo(&self, pos: egui::Pos2) -> bool {

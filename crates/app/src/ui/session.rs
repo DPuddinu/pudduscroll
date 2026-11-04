@@ -55,6 +55,7 @@ impl PudduScrollApp {
             library_ready: false,
             can_store: false,
             route: Route::Home,
+            home_section: super::HomeSection::Carousels,
             assets: HashMap::new(),
             cover_textures: HashMap::new(),
             selected: None,
@@ -1648,6 +1649,13 @@ impl PudduScrollApp {
     }
 
     pub(super) fn enter(&mut self, route: Route, ctx: &egui::Context) {
+        if let Route::Carousel(id) = route {
+            self.library.touch_carousel(id);
+            self.home_section = super::HomeSection::Carousels;
+        }
+        if let Route::Template(_) = route {
+            self.home_section = super::HomeSection::Templates;
+        }
         self.route = route;
         self.selected = None;
         self.active_canvas = None;
@@ -1722,7 +1730,9 @@ impl PudduScrollApp {
         };
         self.refresh_open_carousel_cover();
         if let Some(id) = open {
+            self.library.touch_carousel(id);
             self.library.clear_photos(id);
+            self.home_section = super::HomeSection::Carousels;
         }
         self.library.visuals = self.library.visuals.wrapping_add(1);
         self.persist();

@@ -211,6 +211,17 @@ impl Library {
         removed
     }
 
+    pub fn touch_carousel(&mut self, id: u64) {
+        let Some(index) = self.carousels.iter().position(|carousel| carousel.id == id) else {
+            return;
+        };
+        if index + 1 == self.carousels.len() {
+            return;
+        }
+        let carousel = self.carousels.remove(index);
+        self.carousels.push(carousel);
+    }
+
     pub fn create_carousel(&mut self) -> u64 {
         let name = fresh_carousel_name(&self.carousels);
         let id = self.alloc();
@@ -2282,6 +2293,31 @@ squares 99
         assert!(direct_image_url("javascript:alert(1)").is_err());
         assert!(direct_image_url("https:///missing-host/a.png").is_err());
         assert!(linked_image("https://example.com/a.png", b"<html></html>".to_vec()).is_err());
+    }
+
+    #[test]
+    fn touch_carousel_moves_it_to_the_end() {
+        let mut library = Library::empty();
+        let first = library.create_carousel();
+        let second = library.create_carousel();
+        let third = library.create_carousel();
+        assert_eq!(
+            library
+                .carousels
+                .iter()
+                .map(|carousel| carousel.id)
+                .collect::<Vec<_>>(),
+            vec![first, second, third]
+        );
+        library.touch_carousel(first);
+        assert_eq!(
+            library
+                .carousels
+                .iter()
+                .map(|carousel| carousel.id)
+                .collect::<Vec<_>>(),
+            vec![second, third, first]
+        );
     }
 
     #[test]

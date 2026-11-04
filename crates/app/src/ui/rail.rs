@@ -1,5 +1,5 @@
 use eframe::egui;
-use pudduscroll_core::{CROP_PRESETS, Crop, CropPreset, FrameId, LayerMove, render_layout};
+use pudduscroll_core::{CROP_PRESETS, Crop, FrameId, LayerMove, render_layout};
 
 const EXPORT_PREVIEW_WIDTH: u32 = 1280;
 
@@ -173,12 +173,6 @@ impl PudduScrollApp {
                         .map(|session| session.preset);
                     let selected = armed.unwrap_or(photo.preset) == preset;
                     let preset_response = ui.selectable_label(selected, preset.label());
-                    if preset == CropPreset::Square {
-                        let _ = std::fs::write(
-                            r"C:\Users\dario\AppData\Local\Temp\pudduscroll-square.txt",
-                            format!("{:?}", preset_response.rect),
-                        );
-                    }
                     if preset_response.clicked() {
                         self.open_crop_session(id, preset);
                         ui.ctx().request_repaint();

@@ -1,6 +1,6 @@
 use eframe::egui;
 
-use super::{BG, HAIRLINE, PANEL, SKELETON_BONE};
+use super::{BG, HAIRLINE, HOME_NAV_W, PANEL, SKELETON_BONE};
 const CARD_INNER_W: f32 = 212.0;
 const CARD_INNER_H: f32 = 248.0;
 const COVER_H: f32 = 132.0;
@@ -11,17 +11,38 @@ const COVER_RADIUS: f32 = 10.0;
 
 pub(super) fn home(ui: &mut egui::Ui, full: egui::Rect) {
     ui.painter().rect_filled(full, 0.0, BG);
-    let inner = full.shrink(16.0);
-    let mut home = ui.new_child(
+    let nav_rect = egui::Rect::from_min_max(
+        full.left_top(),
+        egui::pos2(full.left() + HOME_NAV_W, full.bottom()),
+    );
+    let main_rect = egui::Rect::from_min_max(
+        egui::pos2(nav_rect.right(), full.top()),
+        full.right_bottom(),
+    );
+    ui.painter().rect_filled(nav_rect, 0.0, PANEL);
+    let mut nav = ui.new_child(
         egui::UiBuilder::new()
-            .id_salt("library-skeleton")
-            .max_rect(inner)
+            .id_salt("library-skeleton-nav")
+            .max_rect(nav_rect)
             .layout(egui::Layout::top_down(egui::Align::Min)),
     );
-    section(&mut home, "Templates", 3);
-    home.add_space(18.0);
-    section(&mut home, "Carousels", 3);
-    home.add_space(16.0);
+    nav.add_space(16.0);
+    nav.horizontal(|ui| {
+        ui.add_space(12.0);
+        ui.vertical(|ui| {
+            ui.set_width((ui.available_width() - 12.0).max(1.0));
+            ui.spacing_mut().item_spacing = egui::vec2(0.0, 4.0);
+            bone(ui, egui::vec2(ui.available_width().max(1.0), 36.0), 6.0);
+            bone(ui, egui::vec2(ui.available_width().max(1.0), 36.0), 6.0);
+        });
+    });
+    let mut main = ui.new_child(
+        egui::UiBuilder::new()
+            .id_salt("library-skeleton-main")
+            .max_rect(main_rect.shrink(16.0))
+            .layout(egui::Layout::top_down(egui::Align::Min)),
+    );
+    section(&mut main, "Carousels", 3);
     ui.ctx().request_repaint();
 }
 

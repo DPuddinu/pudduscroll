@@ -4,7 +4,8 @@ use pudduscroll_core::{AspectRatio, CANVAS_PRESETS};
 use super::card::{self, CARD_INNER_W, Card};
 use super::draw::{counted, dialog_frame, section_scroll, short_name};
 use super::{
-    ACCENT, BG, CANVAS_BG, COVER_EMPTY, Confirm, HomeAction, INK, MUTED, PudduScrollApp, Route,
+    ACCENT, BG, CANVAS_BG, COVER_EMPTY, Confirm, HOME_NAV_W, HomeAction, HomeSection, INK, MUTED,
+    PANEL, PudduScrollApp, Route, SELECT_BG, TEXT,
 };
 
 impl PudduScrollApp {
@@ -14,15 +15,126 @@ impl PudduScrollApp {
         full: egui::Rect,
     ) -> Option<HomeAction> {
         ui.painter().rect_filled(full, 0.0, BG);
-        let inner = full.shrink(16.0);
-        let mut home = ui.new_child(
+        let nav_rect = egui::Rect::from_min_max(
+            full.left_top(),
+            egui::pos2(full.left() + HOME_NAV_W, full.bottom()),
+        );
+        let main_rect = egui::Rect::from_min_max(
+            egui::pos2(nav_rect.right(), full.top()),
+            full.right_bottom(),
+        );
+        ui.painter().rect_filled(nav_rect, 0.0, PANEL);
+        self.home_nav(ui, nav_rect);
+        let mut action = None;
+        let mut main = ui.new_child(
             egui::UiBuilder::new()
-                .id_salt("home")
-                .max_rect(inner)
+                .id_salt("home-main")
+                .max_rect(main_rect.shrink(16.0))
                 .layout(egui::Layout::top_down(egui::Align::Min)),
         );
+        match self.home_section {
+            HomeSection::Carousels => {
+                if let Some(next) = self.home_carousels(&mut main) {
+                    action = Some(next);
+                }
+            }
+            HomeSection::Templates => {
+                if let Some(next) = self.home_templates(&mut main) {
+                    action = Some(next);
+                }
+            }
+        }
+        if self.name_dirty {
+            self.name_dirty = false;
+            self.persist();
+        }
+        action
+    }
+
+    fn home_nav(&mut self, ui: &mut egui::Ui, rect: egui::Rect) {
+        let mut nav = ui.new_child(
+            egui::UiBuilder::new()
+                .id_salt("home-nav")
+                .max_rect(rect)
+                .layout(egui::Layout::top_down(egui::Align::Min)),
+        );
+        nav.add_space(16.0);
+        nav.horizontal(|ui| {
+            ui.add_space(12.0);
+            ui.vertical(|ui| {
+                ui.set_width((ui.available_width() - 12.0).max(1.0));
+                ui.spacing_mut().item_spacing = egui::vec2(0.0, 4.0);
+                self.home_nav_item(ui, HomeSection::Carousels, "Carousels", "nav-carousels");
+                self.home_nav_item(ui, HomeSection::Templates, "Templates", "nav-templates");
+            });
+        });
+    }
+
+    fn home_nav_item(&mut self, ui: &mut egui::Ui, section: HomeSection, label: &str, id: &str) {
+        let selected = self.home_section == section;
+        let width = ui.available_width().max(1.0);
+        let (rect, response) =
+            ui.allocate_exact_size(egui::vec2(width, 36.0), egui::Sense::click());
+        response
+            .clone()
+            .on_hover_cursor(egui::CursorIcon::PointingHand);
+        if selected {
+            ui.painter().rect_filled(rect, 6.0, SELECT_BG);
+        } else if response.hovered() {
+            ui.painter().rect_filled(rect, 6.0, COVER_EMPTY);
+        }
+        let color = if selected { ACCENT } else { TEXT };
+        ui.painter().text(
+            rect.left_center() + egui::vec2(12.0, 0.0),
+            egui::Align2::LEFT_CENTER,
+            label,
+            egui::FontId::proportional(14.0),
+            color,
+        );
+        self.remember(id, rect);
+        if response.clicked() {
+            self.home_section = section;
+        }
+    }
+
+    fn home_carousels(&mut self, ui: &mut egui::Ui) -> Option<HomeAction> {
         let mut action = None;
-        home.horizontal(|ui| {
+        ui.horizontal(|ui| {
+            ui.heading("Carousels");
+            let import = ui.add_enabled(!self.importing, egui::Button::new("Import"));
+            self.remember("import-carousel", import.rect);
+            if import.clicked() {
+                self.import_package();
+            }
+        });
+        ui.add_space(8.0);
+        let carousel_count = self.library.carousels.len();
+        section_scroll(ui, "carousels").show(ui, |ui| {
+            if carousel_count == 0 {
+                ui.label(egui::RichText::new("No carousels yet.").color(MUTED));
+                ui.add_space(8.0);
+                let browse = ui.button("Browse templates");
+                self.remember("browse-templates", browse.rect);
+                if browse.clicked() {
+                    self.home_section = HomeSection::Templates;
+                }
+                return;
+            }
+            ui.horizontal_wrapped(|ui| {
+                ui.spacing_mut().item_spacing = egui::vec2(12.0, 12.0);
+                for index in (0..carousel_count).rev() {
+                    if let Some(next) = self.carousel_card(ui, index) {
+                        action = Some(next);
+                    }
+                }
+            });
+        });
+        action
+    }
+
+    fn home_templates(&mut self, ui: &mut egui::Ui) -> Option<HomeAction> {
+        let mut action = None;
+        ui.horizontal(|ui| {
             ui.heading("Templates");
             let response = ui.button("New template");
             self.remember("new-template", response.rect);
@@ -32,48 +144,21 @@ impl PudduScrollApp {
                 self.create_open = true;
             }
         });
-        home.add_space(8.0);
+        ui.add_space(8.0);
         if self.library.templates.is_empty() {
-            home.label(egui::RichText::new("No templates yet.").color(MUTED));
+            ui.label(egui::RichText::new("No templates yet.").color(MUTED));
         }
         let template_count = self.library.templates.len();
-        home.horizontal_wrapped(|ui| {
-            ui.spacing_mut().item_spacing = egui::vec2(12.0, 12.0);
-            for index in 0..template_count {
-                if let Some(next) = self.template_card(ui, index) {
-                    action = Some(next);
-                }
-            }
-        });
-        home.add_space(18.0);
-        home.horizontal(|ui| {
-            ui.heading("Carousels");
-            let import = ui.add_enabled(!self.importing, egui::Button::new("Import"));
-            self.remember("import-carousel", import.rect);
-            if import.clicked() {
-                self.import_package();
-            }
-        });
-        home.add_space(8.0);
-        let carousel_count = self.library.carousels.len();
-        section_scroll(&mut home, "carousels").show(&mut home, |ui| {
-            if carousel_count == 0 {
-                ui.label(egui::RichText::new("No carousels yet.").color(MUTED));
-                return;
-            }
+        section_scroll(ui, "templates").show(ui, |ui| {
             ui.horizontal_wrapped(|ui| {
                 ui.spacing_mut().item_spacing = egui::vec2(12.0, 12.0);
-                for index in 0..carousel_count {
-                    if let Some(next) = self.carousel_card(ui, index) {
+                for index in 0..template_count {
+                    if let Some(next) = self.template_card(ui, index) {
                         action = Some(next);
                     }
                 }
             });
         });
-        if self.name_dirty {
-            self.name_dirty = false;
-            self.persist();
-        }
         action
     }
 
