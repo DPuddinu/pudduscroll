@@ -28,7 +28,7 @@ use pudduscroll_core::{
 
 use crate::host::PickedFile;
 use crate::library::{Blob, Carousel, Library, SaveRequest};
-use crate::settings::{AppSettings, Command};
+use crate::settings::{AppSettings, Command, DEFAULT_RAIL_WEIGHTS};
 
 use history::{Edit, EditHistory};
 
@@ -57,15 +57,13 @@ const CROP_HANDLE_HIT: f32 = 12.0;
 const MENU_H: f32 = 28.0;
 const TOOLBAR_H: f32 = 48.0;
 const RAIL_W: f32 = 320.0;
-const RAIL_PANES: usize = 3;
+const RAIL_PANES: usize = 2;
 const RAIL_SPLIT: f32 = 8.0;
-const DEFAULT_RAIL_WEIGHTS: [f32; RAIL_PANES] = [0.26, 0.28, 0.46];
 const HOME_NAV_W: f32 = 168.0;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum RailTool {
     Canvas,
-    Frame,
     Photo,
     Crop,
     Snapshots,
@@ -126,6 +124,9 @@ enum Drag {
     Rotate {
         id: FrameId,
     },
+    RotateFrame {
+        id: FrameId,
+    },
 }
 
 impl Drag {
@@ -134,7 +135,8 @@ impl Drag {
             Drag::MoveFrame { id, .. }
             | Drag::ResizeFrame { id, .. }
             | Drag::Pan { id, .. }
-            | Drag::Rotate { id } => id,
+            | Drag::Rotate { id }
+            | Drag::RotateFrame { id } => id,
         }
     }
 }
@@ -242,6 +244,7 @@ pub struct PudduScrollApp {
     active_canvas: Option<usize>,
     edit_frame: bool,
     free_rotate: bool,
+    frame_rotate: bool,
     settings: AppSettings,
     settings_open: bool,
     rebind: Option<Command>,

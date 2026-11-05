@@ -6,7 +6,8 @@ use image::imageops::overlay;
 use pudduscroll_core::{
     CoverFit, Crop, EncodedCanvas, ExportError, ExportFormat, ExportSettings, Frame, FrameImages,
     Handle, Layout, border_thickness, canvas_file_name, cover_fit, export_layout_canvases_with,
-    layout_export_width, photo_local, photo_on_canvases, render_layout, write_canvases,
+    frame_local, frame_world, layout_export_width, photo_local, photo_on_canvases, render_layout,
+    write_canvases,
 };
 
 use super::{
@@ -494,6 +495,174 @@ pub(super) fn rotate_handle_hit(screen: egui::Rect, angle: f32, pos: egui::Pos2)
     handle.distance(pos) <= 16.0
 }
 
+pub(super) fn rotate_around(center: egui::Pos2, point: egui::Pos2, angle: f32) -> egui::Pos2 {
+    let delta = point - center;
+    let (sin, cos) = angle.sin_cos();
+    center + egui::vec2(delta.x * cos - delta.y * sin, delta.x * sin + delta.y * cos)
+}
+
+pub(super) fn spun_points(rect: egui::Rect, angle: f32) -> [(Handle, egui::Pos2); 8] {
+    let center = rect.center();
+    handle_points(rect).map(|(handle, point)| (handle, rotate_around(center, point, angle)))
+}
+
+pub(super) fn spun_handle_at(rect: egui::Rect, angle: f32, pos: egui::Pos2) -> Option<Handle> {
+    spun_points(rect, angle)
+        .into_iter()
+        .find(|(_, point)| handle_target(*point).contains(pos))
+        .map(|(handle, _)| handle)
+}
+
+pub(super) fn frame_screen_corners(
+    strip: egui::Rect,
+    count: usize,
+    frame: &Frame,
+    ratio: f32,
+) -> [egui::Pos2; 4] {
+    let corners = [
+        (frame.x, frame.y),
+        (frame.x + frame.w, frame.y),
+        (frame.x + frame.w, frame.y + frame.h),
+        (frame.x, frame.y + frame.h),
+    ];
+    corners.map(|(x, y)| {
+        let (world_x, world_y) = frame_world(frame, ratio, x, y);
+        norm_pos(strip, count, world_x, world_y)
+    })
+}
+
+fn norm_pos(strip: egui::Rect, count: usize, x: f32, y: f32) -> egui::Pos2 {
+    let canvas_w = strip.width() / count.max(1) as f32;
+    egui::pos2(strip.min.x + x * canvas_w, strip.min.y + y * strip.height())
+}
+
+pub(super) fn paint_spun_fill(
+    painter: &egui::Painter,
+    corners: &[egui::Pos2],
+    clip: egui::Rect,
+    color: egui::Color32,
+) {
+    let stamps: Vec<Stamp> = corners
+        .iter()
+        .map(|pos| Stamp {
+            pos: *pos,
+            uv: egui::Pos2::ZERO,
+        })
+        .collect();
+    let clipped = clip_stamps(&stamps, clip);
+    if clipped.len() < 3 {
+        return;
+    }
+    let points: Vec<egui::Pos2> = clipped.iter().map(|stamp| stamp.pos).collect();
+    painter.add(egui::Shape::convex_polygon(
+        points,
+        color,
+        egui::Stroke::NONE,
+    ));
+}
+
+pub(super) fn paint_spun_outline(
+    painter: &egui::Painter,
+    corners: &[egui::Pos2; 4],
+    color: egui::Color32,
+) {
+    let stroke = egui::Stroke::new(FRAME_OUTLINE, color);
+    for index in 0..4 {
+        painter.line_segment([corners[index], corners[(index + 1) % 4]], stroke);
+    }
+}
+
+pub(super) fn paint_spun_border(
+    painter: &egui::Painter,
+    corners: &[egui::Pos2; 4],
+    thickness: f32,
+    color: egui::Color32,
+) {
+    if thickness <= 0.5 {
+        return;
+    }
+    let stroke = egui::Stroke::new(thickness, color);
+    for index in 0..4 {
+        painter.line_segment([corners[index], corners[(index + 1) % 4]], stroke);
+    }
+}
+
+pub(super) fn paint_spun_photo(
+    painter: &egui::Painter,
+    strip: egui::Rect,
+    count: usize,
+    frame: &Frame,
+    ratio: f32,
+    clip: egui::Rect,
+    texture: egui::TextureId,
+) {
+    let Some(photo) = frame.photo.as_ref() else {
+        return;
+    };
+    let Some(fit) = cover_fit(frame, ratio) else {
+        return;
+    };
+    let corners = frame_screen_corners(strip, count, frame, ratio);
+    let passes = [
+        (clip, egui::Color32::from_white_alpha(OUTSIDE_FRAME_ALPHA)),
+        (clip.intersect(strip), egui::Color32::WHITE),
+    ];
+    for (visible, tint) in passes {
+        if !visible.is_positive() {
+            continue;
+        }
+        let stamps: Vec<Stamp> = corners
+            .iter()
+            .map(|pos| Stamp {
+                pos: *pos,
+                uv: spun_photo_uv(strip, count, frame, ratio, fit, photo.crop, *pos),
+            })
+            .collect();
+        let stamps = clip_stamps(&stamps, visible);
+        if stamps.len() < 3 {
+            continue;
+        }
+        let mut mesh = egui::Mesh::with_texture(texture);
+        for stamp in &stamps {
+            mesh.vertices.push(egui::epaint::Vertex {
+                pos: stamp.pos,
+                uv: stamp.uv,
+                color: tint,
+            });
+        }
+        let last = stamps.len() as u32;
+        for index in 1..last - 1 {
+            mesh.add_triangle(0, index, index + 1);
+        }
+        painter.add(egui::Shape::mesh(mesh));
+    }
+}
+
+fn spun_photo_uv(
+    strip: egui::Rect,
+    count: usize,
+    frame: &Frame,
+    ratio: f32,
+    fit: CoverFit,
+    crop: Crop,
+    pos: egui::Pos2,
+) -> egui::Pos2 {
+    let (x, y) = screen_to_norm(strip, count, pos);
+    let (fx, fy) = frame_local(frame, ratio, x, y);
+    let (local_x, local_y) = photo_local(frame, ratio, fx, fy);
+    let u = if fit.w.abs() <= 1.0e-6 {
+        0.0
+    } else {
+        (local_x - fit.x) / fit.w
+    };
+    let v = if fit.h.abs() <= 1.0e-6 {
+        0.0
+    } else {
+        (local_y - fit.y) / fit.h
+    };
+    egui::pos2(crop.x + u * crop.w, crop.y + v * crop.h)
+}
+
 pub(super) fn paint_rotate_handle(painter: &egui::Painter, screen: egui::Rect, angle: f32) {
     let (edge, handle) = rotate_handle_geometry(screen, angle);
     painter.line_segment([edge, handle], egui::Stroke::new(2.0, ACCENT));
@@ -755,13 +924,6 @@ pub(super) fn handle_target(point: egui::Pos2) -> egui::Rect {
     egui::Rect::from_center_size(point, egui::vec2(20.0, 20.0))
 }
 
-pub(super) fn handle_at(rect: egui::Rect, pos: egui::Pos2) -> Option<Handle> {
-    handle_points(rect)
-        .into_iter()
-        .find(|(_, point)| handle_target(*point).contains(pos))
-        .map(|(handle, _)| handle)
-}
-
 pub(super) fn crop_handle_target(point: egui::Pos2) -> egui::Rect {
     egui::Rect::from_center_size(
         point,
@@ -809,7 +971,6 @@ pub(super) enum Glyph {
     RotateCw,
     RotateFree,
     Bin,
-    ToolCanvas,
     ToolFrame,
     ToolPhoto,
     ToolCrop,
@@ -878,17 +1039,11 @@ pub(super) fn paint_glyph(
         Glyph::RotateCw => circular_arrow(painter, rect, true, stroke),
         Glyph::RotateFree => free_rotate(painter, rect, stroke),
         Glyph::Bin => paint_bin(painter, rect, stroke),
-        Glyph::ToolCanvas => paint_tool_canvas(painter, rect, stroke),
         Glyph::ToolFrame => paint_tool_frame(painter, rect, stroke),
         Glyph::ToolPhoto => paint_tool_photo(painter, rect, stroke),
         Glyph::ToolCrop => paint_tool_crop(painter, rect, stroke),
         Glyph::ToolSnapshot => paint_tool_snapshot(painter, rect, stroke),
     }
-}
-
-fn paint_tool_canvas(painter: &egui::Painter, rect: egui::Rect, stroke: egui::Stroke) {
-    let box_rect = rect.shrink(rect.width() * 0.12);
-    painter.rect_stroke(box_rect, 1.0, stroke, egui::StrokeKind::Outside);
 }
 
 fn paint_tool_frame(painter: &egui::Painter, rect: egui::Rect, stroke: egui::Stroke) {
@@ -918,7 +1073,7 @@ fn paint_tool_photo(painter: &egui::Painter, rect: egui::Rect, stroke: egui::Str
     }
 }
 
-pub(super) fn rail_splitter(ui: &mut egui::Ui) -> Option<f32> {
+pub(super) fn rail_splitter(ui: &mut egui::Ui) -> (Option<f32>, bool) {
     let (rect, response) = ui.allocate_exact_size(
         egui::vec2(ui.available_width(), RAIL_SPLIT),
         egui::Sense::drag(),
@@ -937,7 +1092,10 @@ pub(super) fn rail_splitter(ui: &mut egui::Ui) -> Option<f32> {
         rect.center().y,
         egui::Stroke::new(1.0, color),
     );
-    response.dragged().then_some(response.drag_delta().y)
+    (
+        response.dragged().then_some(response.drag_delta().y),
+        response.drag_stopped(),
+    )
 }
 
 pub(super) fn apply_rail_drag(

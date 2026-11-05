@@ -1,4 +1,4 @@
-PudduScroll 0.3.7 adds an app icon.
+PudduScroll 0.4.0 lets you rotate frames and resize the side panels.
 
 ## Downloads
 
@@ -28,6 +28,7 @@ Templates and carousels are saved on this machine:
 
 ## New
 
-- The icon is black with three apricot slides.
-- The middle slide is taller than the slides beside it.
-- Windows, Mac, and Linux show this icon.
+- Rotate a frame with the handle on the canvas or the rotate buttons in the toolbar.
+- On Windows, the window uses a custom title bar with File and Help menus.
+- Drag the split between Tools and Layers to change how much space each uses; your choice is remembered.
+- The canvas count in the toolbar is shown in a tighter format.

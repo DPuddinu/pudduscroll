@@ -1658,6 +1658,52 @@ fn move_frame_swaps_order_with_the_neighbor_and_keeps_each_width() {
     assert!(!layout.move_frame(FrameId(99), true));
 }
 
+#[test]
+fn quarter_turn_spins_the_frame_and_export_follows_the_quad() {
+    let mut layout = Layout::new(AspectRatio::SQUARE);
+    let id = layout.add_frame(0);
+    layout.set_frame_rect(id, 0.1, 0.4, 0.8, 0.2);
+    layout.fill_frame(id, "band", 8, 8);
+    assert!(frame_at_is(&layout, 0.5, 0.5, id));
+    assert!(frame_at_is(&layout, 0.2, 0.5, id));
+    assert!(layout.frame_at(0.5, 0.2).is_none());
+    layout.turn_frame(id, Turn::Clockwise);
+    let angle = layout.frame(id).unwrap().rotation;
+    assert!(
+        (angle - std::f32::consts::FRAC_PI_2).abs() < 1.0e-4,
+        "{angle}"
+    );
+    assert!(frame_at_is(&layout, 0.5, 0.2, id));
+    assert!(layout.frame_at(0.2, 0.5).is_none());
+    assert!(layout.frame_at(0.1, 0.4).is_none());
+    layout.set_frame_rotation(id, f32::NAN);
+    assert!((layout.frame(id).unwrap().rotation - angle).abs() < 1.0e-4);
+    layout.turn_frame(id, Turn::Counterclockwise);
+    assert!(layout.frame(id).unwrap().rotation.abs() < 1.0e-4);
+
+    layout.turn_frame(id, Turn::Clockwise);
+    let mut images = FrameImages::new();
+    images.insert(id, Arc::new(solid(8, 8, [220, 30, 30, 255])));
+    let turned = render_layout(&layout, 0, &images, 100);
+    let flat = {
+        let mut upright = layout.clone();
+        upright.set_frame_rotation(id, 0.0);
+        render_layout(&upright, 0, &images, 100)
+    };
+    let side = pixel(&flat, 20, 50);
+    let above = pixel(&flat, 50, 20);
+    assert!(side[0] > 180, "{side:?}");
+    assert_eq!(above, [255, 255, 255, 255]);
+    let spun_side = pixel(&turned, 20, 50);
+    let spun_above = pixel(&turned, 50, 20);
+    assert_eq!(spun_side, [255, 255, 255, 255]);
+    assert!(spun_above[0] > 180, "{spun_above:?}");
+}
+
+fn frame_at_is(layout: &Layout, x: f32, y: f32, id: FrameId) -> bool {
+    layout.frame_at(x, y) == Some(id)
+}
+
 fn png_bytes(image: &RgbaImage) -> Vec<u8> {
     let mut bytes = Vec::new();
     image::DynamicImage::ImageRgba8(image.clone())

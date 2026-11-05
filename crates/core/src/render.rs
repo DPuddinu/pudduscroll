@@ -6,7 +6,10 @@ use fast_image_resize::{PixelType, ResizeAlg, ResizeOptions, Resizer};
 use image::imageops::{FilterType, crop_imm, overlay, resize, thumbnail};
 use image::{Rgba, RgbaImage};
 
-use crate::{Document, Frame, FrameId, Layout, Photo, PhotoId, border_thickness, cover_fit};
+use crate::{
+    Document, Frame, FrameId, Layout, Photo, PhotoId, border_thickness, cover_fit, frame_local,
+    frame_world,
+};
 
 pub type ImageMap = HashMap<PhotoId, Arc<RgbaImage>>;
 pub type FrameImages = HashMap<FrameId, Arc<RgbaImage>>;
@@ -158,22 +161,23 @@ pub fn render_layout(
         let Some(photo) = frame.photo.as_ref() else {
             continue;
         };
-        if photo.rotation.abs() > 1.0e-4 {
+        let spun = frame.rotation.abs() > 1.0e-4;
+        if spun || photo.rotation.abs() > 1.0e-4 {
             paint_rotated(&mut output, image, frame, canvas, ratio);
-            paint_frame_border(&mut output, frame, canvas);
-            continue;
+        } else if let Some(region) = clip_frame_to_canvas(frame, canvas, ratio) {
+            blit(
+                &mut output,
+                image,
+                &region,
+                photo.image_width,
+                photo.image_height,
+            );
         }
-        let Some(region) = clip_frame_to_canvas(frame, canvas, ratio) else {
-            continue;
-        };
-        blit(
-            &mut output,
-            image,
-            &region,
-            photo.image_width,
-            photo.image_height,
-        );
-        paint_frame_border(&mut output, frame, canvas);
+        if spun {
+            paint_rotated_border(&mut output, frame, canvas, ratio);
+        } else {
+            paint_frame_border(&mut output, frame, canvas);
+        }
     }
     output
 }
@@ -241,6 +245,82 @@ fn mix_border(image: [u8; 4], color: [u8; 4], coverage: f32) -> Rgba<u8> {
     ])
 }
 
+fn frame_bounds(frame: &Frame, ratio: f32) -> (f32, f32, f32, f32) {
+    if frame.rotation.abs() <= 1.0e-4 {
+        return (frame.x, frame.y, frame.x + frame.w, frame.y + frame.h);
+    }
+    let corners = [
+        (frame.x, frame.y),
+        (frame.x + frame.w, frame.y),
+        (frame.x + frame.w, frame.y + frame.h),
+        (frame.x, frame.y + frame.h),
+    ];
+    let mut min_x = f32::INFINITY;
+    let mut min_y = f32::INFINITY;
+    let mut max_x = f32::NEG_INFINITY;
+    let mut max_y = f32::NEG_INFINITY;
+    for (x, y) in corners {
+        let (world_x, world_y) = frame_world(frame, ratio, x, y);
+        min_x = min_x.min(world_x);
+        min_y = min_y.min(world_y);
+        max_x = max_x.max(world_x);
+        max_y = max_y.max(world_y);
+    }
+    (min_x, min_y, max_x, max_y)
+}
+
+fn paint_rotated_border(dest: &mut RgbaImage, frame: &Frame, canvas: usize, ratio: f32) {
+    if frame.border <= 1.0e-4 || frame.photo.is_none() {
+        return;
+    }
+    let dest_w = dest.width();
+    let dest_h = dest.height();
+    let thickness = border_thickness(frame.border, dest_w as f32, dest_h as f32);
+    if thickness <= 0.5 {
+        return;
+    }
+    let (min_x, min_y, max_x, max_y) = frame_bounds(frame, ratio);
+    let canvas_x = canvas as f32;
+    let x0 = min_x.max(canvas_x);
+    let y0 = min_y.max(0.0);
+    let x1 = max_x.min(canvas_x + 1.0);
+    let y1 = max_y.min(1.0);
+    if x1 - x0 <= 1.0e-5 || y1 - y0 <= 1.0e-5 {
+        return;
+    }
+    let px0 = (((x0 - canvas_x) * dest_w as f32).floor().max(0.0) as u32).min(dest_w);
+    let py0 = ((y0 * dest_h as f32).floor().max(0.0) as u32).min(dest_h);
+    let px1 = (((x1 - canvas_x) * dest_w as f32).ceil() as u32).min(dest_w);
+    let py1 = ((y1 * dest_h as f32).ceil() as u32).min(dest_h);
+    let right = frame.x + frame.w;
+    let bottom = frame.y + frame.h;
+    let color = frame.border_color;
+    for py in py0..py1 {
+        let ly = (py as f32 + 0.5) / dest_h as f32;
+        for px in px0..px1 {
+            let lx = canvas_x + (px as f32 + 0.5) / dest_w as f32;
+            let (fx, fy) = frame_local(frame, ratio, lx, ly);
+            if fx < frame.x || fy < frame.y || fx > right || fy > bottom {
+                continue;
+            }
+            let inset = ((fx - frame.x) * dest_w as f32)
+                .min((right - fx) * dest_w as f32)
+                .min((fy - frame.y) * dest_h as f32)
+                .min((bottom - fy) * dest_h as f32);
+            let coverage = (thickness + 0.5 - inset).clamp(0.0, 1.0);
+            if coverage <= 0.0 {
+                continue;
+            }
+            if coverage >= 1.0 {
+                dest.put_pixel(px, py, Rgba(color));
+                continue;
+            }
+            let image = dest.get_pixel(px, py).0;
+            dest.put_pixel(px, py, mix_border(image, color, coverage));
+        }
+    }
+}
+
 fn paint_rotated(dest: &mut RgbaImage, src: &RgbaImage, frame: &Frame, canvas: usize, ratio: f32) {
     let Some(photo) = frame.photo.as_ref() else {
         return;
@@ -253,11 +333,12 @@ fn paint_rotated(dest: &mut RgbaImage, src: &RgbaImage, frame: &Frame, canvas: u
     }
     let dest_w = dest.width();
     let dest_h = dest.height();
+    let (min_x, min_y, max_x, max_y) = frame_bounds(frame, ratio);
     let canvas_x = canvas as f32;
-    let x0 = frame.x.max(canvas_x);
-    let y0 = frame.y.max(0.0);
-    let x1 = (frame.x + frame.w).min(canvas_x + 1.0);
-    let y1 = (frame.y + frame.h).min(1.0);
+    let x0 = min_x.max(canvas_x);
+    let y0 = min_y.max(0.0);
+    let x1 = max_x.min(canvas_x + 1.0);
+    let y1 = max_y.min(1.0);
     if x1 - x0 <= 1.0e-5 || y1 - y0 <= 1.0e-5 {
         return;
     }
@@ -284,11 +365,12 @@ fn paint_rotated(dest: &mut RgbaImage, src: &RgbaImage, frame: &Frame, canvas: u
         let ly = (py as f32 + 0.5) / dest_h as f32;
         for px in px0..px1 {
             let lx = canvas_x + (px as f32 + 0.5) / dest_w as f32;
-            if lx < frame.x || ly < frame.y || lx > frame_right || ly > frame_bottom {
+            let (fx, fy) = frame_local(frame, ratio, lx, ly);
+            if fx < frame.x || fy < frame.y || fx > frame_right || fy > frame_bottom {
                 continue;
             }
-            let dx = (lx - center_x) * canvas_ratio;
-            let dy = ly - center_y;
+            let dx = (fx - center_x) * canvas_ratio;
+            let dy = fy - center_y;
             let local_x = center_x + (dx * cos + dy * sin) / canvas_ratio;
             let local_y = center_y - dx * sin + dy * cos;
             let u = (local_x - fit.x) / fit.w;

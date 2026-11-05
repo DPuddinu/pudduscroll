@@ -47,7 +47,7 @@ impl PudduScrollApp {
         ui.add_space(8.0);
         ui.heading("Canvas");
         section_scroll(ui, "canvas-scroll").show(ui, |ui| {
-            ui.horizontal_wrapped(|ui| {
+            ui.horizontal(|ui| {
                 for preset in CANVAS_PRESETS {
                     let label = preset.label();
                     let selected = self.layout().is_some_and(|layout| layout.ratio == preset);
@@ -63,69 +63,39 @@ impl PudduScrollApp {
                         self.note_geometry();
                     }
                 }
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if let Some(layout) = self.layout() {
+                        let count =
+                            ui.monospace(format!("{:02}/{MAX_CANVASES:02}", layout.canvas_count));
+                        self.remember("canvas-count", count.rect);
+                    }
+                });
             });
-            if let Some(layout) = self.layout() {
-                let (export_w, export_h) = layout.ratio.export_size(layout_export_width(layout));
-                ui.label(
-                    egui::RichText::new(format!("{export_w}×{export_h}"))
-                        .color(MUTED)
-                        .size(13.0),
-                );
-            }
+            let can_add = self.active_canvas.is_some()
+                && self
+                    .layout()
+                    .is_some_and(|layout| layout.canvas_count < MAX_CANVASES);
+            let chosen = self.removable_canvases();
             ui.horizontal_wrapped(|ui| {
-                if self.active_canvas.is_some() {
-                    let can_add = self
-                        .layout()
-                        .is_some_and(|layout| layout.canvas_count < MAX_CANVASES);
-                    let add_left = ui.add_enabled(can_add, egui::Button::new("Add left"));
-                    self.remember("add-canvas-left", add_left.rect);
-                    if add_left.clicked() && can_add {
-                        self.add_canvas_beside(false);
-                    }
-                    let chosen = self.removable_canvases();
-                    let remove = ui.add_enabled(chosen.is_some(), egui::Button::new("Remove"));
-                    self.remember("remove-canvas", remove.rect);
-                    if remove.clicked()
-                        && let Some(chosen) = chosen
-                    {
-                        self.confirm = Some(super::Confirm::RemoveCanvases(chosen));
-                    }
-                    let add = ui.add_enabled(can_add, egui::Button::new("Add right"));
-                    self.remember("add-canvas", add.rect);
-                    if add.clicked() {
-                        self.add_canvas_command();
-                    }
+                ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Extend);
+                let add_left = ui.add_enabled(can_add, egui::Button::new("Add canvas left"));
+                self.remember("add-canvas-left", add_left.rect);
+                if add_left.clicked() && can_add {
+                    self.add_canvas_beside(false);
                 }
-                if let Some(layout) = self.layout() {
-                    ui.monospace(format!("{:02} / {MAX_CANVASES:02}", layout.canvas_count));
+                let add = ui.add_enabled(can_add, egui::Button::new("Add canvas right"));
+                self.remember("add-canvas", add.rect);
+                if add.clicked() && can_add {
+                    self.add_canvas_command();
+                }
+                let remove = ui.add_enabled(chosen.is_some(), egui::Button::new("Remove canvas"));
+                self.remember("remove-canvas", remove.rect);
+                if remove.clicked()
+                    && let Some(chosen) = chosen
+                {
+                    self.confirm = Some(super::Confirm::RemoveCanvases(chosen));
                 }
             });
-        });
-    }
-
-    pub(super) fn frame_panel(&mut self, ui: &mut egui::Ui) {
-        ui.add_space(8.0);
-        ui.heading("Frame");
-        section_scroll(ui, "frame-scroll").show(ui, |ui| {
-            ui.horizontal(|ui| {
-                let grid = ui.checkbox(&mut self.show_grid, "Grid");
-                self.remember("grid", grid.rect);
-                let snap = ui.checkbox(&mut self.snap_to_grid, "Snap");
-                self.remember("snap", snap.rect);
-            });
-            ui.label("Squares");
-            let previous = self.grid_cells();
-            let mut cells = previous;
-            let slider = ui.add(
-                egui::Slider::new(&mut cells, MIN_GRID_CELLS..=MAX_GRID_CELLS).trailing_fill(true),
-            );
-            self.remember("grid-squares", slider.rect);
-            if slider.changed() {
-                self.edit_grid(previous, cells);
-            }
-            if slider.drag_stopped() || (slider.changed() && !slider.dragged()) {
-                self.persist();
-            }
             ui.horizontal_wrapped(|ui| {
                 ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Extend);
                 let add_frame = ui.button("Add frame");
@@ -185,7 +155,67 @@ impl PudduScrollApp {
                         self.note_geometry();
                     }
                 }
+                let frame_ready = self.selected.is_some();
+                let ccw = icon_square(ui, "rotate-frame-ccw", frame_ready, false, Glyph::RotateCcw)
+                    .on_hover_text("CCW 90");
+                self.remember("rotate-frame-ccw", ccw.rect);
+                if ccw.clicked()
+                    && let Some(id) = self.selected
+                {
+                    self.checkpoint();
+                    if let Some(layout) = self.layout_mut() {
+                        layout.turn_frame(id, Turn::Counterclockwise);
+                    }
+                    self.note_geometry();
+                }
+                let cw = icon_square(ui, "rotate-frame-cw", frame_ready, false, Glyph::RotateCw)
+                    .on_hover_text("CW 90");
+                self.remember("rotate-frame-cw", cw.rect);
+                if cw.clicked()
+                    && let Some(id) = self.selected
+                {
+                    self.checkpoint();
+                    if let Some(layout) = self.layout_mut() {
+                        layout.turn_frame(id, Turn::Clockwise);
+                    }
+                    self.note_geometry();
+                }
+                let free = icon_square(
+                    ui,
+                    "rotate-frame-free",
+                    frame_ready,
+                    self.frame_rotate && frame_ready,
+                    Glyph::RotateFree,
+                )
+                .on_hover_text("Free");
+                self.remember("rotate-frame-free", free.rect);
+                if free.clicked() {
+                    self.frame_rotate = !self.frame_rotate;
+                    if self.frame_rotate {
+                        self.free_rotate = false;
+                        self.status = "Drag the handle to rotate".to_string();
+                    }
+                }
             });
+            ui.horizontal(|ui| {
+                let grid = ui.checkbox(&mut self.show_grid, "Grid");
+                self.remember("grid", grid.rect);
+                let snap = ui.checkbox(&mut self.snap_to_grid, "Snap");
+                self.remember("snap", snap.rect);
+            });
+            ui.label("Squares");
+            let previous = self.grid_cells();
+            let mut cells = previous;
+            let slider = ui.add(
+                egui::Slider::new(&mut cells, MIN_GRID_CELLS..=MAX_GRID_CELLS).trailing_fill(true),
+            );
+            self.remember("grid-squares", slider.rect);
+            if slider.changed() {
+                self.edit_grid(previous, cells);
+            }
+            if slider.drag_stopped() || (slider.changed() && !slider.dragged()) {
+                self.persist();
+            }
             if self.edit_frame && self.selected.is_some() {
                 ui.horizontal_wrapped(|ui| {
                     for preset in CANVAS_PRESETS {
@@ -357,6 +387,7 @@ impl PudduScrollApp {
                 if free.clicked() {
                     self.free_rotate = !self.free_rotate;
                     if self.free_rotate {
+                        self.frame_rotate = false;
                         self.status = "Drag the handle to rotate".to_string();
                     }
                 }

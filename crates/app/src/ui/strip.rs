@@ -1,15 +1,17 @@
 use eframe::egui;
 use pudduscroll_core::{
-    FrameId, FrameRect, Handle, canvas_at, cover_fit, pan_for_origin, photo_local, resize_frame,
-    rotation_from_pointer, snap_frame, snap_frame_resize,
+    FrameId, FrameRect, Handle, border_thickness, canvas_at, cover_fit, frame_local,
+    frame_rotation_from_pointer, pan_for_origin, photo_local, resize_frame, rotation_from_pointer,
+    snap_frame, snap_frame_resize, unrotate_about,
 };
 
 use super::draw::{
-    cursor_for, editor_strip_size, fit_editor_zoom, frame_screen, grid_step, handle_at,
-    handle_points, next_editor_zoom, norm_rect, paint_alignment_grid, paint_clipped_image,
-    paint_frame, paint_frame_outline, paint_loading, paint_photo_border, paint_plus,
-    paint_resize_handle, paint_rotate_handle, paint_rotated_photo, photo_screen, rotate_handle_hit,
-    screen_to_norm, zoom_strip_pan,
+    cursor_for, editor_strip_size, fit_editor_zoom, frame_screen, frame_screen_corners, grid_step,
+    next_editor_zoom, norm_rect, paint_alignment_grid, paint_clipped_image, paint_frame,
+    paint_frame_outline, paint_loading, paint_photo_border, paint_plus, paint_resize_handle,
+    paint_rotate_handle, paint_rotated_photo, paint_spun_border, paint_spun_fill,
+    paint_spun_outline, paint_spun_photo, photo_screen, rotate_around, rotate_handle_geometry,
+    rotate_handle_hit, screen_to_norm, spun_handle_at, spun_points, zoom_strip_pan,
 };
 use super::{
     ACCENT, CANVAS_BG, Drag, EDITOR_ZOOM_SPEED, OUTSIDE_FRAME_ALPHA, PudduScrollApp, Route,
@@ -108,13 +110,18 @@ impl PudduScrollApp {
         let Some(photo) = frame.photo.as_ref() else {
             return false;
         };
-        let screen = frame_screen(strip, count, frame);
-        if !screen.contains(pointer) {
+        let ratio = self.metrics().map_or(1.0, |(ratio, _)| ratio);
+        let (nx, ny) = screen_to_norm(strip, count, pointer);
+        let (local_x, local_y) = frame_local(frame, ratio, nx, ny);
+        if local_x < frame.x
+            || local_y < frame.y
+            || local_x > frame.x + frame.w
+            || local_y > frame.y + frame.h
+        {
             return false;
         }
         let before = (photo.zoom, photo.pan_x, photo.pan_y);
         let origin = self.zoom_origin();
-        let (nx, ny) = screen_to_norm(strip, count, pointer);
         let factor = (scroll_y * EDITOR_ZOOM_SPEED).exp();
         if let Some(layout) = self.layout_mut() {
             layout.zoom_photo(id, nx, ny, factor);
@@ -302,7 +309,7 @@ impl PudduScrollApp {
             && let Some(frame) = layout.frame(id)
         {
             let screen = frame_screen(rect, count, frame);
-            if let Some(handle) = handle_at(screen, pos) {
+            if let Some(handle) = spun_handle_at(screen, frame.rotation, pos) {
                 return Some(Drag::ResizeFrame {
                     id,
                     handle,
@@ -311,6 +318,16 @@ impl PudduScrollApp {
                     w: frame.w,
                     h: frame.h,
                 });
+            }
+        }
+        if self.frame_rotate
+            && self.crop_session.is_none()
+            && let Some(id) = self.selected
+            && let Some(frame) = layout.frame(id)
+        {
+            let screen = frame_screen(rect, count, frame);
+            if frame_rotate_hit(screen, frame.rotation, pos) {
+                return Some(Drag::RotateFrame { id });
             }
         }
         if self.free_rotate
@@ -335,7 +352,8 @@ impl PudduScrollApp {
             });
         }
         let fit = cover_fit(frame, ratio)?;
-        let (local_x, local_y) = photo_local(frame, ratio, nx, ny);
+        let (fx, fy) = frame_local(frame, ratio, nx, ny);
+        let (local_x, local_y) = photo_local(frame, ratio, fx, fy);
         Some(Drag::Pan {
             id,
             grab_x: local_x - fit.x,
@@ -368,9 +386,13 @@ impl PudduScrollApp {
             if let Some(origin) = press.or(interact).or(latest) {
                 if editor.contains(origin) && ctx.layer_id_at(origin).is_none_or(|hit| hit == layer)
                 {
-                    let index = self.canvas_index_at(rect, origin);
-                    self.active_canvas = index;
-                    let hit = index.is_some() || self.hits_frame_or_handle(rect, origin);
+                    let frame_hit = self.hits_frame_or_handle(rect, origin);
+                    if frame_hit {
+                        self.active_canvas = self.canvas_for_press(rect, origin);
+                    } else {
+                        self.active_canvas = self.canvas_index_at(rect, origin);
+                    }
+                    let hit = self.active_canvas.is_some() || frame_hit;
                     if hit && !self.plus_hit(origin) {
                         self.begin_drag(rect, origin);
                     }
@@ -383,7 +405,12 @@ impl PudduScrollApp {
             }
         }
         match self.drag {
-            Some(Drag::MoveFrame { .. } | Drag::Pan { .. } | Drag::Rotate { .. }) => {
+            Some(
+                Drag::MoveFrame { .. }
+                | Drag::Pan { .. }
+                | Drag::Rotate { .. }
+                | Drag::RotateFrame { .. },
+            ) => {
                 ctx.set_cursor_icon(egui::CursorIcon::Grabbing);
                 if down {
                     ctx.set_dragged_id(egui::Id::unique("frame-gesture"));
@@ -421,7 +448,9 @@ impl PudduScrollApp {
             if let Some(drag) = self.drag.take() {
                 match drag {
                     Drag::Pan { .. } => self.gesture = "pan".to_string(),
-                    Drag::Rotate { .. } => self.gesture = "rotate".to_string(),
+                    Drag::Rotate { .. } | Drag::RotateFrame { .. } => {
+                        self.gesture = "rotate".to_string();
+                    }
                     Drag::MoveFrame { id, .. } => {
                         if self.show_grid && self.snap_to_grid {
                             self.snap_released_frame(id);
@@ -514,7 +543,14 @@ impl PudduScrollApp {
                 h,
             }) => {
                 let lock = matches!(handle, Handle::Ne | Handle::Nw | Handle::Se | Handle::Sw);
-                let resized = resize_frame(FrameRect { x, y, w, h }, handle, nx, ny, lock);
+                let rotation = self
+                    .layout()
+                    .and_then(|layout| layout.frame(id))
+                    .map_or(0.0, |frame| frame.rotation);
+                let center_x = x + w * 0.5;
+                let center_y = y + h * 0.5;
+                let (lx, ly) = unrotate_about(center_x, center_y, rotation, ratio, nx, ny);
+                let resized = resize_frame(FrameRect { x, y, w, h }, handle, lx, ly, lock);
                 if let Some(layout) = self.layout_mut() {
                     layout.set_frame_rect(id, resized.x, resized.y, resized.w, resized.h);
                 }
@@ -523,7 +559,8 @@ impl PudduScrollApp {
                 let Some(frame) = self.layout().and_then(|layout| layout.frame(id)).cloned() else {
                     return;
                 };
-                let (local_x, local_y) = photo_local(&frame, ratio, nx, ny);
+                let (fx, fy) = frame_local(&frame, ratio, nx, ny);
+                let (local_x, local_y) = photo_local(&frame, ratio, fx, fy);
                 let (pan_x, pan_y) =
                     pan_for_origin(&frame, ratio, local_x - grab_x, local_y - grab_y);
                 if let Some(layout) = self.layout_mut() {
@@ -537,6 +574,15 @@ impl PudduScrollApp {
                 let angle = rotation_from_pointer(&frame, ratio, nx, ny);
                 if let Some(layout) = self.layout_mut() {
                     layout.set_rotation(id, angle);
+                }
+            }
+            Some(Drag::RotateFrame { id }) => {
+                let Some(frame) = self.layout().and_then(|layout| layout.frame(id)).cloned() else {
+                    return;
+                };
+                let angle = frame_rotation_from_pointer(&frame, ratio, nx, ny);
+                if let Some(layout) = self.layout_mut() {
+                    layout.set_frame_rotation(id, angle);
                 }
             }
             None => {}
@@ -584,11 +630,17 @@ impl PudduScrollApp {
                 continue;
             }
             let screen = frame_screen(rect, count, frame);
+            let spun = frame.rotation.abs() > 1.0e-4;
+            let corners = spun.then(|| frame_screen_corners(rect, count, frame, ratio));
             if frame.photo.is_none() {
-                fill_outside(painter, screen, rect, clip);
-                let visible = screen.intersect(rect).intersect(clip);
-                if visible.is_positive() {
-                    painter.rect_filled(visible, 0.0, egui::Color32::from_black_alpha(16));
+                if let Some(corners) = corners {
+                    paint_spun_fill(painter, &corners, clip, egui::Color32::from_black_alpha(16));
+                } else {
+                    fill_outside(painter, screen, rect, clip);
+                    let visible = screen.intersect(rect).intersect(clip);
+                    if visible.is_positive() {
+                        painter.rect_filled(visible, 0.0, egui::Color32::from_black_alpha(16));
+                    }
                 }
             }
             if let Some(photo) = &frame.photo
@@ -601,7 +653,18 @@ impl PudduScrollApp {
                     egui::pos2(photo.crop.x + photo.crop.w, photo.crop.y + photo.crop.h),
                 );
                 let faded = egui::Color32::from_white_alpha(OUTSIDE_FRAME_ALPHA);
-                if photo.rotation.abs() > 1.0e-4 {
+                if let Some(corners) = corners {
+                    paint_spun_photo(painter, rect, count, frame, ratio, clip, asset.texture.id());
+                    let color = frame.border_color;
+                    paint_spun_border(
+                        painter,
+                        &corners,
+                        border_thickness(frame.border, canvas_w, rect.height()),
+                        egui::Color32::from_rgba_unmultiplied(
+                            color[0], color[1], color[2], color[3],
+                        ),
+                    );
+                } else if photo.rotation.abs() > 1.0e-4 {
                     paint_rotated_photo(
                         painter,
                         rect,
@@ -629,13 +692,15 @@ impl PudduScrollApp {
                         egui::Color32::WHITE,
                     );
                 }
-                paint_photo_border(
-                    painter,
-                    screen,
-                    clip,
-                    frame,
-                    egui::vec2(canvas_w, rect.height()),
-                );
+                if corners.is_none() {
+                    paint_photo_border(
+                        painter,
+                        screen,
+                        clip,
+                        frame,
+                        egui::vec2(canvas_w, rect.height()),
+                    );
+                }
             }
         }
         if self.show_grid {
@@ -659,19 +724,30 @@ impl PudduScrollApp {
             }
             let screen = frame_screen(rect, count, frame);
             let shown = frame.photo.is_some() && self.assets.contains_key(&frame.id);
-            if !shown {
-                paint_frame_outline(
-                    painter,
-                    screen,
-                    rect,
-                    count,
-                    clip,
-                    egui::Color32::from_rgb(42, 36, 30),
-                    false,
-                );
-            }
-            if self.selected == Some(frame.id) {
-                paint_frame_outline(painter, screen, rect, count, clip, ACCENT, true);
+            let corners = (frame.rotation.abs() > 1.0e-4)
+                .then(|| frame_screen_corners(rect, count, frame, ratio));
+            if let Some(corners) = corners {
+                if !shown {
+                    paint_spun_outline(painter, &corners, egui::Color32::from_rgb(42, 36, 30));
+                }
+                if self.selected == Some(frame.id) {
+                    paint_spun_outline(painter, &corners, ACCENT);
+                }
+            } else {
+                if !shown {
+                    paint_frame_outline(
+                        painter,
+                        screen,
+                        rect,
+                        count,
+                        clip,
+                        egui::Color32::from_rgb(42, 36, 30),
+                        false,
+                    );
+                }
+                if self.selected == Some(frame.id) {
+                    paint_frame_outline(painter, screen, rect, count, clip, ACCENT, true);
+                }
             }
             let loading_here = matches!(
                 self.route,
@@ -719,11 +795,12 @@ impl PudduScrollApp {
             return;
         };
         let screen = frame_screen(strip, count, frame);
-        if !screen.intersects(clip.expand(24.0)) {
+        let pad = screen.width().max(screen.height());
+        if !screen.expand(pad).intersects(clip.expand(24.0)) {
             return;
         }
         let painter = painter.with_clip_rect(clip);
-        for (_, pos) in handle_points(screen) {
+        for (_, pos) in spun_points(screen, frame.rotation) {
             paint_resize_handle(&painter, pos, 9.0, clip);
         }
     }
@@ -734,7 +811,7 @@ impl PudduScrollApp {
         strip: egui::Rect,
         clip: egui::Rect,
     ) {
-        if !self.free_rotate || self.crop_session.is_some() {
+        if self.crop_session.is_some() || (!self.free_rotate && !self.frame_rotate) {
             return;
         }
         let Some(id) = self.selected else {
@@ -746,12 +823,22 @@ impl PudduScrollApp {
         let Some(frame) = self.layout().and_then(|layout| layout.frame(id)) else {
             return;
         };
-        let Some(photo) = frame.photo.as_ref() else {
-            return;
-        };
         let screen = frame_screen(strip, count, frame);
         let painter = painter.with_clip_rect(clip);
-        paint_rotate_handle(&painter, screen, photo.rotation);
+        if self.frame_rotate {
+            let (edge, handle) = rotate_handle_geometry(screen, 0.0);
+            let center = screen.center();
+            let edge = rotate_around(center, edge, frame.rotation);
+            let handle = rotate_around(center, handle, frame.rotation);
+            painter.line_segment([edge, handle], egui::Stroke::new(2.0, ACCENT));
+            painter.circle_filled(handle, 7.0, egui::Color32::WHITE);
+            painter.circle_stroke(handle, 7.0, egui::Stroke::new(2.0, ACCENT));
+        }
+        if self.free_rotate
+            && let Some(photo) = frame.photo.as_ref()
+        {
+            paint_rotate_handle(&painter, screen, photo.rotation);
+        }
     }
 
     pub(super) fn strip_cursor(&self, response: &egui::Response, rect: egui::Rect) {
@@ -775,9 +862,12 @@ impl PudduScrollApp {
             return;
         }
         let icon = match self.drag {
-            Some(Drag::MoveFrame { .. } | Drag::Pan { .. } | Drag::Rotate { .. }) => {
-                Some(egui::CursorIcon::Grabbing)
-            }
+            Some(
+                Drag::MoveFrame { .. }
+                | Drag::Pan { .. }
+                | Drag::Rotate { .. }
+                | Drag::RotateFrame { .. },
+            ) => Some(egui::CursorIcon::Grabbing),
             Some(Drag::ResizeFrame { handle, .. }) => Some(cursor_for(handle)),
             None => self.hover_cursor(response, rect),
         };
@@ -800,6 +890,16 @@ impl PudduScrollApp {
     pub(super) fn cursor_at(&self, rect: egui::Rect, pos: egui::Pos2) -> Option<egui::CursorIcon> {
         let layout = self.layout()?;
         let count = layout.canvas_count;
+        if self.frame_rotate
+            && self.crop_session.is_none()
+            && let Some(id) = self.selected
+            && let Some(frame) = layout.frame(id)
+        {
+            let screen = frame_screen(rect, count, frame);
+            if frame_rotate_hit(screen, frame.rotation, pos) {
+                return Some(egui::CursorIcon::Grab);
+            }
+        }
         if self.free_rotate
             && self.crop_session.is_none()
             && let Some(id) = self.selected
@@ -816,7 +916,7 @@ impl PudduScrollApp {
             && let Some(frame) = layout.frame(id)
         {
             let screen = frame_screen(rect, count, frame);
-            if let Some(handle) = handle_at(screen, pos) {
+            if let Some(handle) = spun_handle_at(screen, frame.rotation, pos) {
                 return Some(cursor_for(handle));
             }
         }
@@ -827,6 +927,35 @@ impl PudduScrollApp {
         } else {
             Some(egui::CursorIcon::PointingHand)
         }
+    }
+
+    pub(super) fn canvas_under_frame(&self, id: FrameId) -> Option<usize> {
+        let layout = self.layout()?;
+        let frame = layout.frame(id)?;
+        let count = layout.canvas_count;
+        if count == 0 {
+            return None;
+        }
+        let center = frame.x + frame.w * 0.5;
+        let index = if center.is_finite() {
+            center.floor() as isize
+        } else {
+            0
+        };
+        Some(index.clamp(0, count as isize - 1) as usize)
+    }
+
+    fn canvas_for_press(&self, strip: egui::Rect, pos: egui::Pos2) -> Option<usize> {
+        let count = self.metrics()?.1;
+        let (x, y) = screen_to_norm(strip, count, pos);
+        if let Some(column) = column_at(count, x) {
+            return Some(column);
+        }
+        let id = self
+            .layout()
+            .and_then(|layout| layout.frame_at(x, y))
+            .or(self.selected)?;
+        self.canvas_under_frame(id)
     }
 
     fn canvas_index_at(&self, strip: egui::Rect, pos: egui::Pos2) -> Option<usize> {
@@ -863,6 +992,23 @@ impl PudduScrollApp {
             egui::Color32::BLACK,
         );
     }
+}
+
+fn column_at(count: usize, x: f32) -> Option<usize> {
+    if count == 0 || !x.is_finite() || x < 0.0 || x > count as f32 {
+        return None;
+    }
+    if (x - count as f32).abs() <= f32::EPSILON {
+        Some(count - 1)
+    } else {
+        Some(x.floor() as usize)
+    }
+}
+
+fn frame_rotate_hit(screen: egui::Rect, angle: f32, pos: egui::Pos2) -> bool {
+    let (_, handle) = rotate_handle_geometry(screen, 0.0);
+    let handle = rotate_around(screen.center(), handle, angle);
+    handle.distance(pos) <= 16.0
 }
 
 fn canvas_screen(strip: egui::Rect, count: usize, index: usize) -> egui::Rect {

@@ -161,9 +161,11 @@ fn canvas_starts_inactive_and_activates_on_click() {
     app.new_carousel(&ctx);
     settle(&mut app, &ctx);
     assert_eq!(app.active_canvas, None);
-    assert!(!shown(&app, "add-canvas-left"));
-    assert!(!shown(&app, "add-canvas"));
-    assert!(!shown(&app, "remove-canvas"));
+    let count = app.layout().expect("layout").canvas_count;
+    assert!(shown(&app, "add-canvas-left"));
+    click(&mut app, &ctx, "add-canvas-left");
+    settle(&mut app, &ctx);
+    assert_eq!(app.layout().expect("layout").canvas_count, count);
     let (index, pos) = visible_canvas_hit(&app);
     click_at(&mut app, &ctx, pos);
     settle(&mut app, &ctx);
@@ -179,7 +181,33 @@ fn canvas_starts_inactive_and_activates_on_click() {
     click_at(&mut app, &ctx, outside);
     settle(&mut app, &ctx);
     assert_eq!(app.active_canvas, None);
-    assert!(!shown(&app, "add-canvas"));
+    assert_eq!(app.layout().expect("layout").canvas_count, count);
+    click(&mut app, &ctx, "add-canvas");
+    settle(&mut app, &ctx);
+    assert_eq!(app.layout().expect("layout").canvas_count, count);
+}
+
+#[test]
+fn a_frame_above_the_strip_selects_the_canvas_under_it() {
+    let (ctx, mut app) = ready();
+    app.new_carousel(&ctx);
+    settle(&mut app, &ctx);
+    let id = app.layout().expect("layout").frames[0].id;
+    app.layout_mut()
+        .expect("layout")
+        .set_frame_rect(id, 0.0, -0.45, 1.0, 0.7);
+    settle(&mut app, &ctx);
+    let strip = app.strip_rect.expect("strip");
+    let view = app.view_rect.expect("view");
+    let screen = frame_screen(strip, 1, app.layout().expect("layout").frame(id).unwrap());
+    let pos = egui::pos2(screen.center().x, strip.top() - 8.0);
+    assert!(screen.contains(pos));
+    assert!(view.contains(pos));
+    assert!(!strip.contains(pos));
+    click_at(&mut app, &ctx, pos);
+    settle(&mut app, &ctx);
+    assert_eq!(app.selected, Some(id));
+    assert_eq!(app.active_canvas, Some(0));
 }
 
 #[test]
@@ -261,8 +289,34 @@ fn an_empty_carousel_frame_shows_a_plus() {
     for name in ["canvas-1:1", "canvas-4:5", "canvas-3:4", "canvas-9:16"] {
         assert!(shown(&app, name), "{name} missing");
     }
-    click(&mut app, &ctx, "rail-tool-frame");
+    assert!(shown(&app, "rail-tool-canvas"));
+    assert!(!shown(&app, "rail-tool-frame"));
+    assert!(shown(&app, "add-canvas-left"));
+    assert!(shown(&app, "add-canvas"));
+    assert!(shown(&app, "remove-canvas"));
+    let canvases = app.layout().expect("layout").canvas_count;
+    click(&mut app, &ctx, "add-canvas");
     settle(&mut app, &ctx);
+    assert_eq!(app.layout().expect("layout").canvas_count, canvases);
+    app.active_canvas = Some(0);
+    settle(&mut app, &ctx);
+    let preset = rect(&app, "canvas-1:1");
+    let count = rect(&app, "canvas-count");
+    let left = rect(&app, "add-canvas-left");
+    let right = rect(&app, "add-canvas");
+    let remove = rect(&app, "remove-canvas");
+    assert!((preset.center().y - count.center().y).abs() < 4.0);
+    assert!(left.top() - preset.bottom() < 20.0);
+    assert!(count.left() > rect(&app, "canvas-9:16").right());
+    let row = count.right() - left.left();
+    assert!(left.width() < row * 0.7);
+    assert!(right.width() < row * 0.7);
+    assert!(remove.width() < row * 0.7);
+    assert!((left.center().y - right.center().y).abs() < 4.0);
+    assert!(right.left() > left.right());
+    let row_bottom = left.bottom().max(right.bottom()).max(remove.bottom());
+    let after = rect(&app, "add-frame").top() - row_bottom;
+    assert!(after < 20.0, "{after}");
     for name in [
         "grid",
         "snap",
@@ -274,6 +328,9 @@ fn an_empty_carousel_frame_shows_a_plus() {
         "frame-aspect-4:5",
         "frame-aspect-3:4",
         "frame-aspect-9:16",
+        "rotate-frame-ccw",
+        "rotate-frame-cw",
+        "rotate-frame-free",
     ] {
         assert!(shown(&app, name), "{name} missing");
     }
@@ -297,8 +354,6 @@ fn add_frame_lands_on_the_active_canvas_and_undo_removes_it() {
     settle(&mut app, &ctx);
     assert_eq!(app.layout().expect("layout").canvas_count, 2);
     assert_eq!(app.active_canvas, Some(0));
-    click(&mut app, &ctx, "rail-tool-frame");
-    settle(&mut app, &ctx);
     click(&mut app, &ctx, "add-frame");
     settle(&mut app, &ctx);
     let layout = app.layout().expect("layout");
@@ -335,7 +390,7 @@ fn a_template_frame_has_no_plus() {
     settle(&mut app, &ctx);
     assert!(!shown(&app, "from-link"));
     assert!(!shown(&app, "rotate-ccw"));
-    click(&mut app, &ctx, "rail-tool-frame");
+    click(&mut app, &ctx, "rail-tool-canvas");
     settle(&mut app, &ctx);
     assert!(shown(&app, "add-frame"));
 }

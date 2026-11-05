@@ -904,7 +904,7 @@ fn push_frames(out: &mut String, layout: &Layout, disk: Option<&HashMap<FrameId,
     for frame in &layout.frames {
         let _ = writeln!(
             out,
-            "frame {} {:.6} {:.6} {:.6} {:.6} {} {:.6} {} {} {}",
+            "frame {} {:.6} {:.6} {:.6} {:.6} {} {:.6} {} {} {} {:.6}",
             frame.id.0,
             frame.x,
             frame.y,
@@ -914,7 +914,8 @@ fn push_frames(out: &mut String, layout: &Layout, disk: Option<&HashMap<FrameId,
             frame.border,
             frame.border_color[0],
             frame.border_color[1],
-            frame.border_color[2]
+            frame.border_color[2],
+            frame.rotation
         );
         let Some(photo) = &frame.photo else {
             continue;
@@ -1340,6 +1341,7 @@ struct FrameBuild {
     z: i32,
     border: f32,
     border_color: [u8; 4],
+    rotation: f32,
     photo: Option<PhotoBuild>,
 }
 
@@ -1523,6 +1525,7 @@ fn push_meta_frames(
             z: source.z,
             border: source.border,
             border_color: source.border_color,
+            rotation: source.rotation,
             photo: None,
         };
         if let Some(photo) = &source.photo {
@@ -1685,6 +1688,10 @@ fn parse_frame(text: &str, line: usize) -> Result<FrameBuild, String> {
     } else {
         [255, 255, 255, 255]
     };
+    let rotation = match parts.next() {
+        Some(token) => parse_f32(token).map_err(|error| format!("line {line}: {error}"))?,
+        None => 0.0,
+    };
     Ok(FrameBuild {
         id: FrameId(id),
         x,
@@ -1694,6 +1701,7 @@ fn parse_frame(text: &str, line: usize) -> Result<FrameBuild, String> {
         z,
         border,
         border_color,
+        rotation,
         photo: None,
     })
 }
@@ -2401,6 +2409,13 @@ mod tests {
             .unwrap()
             .layout
             .set_border_color(FrameId(1), [12, 34, 56, 255]);
+        library
+            .carousels
+            .iter_mut()
+            .find(|carousel| carousel.id == carousel_id)
+            .unwrap()
+            .layout
+            .set_frame_rotation(FrameId(1), 0.3);
         library.store_to(&root).unwrap();
         library
             .templates
@@ -2434,6 +2449,8 @@ mod tests {
         assert!((photo.zoom - 2.0).abs() < 1e-4);
         assert!((frame.border - 0.35).abs() < 1e-4);
         assert_eq!(frame.border_color, [12, 34, 56, 255]);
+        assert!((frame.rotation - 0.3).abs() < 1e-4);
+        assert!(template_frame.rotation.abs() < 1e-4);
         load_carousel_photos(&mut carousel, &root).unwrap();
         assert!(carousel.photos.contains_key(&frame_id));
         assert!(carousel.photos[&frame_id].source.is_none());
@@ -2679,6 +2696,28 @@ squares 99
 ";
         let parsed = parse_library(wide, Path::new(".")).unwrap();
         assert_eq!(parsed.carousels[0].grid_cells, MAX_GRID_CELLS);
+        let upright = "\
+pudduscroll 1
+next 2
+carousel 1
+name \"Plain\"
+ratio 1 1
+canvases 1
+frame 1 0.000000 0.000000 1.000000 1.000000 0 0.000000 255 255 255
+";
+        let parsed = parse_library(upright, Path::new(".")).unwrap();
+        assert!(parsed.carousels[0].layout.frames[0].rotation.abs() < 1e-4);
+        let turned = "\
+pudduscroll 1
+next 2
+carousel 1
+name \"Turned\"
+ratio 1 1
+canvases 1
+frame 1 0.100000 0.200000 0.500000 0.400000 0 0.000000 255 255 255 0.300000
+";
+        let parsed = parse_library(turned, Path::new(".")).unwrap();
+        assert!((parsed.carousels[0].layout.frames[0].rotation - 0.3).abs() < 1e-4);
         let _ = crate::disk::remove_dir_all(&root);
     }
 

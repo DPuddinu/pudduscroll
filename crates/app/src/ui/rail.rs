@@ -2,9 +2,13 @@ use eframe::egui;
 use pudduscroll_core::{CROP_PRESETS, Crop, FrameId, LayerMove, render_layout};
 
 const EXPORT_PREVIEW_WIDTH: u32 = 1280;
+const TOOL_COUNT: usize = 4;
 const TOOL_COLS: usize = 3;
 const TOOL_CELL_H: f32 = 64.0;
-const TILES_MIN_H: f32 = TOOL_CELL_H * 2.0;
+
+fn tool_rows(count: usize) -> usize {
+    count.div_ceil(TOOL_COLS)
+}
 const TOOL_MIN_H: f32 = 72.0;
 const LAYERS_MIN_H: f32 = 200.0;
 
@@ -13,8 +17,8 @@ use super::draw::{
     rail_weights_from, section_scroll, short_name,
 };
 use super::{
-    ACCENT, COVER_EMPTY, IncomingPhoto, MUTED, PANEL, PudduScrollApp, RailTool, Route, SELECT_BG,
-    TEXT,
+    ACCENT, COVER_EMPTY, HAIRLINE, IncomingPhoto, MUTED, PANEL, PudduScrollApp, RailTool, Route,
+    SELECT_BG, TEXT,
 };
 
 impl PudduScrollApp {
@@ -54,6 +58,9 @@ impl PudduScrollApp {
                 );
                 if response.clicked() {
                     self.selected = Some(id);
+                    if let Some(index) = self.canvas_under_frame(id) {
+                        self.active_canvas = Some(index);
+                    }
                 }
                 {
                     let painter = ui.painter();
@@ -330,24 +337,27 @@ impl PudduScrollApp {
         );
         content.set_clip_rect(inner);
 
-        let mins = [TILES_MIN_H, TOOL_MIN_H, LAYERS_MIN_H];
-        let mut heights = rail_pane_heights(inner.height(), self.rail_weights, mins);
-        let mut drag = None;
-
+        let tiles_h = tool_rows(TOOL_COUNT) as f32 * TOOL_CELL_H;
         let tiles_rect = egui::Rect::from_min_size(
             content.cursor().left_top(),
-            egui::vec2(inner.width(), heights[0]),
+            egui::vec2(inner.width(), tiles_h),
         );
         self.paint_tool_tiles(&mut content, tiles_rect);
         content.allocate_rect(tiles_rect, egui::Sense::hover());
+        content.painter().hline(
+            tiles_rect.x_range(),
+            tiles_rect.bottom(),
+            egui::Stroke::new(1.0, HAIRLINE),
+        );
 
-        if let Some(delta) = rail_splitter(&mut content) {
-            drag = Some((0, delta));
-        }
+        let mins = [TOOL_MIN_H, LAYERS_MIN_H];
+        let body = (inner.height() - tiles_h).max(0.0);
+        let mut heights = rail_pane_heights(body, self.rail_weights, mins);
+        let mut drag = None;
 
         let tool_rect = egui::Rect::from_min_size(
             content.cursor().left_top(),
-            egui::vec2(inner.width(), heights[1]),
+            egui::vec2(inner.width(), heights[0]),
         );
         let mut tool_ui = content.new_child(
             egui::UiBuilder::new()
@@ -360,22 +370,20 @@ impl PudduScrollApp {
             .id_salt("rail-tool-scroll")
             .show(&mut tool_ui, |ui| match self.rail_tool {
                 RailTool::Canvas => self.canvas_panel(ui),
-                RailTool::Frame => self.frame_panel(ui),
                 RailTool::Photo => self.photo_panel(ui),
                 RailTool::Crop => self.crop_panel(ui),
                 RailTool::Snapshots => self.snapshot_panel(ui, &ctx),
             });
         content.allocate_rect(tool_rect, egui::Sense::hover());
 
-        if let Some(delta) = rail_splitter(&mut content)
-            && drag.is_none()
-        {
-            drag = Some((1, delta));
+        let (delta, stopped) = rail_splitter(&mut content);
+        if let Some(delta) = delta {
+            drag = Some(delta);
         }
 
         let layers_rect = egui::Rect::from_min_size(
             content.cursor().left_top(),
-            egui::vec2(inner.width(), heights[2]),
+            egui::vec2(inner.width(), heights[1]),
         );
         let mut layers_ui = content.new_child(
             egui::UiBuilder::new()
@@ -387,21 +395,26 @@ impl PudduScrollApp {
         self.layer_panel(&mut layers_ui);
         content.allocate_rect(layers_rect, egui::Sense::hover());
 
-        if let Some((index, delta)) = drag {
-            heights = apply_rail_drag(heights, index, delta, mins);
+        if let Some(delta) = drag {
+            heights = apply_rail_drag(heights, 0, delta, mins);
             self.rail_weights = rail_weights_from(heights);
+        }
+        if stopped {
+            self.settings.rail = self.rail_weights;
+            if self.can_store {
+                self.save_settings();
+            }
         }
     }
 
     fn paint_tool_tiles(&mut self, ui: &mut egui::Ui, rect: egui::Rect) {
         let tools = [
-            (RailTool::Canvas, "canvas", Glyph::ToolCanvas),
-            (RailTool::Frame, "frame", Glyph::ToolFrame),
+            (RailTool::Canvas, "canvas", Glyph::ToolFrame),
             (RailTool::Photo, "photo", Glyph::ToolPhoto),
             (RailTool::Crop, "crop", Glyph::ToolCrop),
             (RailTool::Snapshots, "snapshots", Glyph::ToolSnapshot),
         ];
-        let rows = tools.len().div_ceil(TOOL_COLS);
+        let rows = tool_rows(tools.len());
         let grid_h = (rows as f32 * TOOL_CELL_H).min(rect.height());
         let grid_rect = egui::Rect::from_min_size(rect.min, egui::vec2(rect.width(), grid_h));
         let cell_w = grid_rect.width() / TOOL_COLS as f32;

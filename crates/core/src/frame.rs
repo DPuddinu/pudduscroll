@@ -32,6 +32,7 @@ pub struct Frame {
     pub y: f32,
     pub w: f32,
     pub h: f32,
+    pub rotation: f32,
     pub z: i32,
     pub border: f32,
     pub border_color: [u8; 4],
@@ -115,14 +116,21 @@ impl Layout {
         if gone.is_empty() || self.canvas_count - gone.len() < 1 {
             return None;
         }
+        let ratio = self.ratio.value();
         let removed = self
             .frames
             .iter()
-            .filter(|frame| gone.iter().any(|index| frame_on_canvas(frame, *index)))
+            .filter(|frame| {
+                gone.iter()
+                    .any(|index| frame_on_canvas(frame, *index, ratio))
+            })
             .map(|frame| frame.id)
             .collect();
-        self.frames
-            .retain(|frame| !gone.iter().any(|index| frame_on_canvas(frame, *index)));
+        self.frames.retain(|frame| {
+            !gone
+                .iter()
+                .any(|index| frame_on_canvas(frame, *index, ratio))
+        });
         for frame in &mut self.frames {
             let start = frame.x.floor() as i32;
             let shift = gone.iter().filter(|index| (**index as i32) < start).count() as f32;
@@ -190,6 +198,7 @@ impl Layout {
     pub fn restore_frame(&mut self, mut frame: Frame) {
         frame.w = frame.w.max(MIN_WIDTH);
         frame.h = frame.h.max(MIN_WIDTH);
+        frame.rotation = normalize_rotation(frame.rotation);
         frame.border = frame.border.clamp(0.0, 1.0);
         self.next_id = self.next_id.max(frame.id.0.saturating_add(1));
         self.next_z = self.next_z.max(frame.z.saturating_add(1));
@@ -209,6 +218,7 @@ impl Layout {
             y: 0.0,
             w: 1.0,
             h: 1.0,
+            rotation: 0.0,
             z,
             border: 0.0,
             border_color: [255, 255, 255, 255],
@@ -341,6 +351,26 @@ impl Layout {
         }
     }
 
+    pub fn turn_frame(&mut self, id: FrameId, turn: Turn) {
+        let Some(frame) = self.frame_mut(id) else {
+            return;
+        };
+        let delta = match turn {
+            Turn::Clockwise => std::f32::consts::FRAC_PI_2,
+            Turn::Counterclockwise => -std::f32::consts::FRAC_PI_2,
+        };
+        frame.rotation = normalize_rotation(frame.rotation + delta);
+    }
+
+    pub fn set_frame_rotation(&mut self, id: FrameId, radians: f32) {
+        if !radians.is_finite() {
+            return;
+        }
+        if let Some(frame) = self.frame_mut(id) {
+            frame.rotation = normalize_rotation(radians);
+        }
+    }
+
     pub fn move_layer(&mut self, id: FrameId, movement: crate::LayerMove) -> bool {
         let mut order: Vec<(i32, FrameId)> = self
             .frames
@@ -397,11 +427,10 @@ impl Layout {
 
     #[must_use]
     pub fn frame_at(&self, x: f32, y: f32) -> Option<FrameId> {
+        let ratio = self.ratio.value();
         self.frames
             .iter()
-            .filter(|frame| {
-                x >= frame.x && x <= frame.x + frame.w && y >= frame.y && y <= frame.y + frame.h
-            })
+            .filter(|frame| point_in_frame(frame, ratio, x, y))
             .max_by_key(|frame| frame.z)
             .map(|frame| frame.id)
     }
@@ -441,6 +470,65 @@ pub fn normalize_rotation(radians: f32) -> f32 {
         angle -= tau;
     }
     if angle.abs() <= 1.0e-5 { 0.0 } else { angle }
+}
+
+#[must_use]
+pub fn frame_local(frame: &Frame, canvas_ratio: f32, x: f32, y: f32) -> (f32, f32) {
+    let center_x = frame.x + frame.w * 0.5;
+    let center_y = frame.y + frame.h * 0.5;
+    unrotate_about(center_x, center_y, frame.rotation, canvas_ratio, x, y)
+}
+
+#[must_use]
+pub fn frame_world(frame: &Frame, canvas_ratio: f32, x: f32, y: f32) -> (f32, f32) {
+    let center_x = frame.x + frame.w * 0.5;
+    let center_y = frame.y + frame.h * 0.5;
+    let ratio = canvas_ratio.max(1.0e-4);
+    let dx = (x - center_x) * ratio;
+    let dy = y - center_y;
+    let (sin, cos) = frame.rotation.sin_cos();
+    let world_x = dx * cos - dy * sin;
+    let world_y = dx * sin + dy * cos;
+    (center_x + world_x / ratio, center_y + world_y)
+}
+
+#[must_use]
+pub fn unrotate_about(
+    center_x: f32,
+    center_y: f32,
+    rotation: f32,
+    canvas_ratio: f32,
+    x: f32,
+    y: f32,
+) -> (f32, f32) {
+    let ratio = canvas_ratio.max(1.0e-4);
+    let dx = (x - center_x) * ratio;
+    let dy = y - center_y;
+    let (sin, cos) = rotation.sin_cos();
+    let local_x = dx * cos + dy * sin;
+    let local_y = -dx * sin + dy * cos;
+    (center_x + local_x / ratio, center_y + local_y)
+}
+
+#[must_use]
+pub fn frame_rotation_from_pointer(frame: &Frame, canvas_ratio: f32, x: f32, y: f32) -> f32 {
+    let center_x = frame.x + frame.w * 0.5;
+    let center_y = frame.y + frame.h * 0.5;
+    let ratio = canvas_ratio.max(1.0e-4);
+    let dx = (x - center_x) * ratio;
+    let dy = y - center_y;
+    if dx * dx + dy * dy < 1.0e-8 {
+        return frame.rotation;
+    }
+    normalize_rotation(dx.atan2(-dy))
+}
+
+fn point_in_frame(frame: &Frame, canvas_ratio: f32, x: f32, y: f32) -> bool {
+    let (local_x, local_y) = frame_local(frame, canvas_ratio, x, y);
+    local_x >= frame.x
+        && local_x <= frame.x + frame.w
+        && local_y >= frame.y
+        && local_y <= frame.y + frame.h
 }
 
 #[must_use]
@@ -551,14 +639,73 @@ fn intervals_touch(a0: f32, a1: f32, b0: f32, b1: f32) -> bool {
     a1 + 1.0e-5 >= b0 && b1 + 1.0e-5 >= a0
 }
 
-fn frame_on_canvas(frame: &Frame, index: usize) -> bool {
-    let x0 = index as f32;
-    let x1 = x0 + 1.0;
-    let ix0 = frame.x.max(x0);
-    let iy0 = frame.y.max(0.0);
-    let ix1 = (frame.x + frame.w).min(x1);
-    let iy1 = (frame.y + frame.h).min(1.0);
-    ix1 - ix0 > 1.0e-5 && iy1 - iy0 > 1.0e-5
+fn frame_on_canvas(frame: &Frame, index: usize, ratio: f32) -> bool {
+    if frame.rotation.abs() <= 1.0e-5 {
+        let x0 = index as f32;
+        let x1 = x0 + 1.0;
+        let ix0 = frame.x.max(x0);
+        let iy0 = frame.y.max(0.0);
+        let ix1 = (frame.x + frame.w).min(x1);
+        let iy1 = (frame.y + frame.h).min(1.0);
+        return ix1 - ix0 > 1.0e-5 && iy1 - iy0 > 1.0e-5;
+    }
+    let ratio = ratio.max(1.0e-4);
+    let quad = frame_corners_iso(frame, ratio);
+    let x0 = index as f32 * ratio;
+    let x1 = (index as f32 + 1.0) * ratio;
+    let canvas = [[x0, 0.0], [x1, 0.0], [x1, 1.0], [x0, 1.0]];
+    polygons_overlap(&quad, &canvas)
+}
+
+fn frame_corners_iso(frame: &Frame, ratio: f32) -> [[f32; 2]; 4] {
+    let corners = [
+        (frame.x, frame.y),
+        (frame.x + frame.w, frame.y),
+        (frame.x + frame.w, frame.y + frame.h),
+        (frame.x, frame.y + frame.h),
+    ];
+    let mut iso = [[0.0; 2]; 4];
+    for (index, (x, y)) in corners.into_iter().enumerate() {
+        let (world_x, world_y) = frame_world(frame, ratio, x, y);
+        iso[index] = [world_x * ratio, world_y];
+    }
+    iso
+}
+
+fn polygons_overlap(a: &[[f32; 2]], b: &[[f32; 2]]) -> bool {
+    for poly in [a, b] {
+        for index in 0..poly.len() {
+            let start = poly[index];
+            let end = poly[(index + 1) % poly.len()];
+            let axis = [end[1] - start[1], start[0] - end[0]];
+            if separated(a, b, axis) {
+                return false;
+            }
+        }
+    }
+    true
+}
+
+fn separated(a: &[[f32; 2]], b: &[[f32; 2]], axis: [f32; 2]) -> bool {
+    let len = (axis[0] * axis[0] + axis[1] * axis[1]).sqrt();
+    if len < 1.0e-8 {
+        return false;
+    }
+    let axis = [axis[0] / len, axis[1] / len];
+    let (a0, a1) = project(a, axis);
+    let (b0, b1) = project(b, axis);
+    a1.min(b1) - a0.max(b0) <= 1.0e-5
+}
+
+fn project(poly: &[[f32; 2]], axis: [f32; 2]) -> (f32, f32) {
+    let mut min = f32::INFINITY;
+    let mut max = f32::NEG_INFINITY;
+    for point in poly {
+        let dot = point[0] * axis[0] + point[1] * axis[1];
+        min = min.min(dot);
+        max = max.max(dot);
+    }
+    (min, max)
 }
 
 #[must_use]
@@ -617,6 +764,7 @@ fn zoom_about(frame: &Frame, canvas_ratio: f32, x: f32, y: f32, factor: f32) -> 
     if size.image_w <= 1.0e-6 || size.image_h <= 1.0e-6 {
         return (next, pan_x, pan_y);
     }
+    let (x, y) = frame_local(frame, canvas_ratio, x, y);
     let (local_x, local_y) = photo_local(frame, canvas_ratio, x, y);
     let cx = frame.x + frame.w * 0.5;
     let cy = frame.y + frame.h * 0.5;

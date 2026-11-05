@@ -30,9 +30,8 @@ use super::draw::{
 };
 use super::history::{Edit, EditHistory, HISTORY_WINDOW, HistoryKind, photo_stamp};
 use super::{
-    Confirm, DEFAULT_EDITOR_ZOOM, DEFAULT_RAIL_WEIGHTS, DecodeTarget, EstimateMsg, EstimateUpdate,
-    ExportUpdate, IncomingPhoto, PendingUpload, PhotoAsset, PudduScrollApp, RailTool, Route,
-    UNDO_LIMIT,
+    Confirm, DEFAULT_EDITOR_ZOOM, DecodeTarget, EstimateMsg, EstimateUpdate, ExportUpdate,
+    IncomingPhoto, PendingUpload, PhotoAsset, PudduScrollApp, RailTool, Route, UNDO_LIMIT,
 };
 
 impl PudduScrollApp {
@@ -51,6 +50,8 @@ impl PudduScrollApp {
         apply_style(ctx);
         let (photo_tx, photo_rx) = mpsc::channel();
         let save_tx = spawn_saver(photo_tx.clone());
+        let settings = crate::settings::AppSettings::load();
+        let rail_weights = settings.rail;
         Self {
             library: Library::empty(),
             library_ready: false,
@@ -63,7 +64,8 @@ impl PudduScrollApp {
             active_canvas: None,
             edit_frame: false,
             free_rotate: false,
-            settings: crate::settings::AppSettings::load(),
+            frame_rotate: false,
+            settings,
             settings_open: false,
             rebind: None,
             preview_index: 0,
@@ -114,7 +116,7 @@ impl PudduScrollApp {
             snap_to_grid: true,
             grid_cells: DEFAULT_GRID_CELLS,
             rail_tool: RailTool::Canvas,
-            rail_weights: DEFAULT_RAIL_WEIGHTS,
+            rail_weights,
             create_open: false,
             snapshot_open: false,
             snapshot_name: String::new(),
@@ -822,6 +824,7 @@ impl PudduScrollApp {
                 #[cfg(target_arch = "wasm32")]
                 {
                     self.settings = crate::settings::AppSettings::load();
+                    self.rail_weights = self.settings.rail;
                 }
                 self.library = library;
                 self.can_store = true;
@@ -1578,6 +1581,7 @@ impl PudduScrollApp {
         }
         self.drag = None;
         self.free_rotate = false;
+        self.frame_rotate = false;
         self.status = "Photo removed".to_string();
         self.toast_undo("Photo deleted");
         self.note_geometry();
@@ -1666,6 +1670,7 @@ impl PudduScrollApp {
         self.active_canvas = None;
         self.edit_frame = false;
         self.free_rotate = false;
+        self.frame_rotate = false;
         self.drag = None;
         self.gesture = "none".to_string();
         self.crop_session = None;
@@ -1819,6 +1824,7 @@ impl PudduScrollApp {
         self.active_canvas = None;
         self.edit_frame = false;
         self.free_rotate = false;
+        self.frame_rotate = false;
         self.export_open = false;
         self.cancel_overwrite();
         self.confirm = None;

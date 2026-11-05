@@ -8,6 +8,7 @@ use crate::library::library_directory;
 
 pub const QUALITY_MIN: u8 = 0;
 pub const QUALITY_MAX: u8 = 100;
+pub const DEFAULT_RAIL_WEIGHTS: [f32; 2] = [0.28 / 0.74, 0.46 / 0.74];
 const COUNT: usize = 11;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -160,11 +161,12 @@ const fn spec(command: Command) -> Spec {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct AppSettings {
     pub quality: u8,
     pub format: ExportFormat,
     pub folder: Option<PathBuf>,
+    pub rail: [f32; 2],
     bindings: [KeyboardShortcut; COUNT],
 }
 
@@ -178,6 +180,7 @@ impl Default for AppSettings {
             quality: 90,
             format: ExportFormat::Jpeg,
             folder: None,
+            rail: DEFAULT_RAIL_WEIGHTS,
             bindings,
         }
     }
@@ -272,6 +275,20 @@ impl AppSettings {
                         settings.folder = Some(PathBuf::from(value));
                     }
                 }
+                "rail" => {
+                    let mut parts = value.split_whitespace();
+                    let Some(tool) = parts.next().and_then(|part| part.parse::<f32>().ok()) else {
+                        continue;
+                    };
+                    let Some(layers) = parts.next().and_then(|part| part.parse::<f32>().ok())
+                    else {
+                        continue;
+                    };
+                    if tool.is_finite() && layers.is_finite() && tool > 0.0 && layers > 0.0 {
+                        let sum = tool + layers;
+                        settings.rail = [tool / sum, layers / sum];
+                    }
+                }
                 "bind" => {
                     let Some((id, shortcut)) = value.split_once(' ') else {
                         continue;
@@ -303,6 +320,7 @@ impl AppSettings {
         if let Some(folder) = &self.folder {
             let _ = writeln!(text, "folder {}", folder.display());
         }
+        let _ = writeln!(text, "rail {:.6} {:.6}", self.rail[0], self.rail[1]);
         for command in Command::ALL {
             if !command.rebindable() {
                 continue;
@@ -422,12 +440,15 @@ mod tests {
         };
         let shortcut = KeyboardShortcut::new(Modifiers::ALT.plus(Modifiers::SHIFT), Key::E);
         settings.assign(Command::Export, shortcut).unwrap();
+        settings.rail = [0.25, 0.75];
         let path = dir.join("settings.txt");
         settings.save_to(&path).unwrap();
         let loaded = AppSettings::load_from(&path);
         assert_eq!(loaded.quality, 70);
         assert_eq!(loaded.format, ExportFormat::Png);
         assert_eq!(loaded.folder, Some(dir.join("My Photos")));
+        assert!((loaded.rail[0] - 0.25).abs() < 1e-4);
+        assert!((loaded.rail[1] - 0.75).abs() < 1e-4);
         assert!(loaded.binding(Command::Export).modifiers.alt);
         assert!(loaded.binding(Command::Export).modifiers.shift);
         assert_eq!(loaded.binding(Command::Export).logical_key, Key::E);
@@ -479,11 +500,14 @@ bind paste command+q
 bind export command+z
 bind missing command+a
 quality 40
+rail nope
+rail 0
 ",
         );
         assert_eq!(settings.quality, 40);
         assert_eq!(settings.format, ExportFormat::Jpeg);
         assert!(settings.folder.is_none());
+        assert_eq!(settings.rail, DEFAULT_RAIL_WEIGHTS);
         let defaults = AppSettings::default();
         assert_eq!(
             settings.binding(Command::Paste),
