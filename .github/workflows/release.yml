@@ -69,7 +69,9 @@ jobs:
           set -euo pipefail
           version="${GITHUB_REF_NAME#v}"
           mkdir -p dist/PudduScroll.app/Contents/MacOS
+          mkdir -p dist/PudduScroll.app/Contents/Resources
           cp "target/${{ matrix.target }}/release/pudduscroll" dist/PudduScroll.app/Contents/MacOS/pudduscroll
+          cp crates/app/assets/icon.icns dist/PudduScroll.app/Contents/Resources/icon.icns
           chmod +x dist/PudduScroll.app/Contents/MacOS/pudduscroll
           cat > dist/PudduScroll.app/Contents/Info.plist <<EOF
           <?xml version="1.0" encoding="UTF-8"?>
@@ -90,6 +92,8 @@ jobs:
             <string>pudduscroll</string>
             <key>CFBundlePackageType</key>
             <string>APPL</string>
+            <key>CFBundleIconFile</key>
+            <string>icon</string>
             <key>LSMinimumSystemVersion</key>
             <string>11.0</string>
             <key>NSHighResolutionCapable</key>

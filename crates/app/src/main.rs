@@ -44,9 +44,12 @@ use ui::PudduScrollApp;
 
 #[cfg(not(target_arch = "wasm32"))]
 fn main() -> eframe::Result<()> {
+    let icon = eframe::icon_data::from_png_bytes(include_bytes!("../assets/icon.png"))
+        .expect("window icon");
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title("PudduScroll")
+            .with_icon(icon)
             .with_position([80.0, 60.0])
             .with_inner_size([1400.0, 900.0])
             .with_min_inner_size([1100.0, 720.0]),

@@ -1,4 +1,4 @@
-PudduScroll 0.3.6 fixes in-app updates so a newer build can download and open again.
+PudduScroll 0.3.7 adds an app icon.
 
 ## Downloads
 
@@ -28,5 +28,6 @@ Templates and carousels are saved on this machine:
 
 ## New
 
-- Checking for updates works again, and Update downloads the new build then reopens the app.
-- The update window shows a short plain list of what changed.
+- The icon is black with three apricot slides.
+- The middle slide is taller than the slides beside it.
+- Windows, Mac, and Linux show this icon.
