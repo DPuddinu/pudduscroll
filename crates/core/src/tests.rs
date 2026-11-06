@@ -885,8 +885,7 @@ fn editor_corner_snap_keeps_the_locked_aspect() {
     assert!((y - 0.25).abs() < 1e-6);
     assert!(on_eighth(x + w) || on_eighth(y + h));
 
-    let (x, y, w, h) =
-        snap_edited_frame_resize(Handle::E, 0.125, 0.11, 0.4, 0.5, CANVAS_GRID_STEP);
+    let (x, y, w, h) = snap_edited_frame_resize(Handle::E, 0.125, 0.11, 0.4, 0.5, CANVAS_GRID_STEP);
     assert!((x - 0.125).abs() < 1e-6);
     assert!((y - 0.11).abs() < 1e-6);
     assert!((h - 0.5).abs() < 1e-6);
@@ -1771,8 +1770,32 @@ fn jpeg_with_orientation(width: u32, height: u32, pixel: [u8; 4], orientation: u
     let mut bytes = Vec::new();
     let mut encoder = image::codecs::jpeg::JpegEncoder::new_with_quality(&mut bytes, 90);
     let exif = [
-        0x4d, 0x4d, 0x00, 0x2a, 0x00, 0x00, 0x00, 0x08, 0x00, 0x01, 0x01, 0x12, 0x00, 0x03, 0x00,
-        0x00, 0x00, 0x01, 0x00, orientation, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x4d,
+        0x4d,
+        0x00,
+        0x2a,
+        0x00,
+        0x00,
+        0x00,
+        0x08,
+        0x00,
+        0x01,
+        0x01,
+        0x12,
+        0x00,
+        0x03,
+        0x00,
+        0x00,
+        0x00,
+        0x01,
+        0x00,
+        orientation,
+        0x00,
+        0x00,
+        0x00,
+        0x00,
+        0x00,
+        0x00,
     ];
     encoder.set_exif_metadata(exif.to_vec()).unwrap();
     encoder

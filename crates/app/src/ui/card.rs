@@ -34,11 +34,7 @@ pub(super) struct ShownCard {
 }
 
 impl Card {
-    pub(super) fn show(
-        self,
-        ui: &mut egui::Ui,
-        add_rows: impl FnOnce(&mut egui::Ui),
-    ) -> ShownCard {
+    pub(super) fn show(self, ui: &mut egui::Ui, add_rows: impl FnOnce(&mut egui::Ui)) -> ShownCard {
         let painter = ui.painter().clone();
         let mut cover_state = (egui::Rect::NOTHING, false, false);
         let name_h = ui.spacing().interact_size.y;

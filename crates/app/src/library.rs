@@ -2555,16 +2555,18 @@ mod tests {
             .unwrap();
         assert_eq!(template.name, "Parade");
         assert!(template.layout.frame(frame).unwrap().photo.is_none());
-        assert!(library
-            .carousels
-            .iter()
-            .find(|carousel| carousel.id == carousel_id)
-            .unwrap()
-            .layout
-            .frame(frame)
-            .unwrap()
-            .photo
-            .is_some());
+        assert!(
+            library
+                .carousels
+                .iter()
+                .find(|carousel| carousel.id == carousel_id)
+                .unwrap()
+                .layout
+                .frame(frame)
+                .unwrap()
+                .photo
+                .is_some()
+        );
         assert!(library.template_from_carousel(99).is_none());
     }
 

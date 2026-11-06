@@ -308,8 +308,10 @@ impl PudduScrollApp {
                     let hot = ui.data(|data| data.get_temp::<bool>(hot_id).unwrap_or(false));
                     let t = ui.ctx().animate_bool_with_time(hot_id, hot, 0.18);
                     let color = MUTED.lerp_to_gamma(TEXT, t);
-                    let (rect, response) =
-                        ui.allocate_exact_size(egui::vec2(menu_side, menu_side), egui::Sense::click());
+                    let (rect, response) = ui.allocate_exact_size(
+                        egui::vec2(menu_side, menu_side),
+                        egui::Sense::click(),
+                    );
                     let response = response.on_hover_cursor(egui::CursorIcon::PointingHand);
                     ui.painter().text(
                         rect.center(),
