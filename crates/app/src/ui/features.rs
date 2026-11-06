@@ -245,6 +245,7 @@ fn delete_removes_the_active_canvas() {
     click(&mut app, &ctx, "add-canvas");
     settle(&mut app, &ctx);
     app.active_canvas = Some(1);
+    app.selected = None;
     settle(&mut app, &ctx);
     tap(&mut app, &ctx, egui::Key::Delete);
     assert!(matches!(
@@ -252,9 +253,14 @@ fn delete_removes_the_active_canvas() {
         Some(super::Confirm::RemoveCanvases(indices)) if indices == &vec![1]
     ));
     app.confirm = None;
-    app.active_canvas = None;
+    let id = app.layout().expect("layout").frames[0].id;
+    app.selected = Some(id);
+    settle(&mut app, &ctx);
     tap(&mut app, &ctx, egui::Key::Delete);
-    assert!(matches!(app.confirm, Some(super::Confirm::RemoveFrame(_))));
+    assert!(matches!(
+        app.confirm,
+        Some(super::Confirm::RemoveFrame(frame)) if frame == id
+    ));
 }
 
 #[test]

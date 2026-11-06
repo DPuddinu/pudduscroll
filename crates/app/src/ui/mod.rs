@@ -90,6 +90,7 @@ enum HomeAction {
     OpenCarousel(u64),
     DuplicateCarousel(u64),
     DeleteCarousel(u64),
+    MakeTemplate(u64),
 }
 
 enum Confirm {
@@ -98,6 +99,7 @@ enum Confirm {
     RemoveCanvases(Vec<usize>),
     RemoveFrame(FrameId),
     RemovePhoto(FrameId),
+    LoadImage(FrameId),
     DeleteSnapshot(u64),
 }
 

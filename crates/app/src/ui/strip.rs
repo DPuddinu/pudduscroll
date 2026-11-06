@@ -2,7 +2,7 @@ use eframe::egui;
 use pudduscroll_core::{
     FrameId, FrameRect, Handle, border_thickness, canvas_at, cover_fit, frame_local,
     frame_rotation_from_pointer, pan_for_origin, photo_local, resize_frame, rotation_from_pointer,
-    snap_frame, snap_frame_resize, unrotate_about,
+    snap_edited_frame_resize, snap_frame, unrotate_about,
 };
 
 use super::draw::{
@@ -452,7 +452,7 @@ impl PudduScrollApp {
                         self.gesture = "rotate".to_string();
                     }
                     Drag::MoveFrame { id, .. } => {
-                        if self.show_grid && self.snap_to_grid {
+                        if self.snap_to_grid {
                             self.snap_released_frame(id);
                             self.gesture = "snap".to_string();
                         } else {
@@ -460,7 +460,7 @@ impl PudduScrollApp {
                         }
                     }
                     Drag::ResizeFrame { id, handle, .. } => {
-                        if self.show_grid && self.snap_to_grid {
+                        if self.snap_to_grid {
                             self.snap_released_resize(id, handle);
                             self.gesture = "snap".to_string();
                         } else {
@@ -489,7 +489,7 @@ impl PudduScrollApp {
         let Some(frame) = self.layout().and_then(|layout| layout.frame(id)).cloned() else {
             return;
         };
-        let (x, y, w, h) = snap_frame_resize(
+        let (x, y, w, h) = snap_edited_frame_resize(
             handle,
             frame.x,
             frame.y,

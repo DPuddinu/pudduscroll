@@ -165,7 +165,21 @@ impl Layout {
         Some(neighbor.id)
     }
 
+    #[must_use]
+    pub fn can_move_frame(&self, id: FrameId, to_the_right: bool) -> bool {
+        self.empty_step_canvas(id, to_the_right).is_some()
+            || self.adjacent_frame(id, to_the_right).is_some()
+    }
+
     pub fn move_frame(&mut self, id: FrameId, to_the_right: bool) -> bool {
+        if self.empty_step_canvas(id, to_the_right).is_some() {
+            let delta = if to_the_right { 1.0 } else { -1.0 };
+            if let Some(frame) = self.frame_mut(id) {
+                frame.x += delta;
+                return true;
+            }
+            return false;
+        }
         let Some(neighbor_id) = self.adjacent_frame(id, to_the_right) else {
             return false;
         };
@@ -189,6 +203,22 @@ impl Layout {
             frame.x = anchor + width;
         }
         true
+    }
+
+    fn empty_step_canvas(&self, id: FrameId, to_the_right: bool) -> Option<usize> {
+        let frame = self.frame(id)?;
+        let home = frame.x.floor() as i32;
+        let next = if to_the_right { home + 1 } else { home - 1 };
+        if next < 0 || next as usize >= self.canvas_count {
+            return None;
+        }
+        let canvas = next as usize;
+        let ratio = self.ratio.value();
+        let occupied = self
+            .frames
+            .iter()
+            .any(|other| other.id != id && frame_on_canvas(other, canvas, ratio));
+        (!occupied).then_some(canvas)
     }
 
     pub fn set_ratio(&mut self, ratio: crate::AspectRatio) {

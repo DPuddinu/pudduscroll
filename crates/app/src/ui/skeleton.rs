@@ -2,9 +2,8 @@ use eframe::egui;
 
 use super::{BG, HAIRLINE, HOME_NAV_W, PANEL, SKELETON_BONE};
 const CARD_INNER_W: f32 = 212.0;
-const CARD_INNER_H: f32 = 248.0;
+const CARD_GAP: f32 = 8.0;
 const COVER_H: f32 = 132.0;
-const CARD_BUTTON_H: f32 = 32.0;
 const CARD_MARGIN: f32 = 12.0;
 const CARD_STROKE: f32 = 1.0;
 const COVER_RADIUS: f32 = 10.0;
@@ -103,48 +102,26 @@ fn section(ui: &mut egui::Ui, title: &str, cards: usize) {
 }
 
 fn card(ui: &mut egui::Ui, index: usize) {
+    let name_h = ui.spacing().interact_size.y;
+    let meta_h = ui.text_style_height(&egui::TextStyle::Body);
+    let inner_h = COVER_H + name_h + meta_h + CARD_GAP * 2.0;
     let pad = (CARD_MARGIN + CARD_STROKE) * 2.0;
-    let outer = egui::vec2(CARD_INNER_W + pad, CARD_INNER_H + pad);
+    let outer = egui::vec2(CARD_INNER_W + pad, inner_h + pad);
     ui.allocate_ui_with_layout(outer, egui::Layout::top_down(egui::Align::Min), |ui| {
-        egui::Frame::new()
-            .fill(PANEL)
-            .inner_margin(CARD_MARGIN)
-            .corner_radius(12)
-            .stroke(egui::Stroke::new(CARD_STROKE, HAIRLINE))
-            .show(ui, |ui| {
-                ui.set_width(CARD_INNER_W);
-                let (body, _) = ui.allocate_exact_size(
-                    egui::vec2(CARD_INNER_W, CARD_INNER_H),
-                    egui::Sense::hover(),
-                );
-                let mut content = ui.new_child(
-                    egui::UiBuilder::new()
-                        .id_salt(("skeleton-card", index))
-                        .max_rect(body)
-                        .layout(egui::Layout::top_down(egui::Align::Min)),
-                );
-                bone(
-                    &mut content,
-                    egui::vec2(CARD_INNER_W, COVER_H),
-                    COVER_RADIUS,
-                );
-                content.add_space(8.0);
-                bone(&mut content, egui::vec2(148.0, 16.0), 4.0);
-                content.add_space(8.0);
-                bone(&mut content, egui::vec2(112.0, 13.0), 4.0);
-                let button_rect = egui::Rect::from_min_max(
-                    egui::pos2(body.left(), body.bottom() - CARD_BUTTON_H),
-                    body.right_bottom(),
-                );
-                let mut buttons = ui.new_child(
-                    egui::UiBuilder::new()
-                        .id_salt(("skeleton-actions", index))
-                        .max_rect(button_rect)
-                        .layout(egui::Layout::left_to_right(egui::Align::Center)),
-                );
-                bone(&mut buttons, egui::vec2(72.0, 28.0), 6.0);
-                bone(&mut buttons, egui::vec2(64.0, 28.0), 6.0);
-            });
+        ui.push_id(("skeleton-card", index), |ui| {
+            egui::Frame::new()
+                .fill(PANEL)
+                .inner_margin(CARD_MARGIN)
+                .corner_radius(12)
+                .stroke(egui::Stroke::new(CARD_STROKE, HAIRLINE))
+                .show(ui, |ui| {
+                    ui.set_width(CARD_INNER_W);
+                    ui.spacing_mut().item_spacing.y = CARD_GAP;
+                    bone(ui, egui::vec2(CARD_INNER_W, COVER_H), COVER_RADIUS);
+                    bone(ui, egui::vec2(148.0, name_h), 4.0);
+                    bone(ui, egui::vec2(112.0, meta_h), 4.0);
+                });
+        });
     });
 }
 

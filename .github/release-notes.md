@@ -1,4 +1,4 @@
-PudduScroll 0.4.0 lets you rotate frames and resize the side panels.
+PudduScroll 0.5.0 lets you swap a frame photo, make a template from a carousel, and export files with the slide number first.
 
 ## Downloads
 
@@ -28,7 +28,8 @@ Templates and carousels are saved on this machine:
 
 ## New
 
-- Rotate a frame with the handle on the canvas or the rotate buttons in the toolbar.
-- On Windows, the window uses a custom title bar with File and Help menus.
-- Drag the split between Tools and Layers to change how much space each uses; your choice is remembered.
-- The canvas count in the toolbar is shown in a tighter format.
+- Use Load image next to Edit frame to pick a new photo for that frame.
+- Open the menu on a carousel card to make a template from its layout without the photos.
+- Exported files are named like 01-Summer.jpg so the slide number comes first.
+- Move left or right steps a frame into the empty canvas beside it.
+- Delete removes the selected frame or photo first, not the canvas.

@@ -628,6 +628,26 @@ pub fn snap_frame_resize(
     (left, top, right - left, bottom - top)
 }
 
+#[must_use]
+pub fn snap_edited_frame_resize(
+    handle: Handle,
+    x: f32,
+    y: f32,
+    w: f32,
+    h: f32,
+    step: f32,
+) -> (f32, f32, f32, f32) {
+    let lock = matches!(handle, Handle::Ne | Handle::Nw | Handle::Se | Handle::Sw);
+    if lock {
+        let aspect = if w.abs() < 1e-4 { 1.0 } else { h / w };
+        let aspect = if aspect.abs() < 1e-6 { 1.0 } else { aspect };
+        let (x, y, w) = snap_resize(handle, x, y, w, h, step);
+        (x, y, w, w * aspect)
+    } else {
+        snap_frame_resize(handle, x, y, w, h, step)
+    }
+}
+
 fn snap_resize_corner(
     handle: Handle,
     x: f32,

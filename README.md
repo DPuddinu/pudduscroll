@@ -78,7 +78,7 @@ Choose JPEG or PNG. The JPEG slider runs from a small file to quality 100. PNG i
 
 Choose folder picks the destination. If a file with the same name is already there, PudduScroll lists it and asks before overwriting.
 
-Each canvas is one file, named from the carousel: `Summer-01.jpg`, `Summer-02.jpg`, and so on. The width is the largest size that still uses each photo’s own pixels, so a slide is not blown up past the crop. With no usable photo, the width is 1080px. Height follows the canvas ratio.
+Each canvas is one file, named from the carousel: `01-Summer.jpg`, `02-Summer.jpg`, and so on. The width is the largest size that still uses each photo’s own pixels, so a slide is not blown up past the crop. With no usable photo, the width is 1080px. Height follows the canvas ratio.
 
 On screen, photos are shown in the display’s color profile, using the profile embedded in the file. Export is rendered from the original file bytes.
 

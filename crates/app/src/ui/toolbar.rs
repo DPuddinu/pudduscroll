@@ -111,6 +111,18 @@ impl PudduScrollApp {
                 if edit.clicked() {
                     self.edit_frame = !self.edit_frame;
                 }
+                let can_load = self.selected.is_some_and(|id| {
+                    self.layout()
+                        .and_then(|layout| layout.frame(id))
+                        .is_some_and(|frame| frame.photo.is_some())
+                });
+                let load = ui.add_enabled(can_load, egui::Button::new("Load image"));
+                self.remember("load-image", load.rect);
+                if load.clicked()
+                    && let Some(id) = self.selected
+                {
+                    self.confirm = Some(super::Confirm::LoadImage(id));
+                }
                 let remove_frame =
                     ui.add_enabled(self.selected.is_some(), egui::Button::new("Remove frame"));
                 self.remember("remove-frame", remove_frame.rect);
@@ -121,7 +133,7 @@ impl PudduScrollApp {
                 }
                 let can_move_left = self.selected.is_some_and(|id| {
                     self.layout()
-                        .is_some_and(|layout| layout.adjacent_frame(id, false).is_some())
+                        .is_some_and(|layout| layout.can_move_frame(id, false))
                 });
                 let move_left = ui.add_enabled(can_move_left, egui::Button::new("Move left"));
                 self.remember("move-frame-left", move_left.rect);
@@ -139,7 +151,7 @@ impl PudduScrollApp {
                 }
                 let can_move_right = self.selected.is_some_and(|id| {
                     self.layout()
-                        .is_some_and(|layout| layout.adjacent_frame(id, true).is_some())
+                        .is_some_and(|layout| layout.can_move_frame(id, true))
                 });
                 let move_right = ui.add_enabled(can_move_right, egui::Button::new("Move right"));
                 self.remember("move-frame-right", move_right.rect);

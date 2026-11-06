@@ -199,11 +199,14 @@ impl PudduScrollApp {
             image,
             fill: COVER_EMPTY,
             loading,
+            actions: true,
         }
-        .show(ui, |content, buttons| {
+        .show(ui, |ui| {
+            let name_h = ui.spacing().interact_size.y;
             let (changed, name_rect) = {
                 let template = &mut self.library.templates[index];
-                let response = content.add(
+                let response = ui.add_sized(
+                    egui::vec2(CARD_INNER_W, name_h),
                     egui::TextEdit::singleline(&mut template.name)
                         .id_salt(("template-name", id))
                         .desired_width(CARD_INNER_W),
@@ -214,7 +217,7 @@ impl PudduScrollApp {
             if changed {
                 self.name_dirty = true;
             }
-            content.label(
+            ui.label(
                 egui::RichText::new(format!(
                     "{} · {}",
                     counted(canvases, "canvas", "canvases"),
@@ -222,7 +225,7 @@ impl PudduScrollApp {
                 ))
                 .color(MUTED),
             );
-            buttons.horizontal(|ui| {
+            ui.horizontal(|ui| {
                 let use_template = ui.button("Use");
                 self.remember(format!("template-use-{id}"), use_template.rect);
                 if use_template.clicked() {
@@ -262,11 +265,14 @@ impl PudduScrollApp {
             image,
             fill: CANVAS_BG,
             loading,
+            actions: false,
         }
-        .show(ui, |content, buttons| {
+        .show(ui, |ui| {
+            let name_h = ui.spacing().interact_size.y;
             let (changed, name_rect) = {
                 let carousel = &mut self.library.carousels[index];
-                let response = content.add(
+                let response = ui.add_sized(
+                    egui::vec2(CARD_INNER_W, name_h),
                     egui::TextEdit::singleline(&mut carousel.name)
                         .id_salt(("carousel-name", id))
                         .desired_width(CARD_INNER_W),
@@ -277,26 +283,68 @@ impl PudduScrollApp {
             if changed {
                 self.name_dirty = true;
             }
-            content.label(
-                egui::RichText::new(format!(
-                    "{} · {}",
-                    counted(canvases, "canvas", "canvases"),
-                    counted(frames, "frame", "frames")
-                ))
-                .color(MUTED),
+            let meta_h = ui.text_style_height(&egui::TextStyle::Body);
+            let menu_side = meta_h;
+            let label_w = (CARD_INNER_W - menu_side).max(1.0);
+            ui.allocate_ui_with_layout(
+                egui::vec2(CARD_INNER_W, meta_h),
+                egui::Layout::left_to_right(egui::Align::Center),
+                |ui| {
+                    ui.spacing_mut().item_spacing = egui::Vec2::ZERO;
+                    ui.add_sized(
+                        egui::vec2(label_w, meta_h),
+                        egui::Label::new(
+                            egui::RichText::new(format!(
+                                "{} · {}",
+                                counted(canvases, "canvas", "canvases"),
+                                counted(frames, "frame", "frames")
+                            ))
+                            .color(MUTED),
+                        )
+                        .selectable(false),
+                    );
+                    let hot_id =
+                        ui.make_persistent_id(egui::IdSalt::new(("carousel-menu-hot", id)));
+                    let hot = ui.data(|data| data.get_temp::<bool>(hot_id).unwrap_or(false));
+                    let t = ui.ctx().animate_bool_with_time(hot_id, hot, 0.18);
+                    let color = MUTED.lerp_to_gamma(TEXT, t);
+                    let (rect, response) =
+                        ui.allocate_exact_size(egui::vec2(menu_side, menu_side), egui::Sense::click());
+                    let response = response.on_hover_cursor(egui::CursorIcon::PointingHand);
+                    ui.painter().text(
+                        rect.center(),
+                        egui::Align2::CENTER_CENTER,
+                        "⋮",
+                        egui::FontId::proportional(meta_h),
+                        color,
+                    );
+                    let mut picked = None;
+                    egui::Popup::menu(&response).show(|ui| {
+                        if ui.button("Duplicate").clicked() {
+                            picked = Some(HomeAction::DuplicateCarousel(id));
+                            ui.close();
+                        }
+                        if ui.button("Delete").clicked() {
+                            picked = Some(HomeAction::DeleteCarousel(id));
+                            ui.close();
+                        }
+                        if ui.button("Make template").clicked() {
+                            picked = Some(HomeAction::MakeTemplate(id));
+                            ui.close();
+                        }
+                    });
+                    if let Some(next) = picked {
+                        action = Some(next);
+                    }
+                    let popup_id = egui::Popup::default_response_id(&response);
+                    let next = response.hovered() || egui::Popup::is_id_open(ui.ctx(), popup_id);
+                    ui.data_mut(|data| data.insert_temp(hot_id, next));
+                    if next != hot {
+                        ui.ctx().request_repaint();
+                    }
+                    self.remember(format!("carousel-menu-{id}"), response.rect);
+                },
             );
-            buttons.horizontal(|ui| {
-                let duplicate = ui.button("Duplicate");
-                self.remember(format!("carousel-duplicate-{id}"), duplicate.rect);
-                if duplicate.clicked() {
-                    action = Some(HomeAction::DuplicateCarousel(id));
-                }
-                let delete = ui.button("Delete");
-                self.remember(format!("carousel-delete-{id}"), delete.rect);
-                if delete.clicked() {
-                    action = Some(HomeAction::DeleteCarousel(id));
-                }
-            });
         });
         self.remember(format!("carousel-open-{id}"), shown.cover);
         self.remember(format!("carousel-card-{id}"), shown.rect);
@@ -325,6 +373,12 @@ impl PudduScrollApp {
             }
             HomeAction::DeleteCarousel(id) => {
                 self.confirm = Some(Confirm::DeleteCarousel(id));
+            }
+            HomeAction::MakeTemplate(id) => {
+                if let Some(template_id) = self.library.template_from_carousel(id) {
+                    self.note_geometry();
+                    self.enter(Route::Template(template_id), ctx);
+                }
             }
         }
     }
@@ -443,7 +497,7 @@ impl PudduScrollApp {
         ctx.move_to_top(egui::LayerId::new(egui::Order::Debug, modal_id));
         if accept {
             if let Some(confirm) = self.confirm.take() {
-                self.apply_confirm(confirm);
+                self.apply_confirm(ctx, confirm);
             }
         } else if response.should_close() {
             self.confirm = None;
@@ -601,6 +655,11 @@ impl PudduScrollApp {
                 body: "This photo will be removed.".to_string(),
                 action: "Remove",
             }),
+            Confirm::LoadImage(_) => Some(ConfirmCopy {
+                title: "Swap image?",
+                body: "This photo will be replaced.".to_string(),
+                action: "Load",
+            }),
             Confirm::DeleteSnapshot(id) => {
                 let Route::Carousel(carousel_id) = self.route else {
                     return None;
@@ -624,7 +683,7 @@ impl PudduScrollApp {
         }
     }
 
-    fn apply_confirm(&mut self, confirm: Confirm) {
+    fn apply_confirm(&mut self, ctx: &egui::Context, confirm: Confirm) {
         match confirm {
             Confirm::DeleteTemplate(id) => {
                 self.library.delete_template(id);
@@ -641,6 +700,7 @@ impl PudduScrollApp {
             Confirm::RemoveCanvases(indices) => self.remove_canvases(&indices),
             Confirm::RemoveFrame(id) => self.remove_frame(id),
             Confirm::RemovePhoto(id) => self.remove_photo(id),
+            Confirm::LoadImage(id) => self.fill_frame(ctx, id),
             Confirm::DeleteSnapshot(id) => self.delete_named_snapshot(id),
         }
     }

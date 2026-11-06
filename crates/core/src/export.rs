@@ -6,7 +6,9 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use image::codecs::png::{CompressionType, FilterType, PngEncoder};
-use image::{ExtendedColorType, ImageEncoder, RgbImage, RgbaImage};
+use image::{
+    DynamicImage, ExtendedColorType, ImageDecoder, ImageEncoder, ImageReader, RgbImage, RgbaImage,
+};
 
 use crate::{
     DEFAULT_EXPORT_WIDTH, Document, FrameId, FrameImages, ImageMap, Layout, PROXY_LONG_EDGE,
@@ -101,7 +103,7 @@ pub fn canvas_file_name(name: &str, index: usize, format: ExportFormat) -> Strin
         ExportFormat::Png => "png",
         ExportFormat::Jpeg => "jpg",
     };
-    format!("{}-{:02}.{ext}", export_stem(name), index + 1)
+    format!("{:02}-{}.{ext}", index + 1, export_stem(name))
 }
 
 fn breaks_file_name(ch: char) -> bool {
@@ -185,7 +187,12 @@ pub fn estimate_total_bytes(
 }
 
 pub fn image_from_bytes(bytes: &[u8]) -> Result<RgbaImage, ExportError> {
-    let image = image::load_from_memory(bytes)?.into_rgba8();
+    let reader = ImageReader::new(Cursor::new(bytes)).with_guessed_format()?;
+    let mut decoder = reader.into_decoder()?;
+    let orientation = decoder.orientation()?;
+    let mut image = DynamicImage::from_decoder(decoder)?;
+    image.apply_orientation(orientation);
+    let image = image.into_rgba8();
     if image.width() == 0 || image.height() == 0 {
         return Err(ExportError::Encode("image has no pixels".to_string()));
     }

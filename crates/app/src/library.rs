@@ -171,6 +171,25 @@ impl Library {
         removed
     }
 
+    pub fn template_from_carousel(&mut self, id: u64) -> Option<u64> {
+        let (name, mut layout) = {
+            let source = self.carousels.iter().find(|carousel| carousel.id == id)?;
+            (source.name.clone(), source.layout.clone())
+        };
+        for frame in &mut layout.frames {
+            frame.photo = None;
+        }
+        let template_id = self.alloc();
+        self.templates.push(Template {
+            id: template_id,
+            name,
+            cover: blank_template_cover(),
+            layout,
+        });
+        self.touch_images();
+        Some(template_id)
+    }
+
     pub fn duplicate_carousel(&mut self, id: u64) -> Option<u64> {
         let (name, layout, photos, disk, cover, grid_cells, snapshot_seed) = {
             let source = self.carousels.iter().find(|carousel| carousel.id == id)?;
@@ -2503,6 +2522,50 @@ mod tests {
         assert!((photo.pan_y - 0.7).abs() < 1e-4);
         assert!(copy.photos.contains_key(&frame));
         assert!(library.duplicate_carousel(99).is_none());
+    }
+
+    #[test]
+    fn template_from_carousel_keeps_frames_without_photos() {
+        let mut library = Library::empty();
+        let template_id = library.create_template(
+            "Sea".to_string(),
+            AspectRatio::FOUR_FIVE,
+            sample_blob("dune.png"),
+        );
+        let carousel_id = library.instantiate(template_id).unwrap();
+        let frame = library
+            .carousels
+            .iter_mut()
+            .find(|carousel| carousel.id == carousel_id)
+            .unwrap()
+            .layout
+            .add_frame(0);
+        library.set_photo(carousel_id, frame, sample_blob("night.jpg"));
+        library
+            .carousels
+            .iter_mut()
+            .find(|carousel| carousel.id == carousel_id)
+            .unwrap()
+            .name = "Parade".to_string();
+        let made = library.template_from_carousel(carousel_id).unwrap();
+        let template = library
+            .templates
+            .iter()
+            .find(|template| template.id == made)
+            .unwrap();
+        assert_eq!(template.name, "Parade");
+        assert!(template.layout.frame(frame).unwrap().photo.is_none());
+        assert!(library
+            .carousels
+            .iter()
+            .find(|carousel| carousel.id == carousel_id)
+            .unwrap()
+            .layout
+            .frame(frame)
+            .unwrap()
+            .photo
+            .is_some());
+        assert!(library.template_from_carousel(99).is_none());
     }
 
     #[test]

@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use std::io::Cursor;
 
-use image::{ImageFormat, Rgba, RgbaImage};
+use image::{ExtendedColorType, ImageEncoder, ImageFormat, Rgba, RgbaImage};
 
 use super::*;
 
@@ -443,10 +443,10 @@ fn byte_estimate_matches_encoded_carousel() {
     let native_files = export_canvases(&doc, &images, native).unwrap();
 
     assert_eq!(low_files.len(), 2);
-    assert_eq!(low_files[0].file_name, "pudduscroll-01.jpg");
-    assert_eq!(low_files[1].file_name, "pudduscroll-02.jpg");
-    assert_eq!(full_jpeg_files[0].file_name, "pudduscroll-01.jpg");
-    assert_eq!(native_files[0].file_name, "pudduscroll-01.png");
+    assert_eq!(low_files[0].file_name, "01-pudduscroll.jpg");
+    assert_eq!(low_files[1].file_name, "02-pudduscroll.jpg");
+    assert_eq!(full_jpeg_files[0].file_name, "01-pudduscroll.jpg");
+    assert_eq!(native_files[0].file_name, "01-pudduscroll.png");
     assert_eq!(low_files[0].bytes[0], 0xff);
     assert_eq!(low_files[0].bytes[1], 0xd8);
     assert_eq!(full_jpeg_files[0].bytes[0], 0xff);
@@ -504,8 +504,8 @@ fn byte_estimate_matches_encoded_carousel() {
     let dir = std::env::temp_dir().join(format!("pudduscroll-export-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     write_canvases(&dir, "pudduscroll", ExportFormat::Jpeg, &low_files).unwrap();
-    assert!(dir.join("pudduscroll-01.jpg").is_file());
-    assert!(dir.join("pudduscroll-02.jpg").is_file());
+    assert!(dir.join("01-pudduscroll.jpg").is_file());
+    assert!(dir.join("02-pudduscroll.jpg").is_file());
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -513,23 +513,23 @@ fn byte_estimate_matches_encoded_carousel() {
 fn export_file_names_use_the_carousel_name() {
     assert_eq!(
         canvas_file_name("gemma luce", 0, ExportFormat::Jpeg),
-        "gemma_luce-01.jpg"
+        "01-gemma_luce.jpg"
     );
     assert_eq!(
         canvas_file_name("gemma luce", 1, ExportFormat::Jpeg),
-        "gemma_luce-02.jpg"
+        "02-gemma_luce.jpg"
     );
     assert_eq!(
         canvas_file_name("  Gemma   Luce  ", 0, ExportFormat::Png),
-        "Gemma_Luce-01.png"
+        "01-Gemma_Luce.png"
     );
     assert_eq!(
         canvas_file_name("Sea \"m\"", 0, ExportFormat::Jpeg),
-        "Sea_m-01.jpg"
+        "01-Sea_m.jpg"
     );
     assert_eq!(
         canvas_file_name("...", 0, ExportFormat::Jpeg),
-        "pudduscroll-01.jpg"
+        "01-pudduscroll.jpg"
     );
 
     let dir = std::env::temp_dir().join(format!("pudduscroll-name-{}", std::process::id()));
@@ -540,13 +540,13 @@ fn export_file_names_use_the_carousel_name() {
         "gemma luce",
         ExportFormat::Jpeg,
         &[EncodedCanvas {
-            file_name: "pudduscroll-01.jpg".to_string(),
+            file_name: "01-pudduscroll.jpg".to_string(),
             bytes: vec![1, 2, 3],
         }],
     )
     .unwrap();
-    assert!(dir.join("gemma_luce-01.jpg").is_file());
-    assert!(!dir.join("pudduscroll-01.jpg").exists());
+    assert!(dir.join("01-gemma_luce.jpg").is_file());
+    assert!(!dir.join("01-pudduscroll.jpg").exists());
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -580,8 +580,8 @@ fn export_replaces_only_its_own_files() {
     assert_eq!(
         existing_export_files(&dir, "gemma luce", ExportFormat::Jpeg, 2),
         vec![
-            "gemma_luce-01.jpg".to_string(),
-            "gemma_luce-02.jpg".to_string()
+            "01-gemma_luce.jpg".to_string(),
+            "02-gemma_luce.jpg".to_string()
         ]
     );
     assert_eq!(
@@ -604,11 +604,11 @@ fn export_replaces_only_its_own_files() {
     )
     .unwrap();
     assert_eq!(
-        std::fs::read(dir.join("gemma_luce-01.jpg")).unwrap(),
+        std::fs::read(dir.join("01-gemma_luce.jpg")).unwrap(),
         b"replaced"
     );
     assert_eq!(
-        std::fs::read(dir.join("gemma_luce-02.jpg")).unwrap(),
+        std::fs::read(dir.join("02-gemma_luce.jpg")).unwrap(),
         b"two"
     );
     assert_eq!(std::fs::read(dir.join("notes.txt")).unwrap(), b"keep");
@@ -873,6 +873,33 @@ fn snap_lines_the_frame_up_without_moving_the_pan() {
     assert!(on_eighth(moved.x) || on_eighth(moved.x + moved.w));
     assert!(on_eighth(moved.y) || on_eighth(moved.y + moved.h));
     assert!(cover_contains_frame(moved, layout.ratio.value()));
+}
+
+#[test]
+fn editor_corner_snap_keeps_the_locked_aspect() {
+    let aspect = 0.42 / 0.4;
+    let (x, y, w, h) =
+        snap_edited_frame_resize(Handle::Se, 0.125, 0.25, 0.4, 0.42, CANVAS_GRID_STEP);
+    assert!((h / w - aspect).abs() < 1e-4);
+    assert!((x - 0.125).abs() < 1e-6);
+    assert!((y - 0.25).abs() < 1e-6);
+    assert!(on_eighth(x + w) || on_eighth(y + h));
+
+    let (x, y, w, h) =
+        snap_edited_frame_resize(Handle::E, 0.125, 0.11, 0.4, 0.5, CANVAS_GRID_STEP);
+    assert!((x - 0.125).abs() < 1e-6);
+    assert!((y - 0.11).abs() < 1e-6);
+    assert!((h - 0.5).abs() < 1e-6);
+    assert!(on_eighth(x + w));
+}
+
+#[test]
+fn jpeg_exif_orientation_makes_a_phone_portrait_upright() {
+    let bytes = jpeg_with_orientation(40, 20, [200, 40, 40, 255], 6);
+    let decoded = image_from_bytes(&bytes).unwrap();
+    assert_eq!(decoded.dimensions(), (20, 40));
+    let raster = raster_from_bytes(&bytes).unwrap();
+    assert_eq!((raster.width, raster.height), (20, 40));
 }
 
 #[test]
@@ -1621,11 +1648,13 @@ fn a_span_selects_every_canvas_it_touches() {
 #[test]
 fn move_frame_swaps_order_with_the_neighbor_and_keeps_each_width() {
     let mut layout = Layout::new(AspectRatio::SQUARE);
+    layout.set_canvas_count(2);
     let a = layout.add_frame(0);
     let b = layout.add_frame(0);
     layout.set_frame_rect(a, 0.0, 0.2, 1.0, 0.5);
     layout.set_frame_rect(b, 1.0, 0.4, 2.0, 0.8);
     assert!(layout.adjacent_frame(a, false).is_none());
+    assert!(!layout.can_move_frame(a, false));
     assert!(!layout.move_frame(a, false));
     assert!(layout.move_frame(b, false));
     let moved = layout.frame(b).unwrap();
@@ -1645,6 +1674,7 @@ fn move_frame_swaps_order_with_the_neighbor_and_keeps_each_width() {
     assert!((layout.frame(a).unwrap().x - 2.0).abs() < 1e-6);
     assert!((layout.frame(a).unwrap().w - 1.0).abs() < 1e-6);
 
+    layout.set_canvas_count(5);
     let c = layout.add_frame(0);
     layout.set_frame_rect(a, 0.0, 0.0, 1.0, 1.0);
     layout.set_frame_rect(b, 1.0, 0.0, 2.0, 1.0);
@@ -1656,6 +1686,30 @@ fn move_frame_swaps_order_with_the_neighbor_and_keeps_each_width() {
     assert!((layout.frame(c).unwrap().y - 0.3).abs() < 1e-6);
     assert!(!layout.move_frame(b, false));
     assert!(!layout.move_frame(FrameId(99), true));
+}
+
+#[test]
+fn move_frame_steps_into_an_empty_canvas_without_swapping() {
+    let mut layout = Layout::new(AspectRatio::SQUARE);
+    layout.set_canvas_count(3);
+    let a = layout.add_frame(0);
+    let b = layout.add_frame(2);
+    layout.set_frame_rect(a, 0.0, 0.1, 1.0, 0.8);
+    layout.set_frame_rect(b, 2.0, 0.2, 1.0, 0.6);
+    assert!(layout.can_move_frame(a, true));
+    assert!(layout.move_frame(a, true));
+    assert!((layout.frame(a).unwrap().x - 1.0).abs() < 1e-6);
+    assert!((layout.frame(a).unwrap().w - 1.0).abs() < 1e-6);
+    assert!((layout.frame(b).unwrap().x - 2.0).abs() < 1e-6);
+    assert!(layout.move_frame(a, false));
+    assert!((layout.frame(a).unwrap().x - 0.0).abs() < 1e-6);
+    assert!(!layout.can_move_frame(a, false));
+    assert!(!layout.move_frame(a, false));
+    assert!(layout.move_frame(a, true));
+    assert!((layout.frame(a).unwrap().x - 1.0).abs() < 1e-6);
+    assert!(layout.move_frame(a, true));
+    assert!((layout.frame(a).unwrap().x - 2.0).abs() < 1e-6);
+    assert!((layout.frame(b).unwrap().x - 1.0).abs() < 1e-6);
 }
 
 #[test]
@@ -1708,6 +1762,21 @@ fn png_bytes(image: &RgbaImage) -> Vec<u8> {
     let mut bytes = Vec::new();
     image::DynamicImage::ImageRgba8(image.clone())
         .write_to(&mut Cursor::new(&mut bytes), ImageFormat::Png)
+        .unwrap();
+    bytes
+}
+
+fn jpeg_with_orientation(width: u32, height: u32, pixel: [u8; 4], orientation: u8) -> Vec<u8> {
+    let rgb = image::DynamicImage::ImageRgba8(solid(width, height, pixel)).into_rgb8();
+    let mut bytes = Vec::new();
+    let mut encoder = image::codecs::jpeg::JpegEncoder::new_with_quality(&mut bytes, 90);
+    let exif = [
+        0x4d, 0x4d, 0x00, 0x2a, 0x00, 0x00, 0x00, 0x08, 0x00, 0x01, 0x01, 0x12, 0x00, 0x03, 0x00,
+        0x00, 0x00, 0x01, 0x00, orientation, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    ];
+    encoder.set_exif_metadata(exif.to_vec()).unwrap();
+    encoder
+        .write_image(rgb.as_raw(), width, height, ExtendedColorType::Rgb8)
         .unwrap();
     bytes
 }

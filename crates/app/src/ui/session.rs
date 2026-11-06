@@ -1116,22 +1116,21 @@ impl PudduScrollApp {
     }
 
     pub(super) fn delete_selection(&mut self) {
-        if let Some(chosen) = self.removable_canvases() {
-            self.confirm = Some(Confirm::RemoveCanvases(chosen));
+        if let Some(id) = self.selected {
+            let has_photo = self
+                .layout()
+                .and_then(|layout| layout.frame(id))
+                .is_some_and(|frame| frame.photo.is_some());
+            self.confirm = Some(if has_photo {
+                Confirm::RemovePhoto(id)
+            } else {
+                Confirm::RemoveFrame(id)
+            });
             return;
         }
-        let Some(id) = self.selected else {
-            return;
-        };
-        let has_photo = self
-            .layout()
-            .and_then(|layout| layout.frame(id))
-            .is_some_and(|frame| frame.photo.is_some());
-        self.confirm = Some(if has_photo {
-            Confirm::RemovePhoto(id)
-        } else {
-            Confirm::RemoveFrame(id)
-        });
+        if let Some(chosen) = self.removable_canvases() {
+            self.confirm = Some(Confirm::RemoveCanvases(chosen));
+        }
     }
 
     fn upload_one(&mut self, ctx: &egui::Context) {
