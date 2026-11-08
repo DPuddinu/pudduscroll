@@ -295,6 +295,14 @@ fn freehand_crop_changes_only_the_visible_region() {
 }
 
 #[test]
+fn sixteen_nine_canvas_exports_that_shape() {
+    assert!(CANVAS_PRESETS.contains(&AspectRatio::SIXTEEN_NINE));
+    let layout = Layout::new(AspectRatio::SIXTEEN_NINE);
+    let rendered = render_layout(&layout, 0, &FrameImages::new(), 160);
+    assert_eq!(rendered.dimensions(), (160, 90));
+}
+
+#[test]
 fn ratio_change_keeps_strip_placement() {
     let mut doc = Document::new(AspectRatio::SQUARE);
     let id = doc.add_photo("placed", 400, 200);

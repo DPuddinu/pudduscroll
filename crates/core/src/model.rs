@@ -23,6 +23,10 @@ impl AspectRatio {
         width: 3,
         height: 4,
     };
+    pub const SIXTEEN_NINE: Self = Self {
+        width: 16,
+        height: 9,
+    };
     pub const NINE_SIXTEEN: Self = Self {
         width: 9,
         height: 16,
@@ -46,10 +50,11 @@ impl AspectRatio {
     }
 }
 
-pub const CANVAS_PRESETS: [AspectRatio; 4] = [
+pub const CANVAS_PRESETS: [AspectRatio; 5] = [
     AspectRatio::SQUARE,
     AspectRatio::FOUR_FIVE,
     AspectRatio::THREE_FOUR,
+    AspectRatio::SIXTEEN_NINE,
     AspectRatio::NINE_SIXTEEN,
 ];
 

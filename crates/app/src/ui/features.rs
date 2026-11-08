@@ -292,7 +292,13 @@ fn an_empty_carousel_frame_shows_a_plus() {
     for name in ["home", "export", "share"] {
         assert!(shown(&app, name), "{name} missing");
     }
-    for name in ["canvas-1:1", "canvas-4:5", "canvas-3:4", "canvas-9:16"] {
+    for name in [
+        "canvas-1:1",
+        "canvas-4:5",
+        "canvas-3:4",
+        "canvas-16:9",
+        "canvas-9:16",
+    ] {
         assert!(shown(&app, name), "{name} missing");
     }
     assert!(shown(&app, "rail-tool-canvas"));
@@ -333,6 +339,7 @@ fn an_empty_carousel_frame_shows_a_plus() {
         "frame-aspect-1:1",
         "frame-aspect-4:5",
         "frame-aspect-3:4",
+        "frame-aspect-16:9",
         "frame-aspect-9:16",
         "rotate-frame-ccw",
         "rotate-frame-cw",
