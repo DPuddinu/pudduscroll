@@ -1,12 +1,23 @@
 use eframe::egui;
 use pudduscroll_core::{AspectRatio, CANVAS_PRESETS};
 
-use super::card::{self, CARD_INNER_W, Card};
+use super::card::{self, CARD_INNER_W, Card, control_row_h};
 use super::draw::{counted, dialog_frame, section_scroll, short_name};
 use super::{
     ACCENT, BG, CANVAS_BG, COVER_EMPTY, Confirm, HOME_NAV_W, HomeAction, HomeSection, INK, MUTED,
     PANEL, PudduScrollApp, Route, SELECT_BG, TEXT,
 };
+
+fn left_label(ui: &mut egui::Ui, width: f32, height: f32, text: egui::RichText) {
+    ui.allocate_ui_with_layout(
+        egui::vec2(width, height),
+        egui::Layout::left_to_right(egui::Align::Center),
+        |ui| {
+            ui.set_min_width(width);
+            ui.add(egui::Label::new(text).truncate().selectable(false));
+        },
+    );
+}
 
 impl PudduScrollApp {
     pub(super) fn home_screen(
@@ -100,11 +111,17 @@ impl PudduScrollApp {
     fn home_carousels(&mut self, ui: &mut egui::Ui) -> Option<HomeAction> {
         let mut action = None;
         ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 8.0;
             ui.heading("Carousels");
             let import = ui.add_enabled(!self.importing, egui::Button::new("Import"));
             self.remember("import-carousel", import.rect);
             if import.clicked() {
                 self.import_package();
+            }
+            let new = ui.button("New");
+            self.remember("new-carousel", new.rect);
+            if new.clicked() {
+                self.new_carousel(ui.ctx());
             }
         });
         ui.add_space(8.0);
@@ -150,14 +167,22 @@ impl PudduScrollApp {
         }
         let template_count = self.library.templates.len();
         section_scroll(ui, "templates").show(ui, |ui| {
-            ui.horizontal_wrapped(|ui| {
-                ui.spacing_mut().item_spacing = egui::vec2(12.0, 12.0);
-                for index in 0..template_count {
-                    if let Some(next) = self.template_card(ui, index) {
-                        action = Some(next);
+            let row = egui::vec2(
+                ui.available_size_before_wrap().x,
+                ui.spacing().interact_size.y,
+            );
+            ui.allocate_ui_with_layout(
+                row,
+                egui::Layout::left_to_right(egui::Align::Min).with_main_wrap(true),
+                |ui| {
+                    ui.spacing_mut().item_spacing = egui::vec2(12.0, 12.0);
+                    for index in 0..template_count {
+                        if let Some(next) = self.template_card(ui, index) {
+                            action = Some(next);
+                        }
                     }
-                }
-            });
+                },
+            );
         });
         action
     }
@@ -202,11 +227,11 @@ impl PudduScrollApp {
             actions: true,
         }
         .show(ui, |ui| {
-            let name_h = ui.spacing().interact_size.y;
+            let row_h = control_row_h(ui);
             let (changed, name_rect) = {
                 let template = &mut self.library.templates[index];
                 let response = ui.add_sized(
-                    egui::vec2(CARD_INNER_W, name_h),
+                    egui::vec2(CARD_INNER_W, row_h),
                     egui::TextEdit::singleline(&mut template.name)
                         .id_salt(("template-name", id))
                         .desired_width(CARD_INNER_W),
@@ -217,7 +242,11 @@ impl PudduScrollApp {
             if changed {
                 self.name_dirty = true;
             }
-            ui.label(
+            let meta_h = ui.text_style_height(&egui::TextStyle::Body);
+            left_label(
+                ui,
+                CARD_INNER_W,
+                meta_h,
                 egui::RichText::new(format!(
                     "{} · {}",
                     counted(canvases, "canvas", "canvases"),
@@ -225,23 +254,27 @@ impl PudduScrollApp {
                 ))
                 .color(MUTED),
             );
-            ui.horizontal(|ui| {
-                let use_template = ui.button("Use");
-                self.remember(format!("template-use-{id}"), use_template.rect);
-                if use_template.clicked() {
-                    action = Some(HomeAction::OpenTemplate(id));
-                }
-                let edit = ui.button("Edit");
-                self.remember(format!("template-edit-{id}"), edit.rect);
-                if edit.clicked() {
-                    action = Some(HomeAction::EditTemplate(id));
-                }
-                let delete = ui.button("Delete");
-                self.remember(format!("template-delete-{id}"), delete.rect);
-                if delete.clicked() {
-                    action = Some(HomeAction::DeleteTemplate(id));
-                }
-            });
+            ui.allocate_ui_with_layout(
+                egui::vec2(CARD_INNER_W, row_h),
+                egui::Layout::left_to_right(egui::Align::Center),
+                |ui| {
+                    let use_template = ui.button("Use");
+                    self.remember(format!("template-use-{id}"), use_template.rect);
+                    if use_template.clicked() {
+                        action = Some(HomeAction::OpenTemplate(id));
+                    }
+                    let edit = ui.button("Edit");
+                    self.remember(format!("template-edit-{id}"), edit.rect);
+                    if edit.clicked() {
+                        action = Some(HomeAction::EditTemplate(id));
+                    }
+                    let delete = ui.button("Delete");
+                    self.remember(format!("template-delete-{id}"), delete.rect);
+                    if delete.clicked() {
+                        action = Some(HomeAction::DeleteTemplate(id));
+                    }
+                },
+            );
         });
         self.remember(format!("template-open-{id}"), shown.cover);
         self.remember(format!("template-card-{id}"), shown.rect);
@@ -268,7 +301,7 @@ impl PudduScrollApp {
             actions: false,
         }
         .show(ui, |ui| {
-            let name_h = ui.spacing().interact_size.y;
+            let name_h = control_row_h(ui);
             let (changed, name_rect) = {
                 let carousel = &mut self.library.carousels[index];
                 let response = ui.add_sized(
@@ -285,23 +318,23 @@ impl PudduScrollApp {
             }
             let meta_h = ui.text_style_height(&egui::TextStyle::Body);
             let menu_side = meta_h;
-            let label_w = (CARD_INNER_W - menu_side).max(1.0);
             ui.allocate_ui_with_layout(
                 egui::vec2(CARD_INNER_W, meta_h),
                 egui::Layout::left_to_right(egui::Align::Center),
                 |ui| {
-                    ui.spacing_mut().item_spacing = egui::Vec2::ZERO;
-                    ui.add_sized(
-                        egui::vec2(label_w, meta_h),
-                        egui::Label::new(
-                            egui::RichText::new(format!(
-                                "{} · {}",
-                                counted(canvases, "canvas", "canvases"),
-                                counted(frames, "frame", "frames")
-                            ))
-                            .color(MUTED),
-                        )
-                        .selectable(false),
+                    let gap = 8.0;
+                    ui.spacing_mut().item_spacing.x = gap;
+                    let label_w = (CARD_INNER_W - menu_side - gap).max(1.0);
+                    left_label(
+                        ui,
+                        label_w,
+                        meta_h,
+                        egui::RichText::new(format!(
+                            "{} · {}",
+                            counted(canvases, "canvas", "canvases"),
+                            counted(frames, "frame", "frames")
+                        ))
+                        .color(MUTED),
                     );
                     let hot_id =
                         ui.make_persistent_id(egui::IdSalt::new(("carousel-menu-hot", id)));

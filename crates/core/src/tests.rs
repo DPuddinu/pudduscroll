@@ -1696,6 +1696,125 @@ fn move_frame_swaps_order_with_the_neighbor_and_keeps_each_width() {
 }
 
 #[test]
+fn move_frame_swaps_two_spans_instead_of_opening_a_gap() {
+    let mut layout = Layout::new(AspectRatio::SQUARE);
+    layout.set_canvas_count(4);
+    let a = layout.add_frame(0);
+    let b = layout.add_frame(2);
+    layout.set_frame_rect(a, 0.0, 0.1, 2.0, 0.8);
+    layout.set_frame_rect(b, 2.0, 0.2, 2.0, 0.7);
+    assert!(layout.can_move_frame(a, true));
+    assert!(layout.move_frame(a, true));
+    let moved = layout.frame(a).unwrap();
+    let other = layout.frame(b).unwrap();
+    assert!((moved.x - 2.0).abs() < 1e-6);
+    assert!((moved.w - 2.0).abs() < 1e-6);
+    assert!((moved.y - 0.1).abs() < 1e-6);
+    assert!((moved.h - 0.8).abs() < 1e-6);
+    assert!((other.x - 0.0).abs() < 1e-6);
+    assert!((other.w - 2.0).abs() < 1e-6);
+    assert!((other.y - 0.2).abs() < 1e-6);
+    assert!((other.h - 0.7).abs() < 1e-6);
+
+    layout.set_frame_rect(a, 0.0, 0.1, 2.0, 0.8);
+    layout.set_frame_rect(b, 2.0, 0.2, 1.0, 0.7);
+    assert!(layout.move_frame(a, true));
+    assert!((layout.frame(b).unwrap().x - 0.0).abs() < 1e-6);
+    assert!((layout.frame(b).unwrap().w - 1.0).abs() < 1e-6);
+    assert!((layout.frame(a).unwrap().x - 1.0).abs() < 1e-6);
+    assert!((layout.frame(a).unwrap().w - 2.0).abs() < 1e-6);
+
+    layout.set_frame_rect(a, 2.0, 0.1, 2.0, 0.8);
+    layout.set_frame_rect(b, 0.0, 0.2, 2.0, 0.7);
+    assert!(layout.move_frame(a, false));
+    assert!((layout.frame(a).unwrap().x - 0.0).abs() < 1e-6);
+    assert!((layout.frame(a).unwrap().w - 2.0).abs() < 1e-6);
+    assert!((layout.frame(b).unwrap().x - 2.0).abs() < 1e-6);
+    assert!((layout.frame(b).unwrap().w - 2.0).abs() < 1e-6);
+}
+
+#[test]
+fn move_frame_steps_a_span_into_the_empty_canvas_past_its_edge() {
+    let mut layout = Layout::new(AspectRatio::SQUARE);
+    layout.set_canvas_count(5);
+    let a = layout.add_frame(0);
+    let b = layout.add_frame(3);
+    layout.set_frame_rect(a, 0.0, 0.0, 2.0, 1.0);
+    layout.set_frame_rect(b, 3.0, 0.3, 2.0, 0.4);
+    assert!(layout.can_move_frame(a, true));
+    assert!(layout.move_frame(a, true));
+    assert!((layout.frame(a).unwrap().x - 1.0).abs() < 1e-6);
+    assert!((layout.frame(a).unwrap().w - 2.0).abs() < 1e-6);
+    assert!((layout.frame(b).unwrap().x - 3.0).abs() < 1e-6);
+    assert!(layout.move_frame(a, true));
+    assert!((layout.frame(b).unwrap().x - 1.0).abs() < 1e-6);
+    assert!((layout.frame(b).unwrap().w - 2.0).abs() < 1e-6);
+    assert!((layout.frame(b).unwrap().y - 0.3).abs() < 1e-6);
+    assert!((layout.frame(a).unwrap().x - 3.0).abs() < 1e-6);
+    assert!((layout.frame(a).unwrap().w - 2.0).abs() < 1e-6);
+
+    layout.set_frame_rect(a, 3.0, 0.0, 2.0, 1.0);
+    layout.set_frame_rect(b, 0.0, 0.3, 2.0, 0.4);
+    assert!(layout.move_frame(a, false));
+    assert!((layout.frame(a).unwrap().x - 2.0).abs() < 1e-6);
+    assert!((layout.frame(b).unwrap().x - 0.0).abs() < 1e-6);
+    assert!(layout.move_frame(a, false));
+    assert!((layout.frame(a).unwrap().x - 0.0).abs() < 1e-6);
+    assert!((layout.frame(b).unwrap().x - 2.0).abs() < 1e-6);
+}
+
+#[test]
+fn move_frame_swaps_spans_wider_than_two_canvases() {
+    let mut layout = Layout::new(AspectRatio::SQUARE);
+    layout.set_canvas_count(8);
+    let a = layout.add_frame(0);
+    let b = layout.add_frame(5);
+    layout.set_frame_rect(a, 0.0, 0.1, 5.0, 0.8);
+    layout.set_frame_rect(b, 5.0, 0.2, 3.0, 0.6);
+    assert!(layout.can_move_frame(a, true));
+    assert!(layout.move_frame(a, true));
+    let moved = layout.frame(a).unwrap();
+    let other = layout.frame(b).unwrap();
+    assert!((moved.x - 3.0).abs() < 1e-6);
+    assert!((moved.w - 5.0).abs() < 1e-6);
+    assert!((moved.y - 0.1).abs() < 1e-6);
+    assert!((moved.h - 0.8).abs() < 1e-6);
+    assert!((other.x - 0.0).abs() < 1e-6);
+    assert!((other.w - 3.0).abs() < 1e-6);
+    assert!((other.y - 0.2).abs() < 1e-6);
+    assert!((other.h - 0.6).abs() < 1e-6);
+    assert!(layout.move_frame(a, false));
+    assert!((layout.frame(a).unwrap().x - 0.0).abs() < 1e-6);
+    assert!((layout.frame(a).unwrap().w - 5.0).abs() < 1e-6);
+    assert!((layout.frame(b).unwrap().x - 5.0).abs() < 1e-6);
+    assert!((layout.frame(b).unwrap().w - 3.0).abs() < 1e-6);
+
+    layout.set_frame_rect(a, 0.0, 0.1, 3.0, 0.8);
+    layout.set_frame_rect(b, 4.0, 0.2, 4.0, 0.6);
+    assert!(layout.move_frame(a, true));
+    assert!((layout.frame(a).unwrap().x - 1.0).abs() < 1e-6);
+    assert!((layout.frame(a).unwrap().w - 3.0).abs() < 1e-6);
+    assert!((layout.frame(b).unwrap().x - 4.0).abs() < 1e-6);
+    assert!(layout.move_frame(a, true));
+    assert!((layout.frame(b).unwrap().x - 1.0).abs() < 1e-6);
+    assert!((layout.frame(b).unwrap().w - 4.0).abs() < 1e-6);
+    assert!((layout.frame(a).unwrap().x - 5.0).abs() < 1e-6);
+    assert!((layout.frame(a).unwrap().w - 3.0).abs() < 1e-6);
+
+    layout.set_frame_rect(a, 2.0, 0.1, 3.0, 0.8);
+    layout.set_frame_rect(b, 0.0, 0.2, 1.0, 0.6);
+    assert!(layout.move_frame(a, false));
+    assert!((layout.frame(a).unwrap().x - 1.0).abs() < 1e-6);
+    assert!((layout.frame(a).unwrap().w - 3.0).abs() < 1e-6);
+    assert!((layout.frame(b).unwrap().x - 0.0).abs() < 1e-6);
+    assert!(layout.move_frame(a, false));
+    assert!((layout.frame(a).unwrap().x - 0.0).abs() < 1e-6);
+    assert!((layout.frame(a).unwrap().w - 3.0).abs() < 1e-6);
+    assert!((layout.frame(b).unwrap().x - 3.0).abs() < 1e-6);
+    assert!((layout.frame(b).unwrap().w - 1.0).abs() < 1e-6);
+}
+
+#[test]
 fn move_frame_steps_into_an_empty_canvas_without_swapping() {
     let mut layout = Layout::new(AspectRatio::SQUARE);
     layout.set_canvas_count(3);

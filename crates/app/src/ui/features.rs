@@ -60,7 +60,11 @@ fn plus_names(app: &PudduScrollApp) -> Vec<String> {
 }
 
 fn cover() -> crate::library::Blob {
-    let image = image::RgbaImage::from_pixel(2, 2, image::Rgba([10, 20, 30, 255]));
+    cover_image(8, 8, [10, 20, 30, 255])
+}
+
+fn cover_image(width: u32, height: u32, pixel: [u8; 4]) -> crate::library::Blob {
+    let image = image::RgbaImage::from_pixel(width, height, image::Rgba(pixel));
     let mut bytes = Vec::new();
     image::DynamicImage::ImageRgba8(image)
         .write_to(
@@ -264,20 +268,65 @@ fn delete_removes_the_active_canvas() {
 }
 
 #[test]
+fn template_cards_share_a_row() {
+    let (ctx, mut app) = ready();
+    let mut ids = Vec::new();
+    for name in ["One", "Two", "Three", "Four"] {
+        ids.push(
+            app.library
+                .create_template(name.to_string(), AspectRatio::FOUR_FIVE, cover()),
+        );
+    }
+    app.home_section = super::HomeSection::Templates;
+    settle(&mut app, &ctx);
+    let cards: Vec<egui::Rect> = ids
+        .iter()
+        .map(|id| rect(&app, &format!("template-card-{id}")))
+        .collect();
+    let top = cards[0].top();
+    let height = cards[0].height();
+    let stride = cards[1].left() - cards[0].left();
+    for (index, card) in cards.iter().enumerate() {
+        assert!((card.top() - top).abs() < 0.5, "card {index} top");
+        assert!((card.height() - height).abs() < 0.5, "card {index} height");
+        if index > 0 {
+            let gap = card.left() - cards[index - 1].left();
+            assert!((gap - stride).abs() < 0.5, "card {index} stride");
+        }
+    }
+}
+
+#[test]
 fn home_offers_a_template_and_an_import() {
     let (ctx, mut app) = ready();
     settle(&mut app, &ctx);
     assert!(shown(&app, "nav-carousels"));
     assert!(shown(&app, "nav-templates"));
     assert!(shown(&app, "import-carousel"));
+    assert!(shown(&app, "new-carousel"));
+    let gap = rect(&app, "new-carousel").left() - rect(&app, "import-carousel").right();
+    assert!(gap >= 8.0, "{gap}");
     assert!(shown(&app, "browse-templates"));
     assert!(!shown(&app, "new-template"));
     click(&mut app, &ctx, "nav-templates");
     settle(&mut app, &ctx);
     assert!(shown(&app, "new-template"));
     assert!(!shown(&app, "import-carousel"));
+    assert!(!shown(&app, "new-carousel"));
     assert_eq!(plus_names(&app), Vec::<String>::new());
     assert!(!shown(&app, "share"));
+}
+
+#[test]
+fn new_carousel_starts_from_one_canvas() {
+    let (ctx, mut app) = ready();
+    settle(&mut app, &ctx);
+    click(&mut app, &ctx, "new-carousel");
+    settle(&mut app, &ctx);
+    assert!(matches!(app.route, Route::Carousel(_)));
+    assert_eq!(app.library.carousels.len(), 1);
+    assert_eq!(app.layout().expect("layout").canvas_count, 1);
+    assert_eq!(app.layout().expect("layout").frames.len(), 1);
 }
 
 #[test]
@@ -457,4 +506,131 @@ fn export_modal_offers_the_save_action() {
     app.export_open = true;
     settle(&mut app, &ctx);
     assert!(shown(&app, "export-go"));
+}
+
+fn render_home(
+    app: &mut PudduScrollApp,
+    ctx: &egui::Context,
+    raster: &mut pudduscroll_ui_check::Raster,
+    view: egui::Vec2,
+) -> pudduscroll_ui_check::Image {
+    let mut host = eframe::Frame::_new_kittest();
+    let mut viewports = egui::ViewportIdMap::default();
+    viewports.insert(
+        egui::ViewportId::ROOT,
+        egui::ViewportInfo {
+            native_pixels_per_point: Some(1.0),
+            ..Default::default()
+        },
+    );
+    let raw = egui::RawInput {
+        screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, view)),
+        viewports,
+        time: Some(0.0),
+        predicted_dt: 1.0 / 60.0,
+        focused: true,
+        ..Default::default()
+    };
+    let mut output = ctx.run_ui(raw, |ui| {
+        app.ui(ui, &mut host);
+    });
+    raster.render(
+        ctx,
+        &mut output,
+        [view.x.round() as u32, view.y.round() as u32],
+    )
+}
+
+fn expect_cards(name: &str, image: &pudduscroll_ui_check::Image) -> Result<(), String> {
+    let report = pudduscroll_ui_check::standard().run(image);
+    if report.ok() && report.items >= 4 {
+        return Ok(());
+    }
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../target/ui-check")
+        .join(format!("{name}.png"));
+    image.save_png(&path).expect("png");
+    Err(format!("{name} ({} items): {report:#?}", report.items))
+}
+
+fn paint_home(
+    app: &mut PudduScrollApp,
+    ctx: &egui::Context,
+    raster: &mut pudduscroll_ui_check::Raster,
+    view: egui::Vec2,
+) -> pudduscroll_ui_check::Image {
+    for _ in 0..12 {
+        let _ = render_home(app, ctx, raster, view);
+    }
+    render_home(app, ctx, raster, view)
+}
+
+#[test]
+fn home_card_lists_pass_pixel_checks() {
+    let (ctx, mut app) = ready();
+    for (index, name) in [
+        "North", "East", "South", "West", "Up", "Down", "Left", "Right",
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let cover = if index % 2 == 0 {
+            cover_image(64, 8, [20, 40, 90, 255])
+        } else {
+            cover_image(32, 32, [180, 50, 40, 255])
+        };
+        let id = app
+            .library
+            .create_template(name.to_string(), AspectRatio::FOUR_FIVE, cover);
+        let template = app
+            .library
+            .templates
+            .iter_mut()
+            .find(|template| template.id == id)
+            .expect("template");
+        template.layout.set_canvas_count(index + 1);
+    }
+    for index in 0..8 {
+        let id = app.library.create_carousel();
+        let carousel = app
+            .library
+            .carousels
+            .iter_mut()
+            .find(|carousel| carousel.id == id)
+            .expect("carousel");
+        carousel.name = format!("Carousel {index}");
+        carousel.layout.set_canvas_count(index + 1);
+        let cover = if index % 2 == 0 {
+            cover_image(64, 8, [20, 40, 90, 255])
+        } else {
+            cover_image(32, 32, [180, 50, 40, 255])
+        };
+        app.library.set_cover(id, cover);
+    }
+    let mut raster = pudduscroll_ui_check::Raster::default();
+    let mut failures = Vec::new();
+    for (name, section, view) in [
+        (
+            "carousels",
+            super::HomeSection::Carousels,
+            egui::vec2(1440.0, 900.0),
+        ),
+        (
+            "templates",
+            super::HomeSection::Templates,
+            egui::vec2(1440.0, 900.0),
+        ),
+        (
+            "carousels-narrow",
+            super::HomeSection::Carousels,
+            egui::vec2(1100.0, 720.0),
+        ),
+    ] {
+        app.home_section = section;
+        let image = paint_home(&mut app, &ctx, &mut raster, view);
+        if let Err(failure) = expect_cards(name, &image) {
+            failures.push(failure);
+        }
+    }
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
 }

@@ -1,0 +1,15 @@
+[package]
+name = "pudduscroll-ui-check"
+version.workspace = true
+description = "Pixel checks for a rendered user interface"
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+egui = "0.37"
+image = { workspace = true, features = ["png"] }
+
+[lints]
+workspace = true

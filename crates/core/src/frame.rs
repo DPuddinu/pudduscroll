@@ -207,13 +207,24 @@ impl Layout {
 
     fn empty_step_canvas(&self, id: FrameId, to_the_right: bool) -> Option<usize> {
         let frame = self.frame(id)?;
-        let home = frame.x.floor() as i32;
-        let next = if to_the_right { home + 1 } else { home - 1 };
+        let ratio = self.ratio.value();
+        let on_canvas = |index: usize| frame_on_canvas(frame, index, ratio);
+        let next = if to_the_right {
+            (0..self.canvas_count)
+                .rfind(|index| on_canvas(*index))
+                .map_or_else(
+                    || (frame.x + frame.w).ceil() as i32,
+                    |index| index as i32 + 1,
+                )
+        } else {
+            (0..self.canvas_count)
+                .find(|index| on_canvas(*index))
+                .map_or_else(|| frame.x.floor() as i32 - 1, |index| index as i32 - 1)
+        };
         if next < 0 || next as usize >= self.canvas_count {
             return None;
         }
         let canvas = next as usize;
-        let ratio = self.ratio.value();
         let occupied = self
             .frames
             .iter()

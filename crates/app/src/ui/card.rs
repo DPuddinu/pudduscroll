@@ -1,11 +1,16 @@
 use eframe::egui;
 
-use super::draw::fitted_rect;
 use super::skeleton;
 use super::{HAIRLINE, PANEL, SKELETON_BONE};
 
 pub(super) const CARD_INNER_W: f32 = 212.0;
 pub(super) const CARD_GAP: f32 = 8.0;
+
+pub(super) fn control_row_h(ui: &egui::Ui) -> f32 {
+    let text_h = ui.text_style_height(&egui::TextStyle::Button);
+    let pad = ui.spacing().button_padding.y * 2.0;
+    (text_h + pad).max(ui.spacing().interact_size.y)
+}
 const COVER_H: f32 = 132.0;
 const COVER_RADIUS: f32 = 10.0;
 const CARD_MARGIN: f32 = 12.0;
@@ -37,13 +42,9 @@ impl Card {
     pub(super) fn show(self, ui: &mut egui::Ui, add_rows: impl FnOnce(&mut egui::Ui)) -> ShownCard {
         let painter = ui.painter().clone();
         let mut cover_state = (egui::Rect::NOTHING, false, false);
-        let name_h = ui.spacing().interact_size.y;
+        let name_h = control_row_h(ui);
         let meta_h = ui.text_style_height(&egui::TextStyle::Body);
-        let action_h = if self.actions {
-            ui.spacing().interact_size.y
-        } else {
-            0.0
-        };
+        let action_h = if self.actions { name_h } else { 0.0 };
         let gaps = 2 + usize::from(self.actions);
         let inner_h = COVER_H + name_h + meta_h + action_h + CARD_GAP * gaps as f32;
         let outer = card_outer_size(inner_h);
@@ -130,11 +131,22 @@ fn paint_rounded_image(
     let Some(image) = image else {
         return;
     };
-    let fitted = fitted_rect(rect, image.width, image.height);
     painter.add(
-        egui::epaint::RectShape::filled(fitted, radius, egui::Color32::WHITE).with_texture(
-            image.id,
-            egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
-        ),
+        egui::epaint::RectShape::filled(rect, radius, egui::Color32::WHITE)
+            .with_texture(image.id, cover_uv(rect, image)),
     );
+}
+
+fn cover_uv(rect: egui::Rect, image: CardImage) -> egui::Rect {
+    let frame = rect.width() / rect.height().max(1.0);
+    let aspect = image.width / image.height.max(1.0);
+    if aspect > frame {
+        let shown = (frame / aspect).clamp(0.0, 1.0);
+        let x = (1.0 - shown) * 0.5;
+        egui::Rect::from_min_max(egui::pos2(x, 0.0), egui::pos2(x + shown, 1.0))
+    } else {
+        let shown = (aspect / frame).clamp(0.0, 1.0);
+        let y = (1.0 - shown) * 0.5;
+        egui::Rect::from_min_max(egui::pos2(0.0, y), egui::pos2(1.0, y + shown))
+    }
 }

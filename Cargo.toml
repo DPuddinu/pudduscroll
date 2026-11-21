@@ -1,10 +1,10 @@
 [workspace]
 resolver = "3"
-members = ["crates/core", "crates/app", "crates/display"]
+members = ["crates/core", "crates/app", "crates/display", "crates/ui-check"]
 default-members = ["crates/app"]
 
 [workspace.package]
-version = "0.5.0"
+version = "0.6.0"
 edition = "2024"
 license = "MIT"
 publish = false
@@ -22,6 +22,9 @@ opt-level = 3
 [profile.dev.package.pudduscroll-core]
 opt-level = 3
 codegen-units = 1
+
+[profile.dev.package.pudduscroll-ui-check]
+opt-level = 3
 
 [workspace.lints.rust]
 unsafe_code = "forbid"

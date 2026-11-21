@@ -1,4 +1,4 @@
-PudduScroll 0.5.0 lets you swap a frame photo, make a template from a carousel, and export files with the slide number first.
+PudduScroll 0.6.0 adds a 16:9 canvas and lines up the cards on Home.
 
 ## Downloads
 
@@ -28,8 +28,8 @@ Templates and carousels are saved on this machine:
 
 ## New
 
-- Use Load image next to Edit frame to pick a new photo for that frame.
-- Open the menu on a carousel card to make a template from its layout without the photos.
-- Exported files are named like 01-Summer.jpg so the slide number comes first.
-- Move left or right steps a frame into the empty canvas beside it.
-- Delete removes the selected frame or photo first, not the canvas.
+- A 16:9 canvas is in the ratio list.
+- Cover photos fill the home card.
+- Captions on a row of cards start at the same left edge.
+- Move left or right swaps two frames that span more than one canvas.
+- A wide frame steps into the empty canvas past its edge.
