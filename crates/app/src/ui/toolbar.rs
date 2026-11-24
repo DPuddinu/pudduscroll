@@ -1,11 +1,11 @@
 use eframe::egui;
 use pudduscroll_core::{CANVAS_PRESETS, MAX_CANVASES, Turn, canvas_file_name, layout_export_width};
 
-use super::draw::{Glyph, dialog_frame, fitted_rect, icon_button, section_scroll, short_name};
-use super::history::HistoryKind;
-use super::{
-    ACCENT, INK, MAX_GRID_CELLS, MIN_GRID_CELLS, MUTED, PudduScrollApp, RAIL_W, Route, TEXT,
+use super::draw::{
+    Glyph, dialog_frame, dialog_width, fitted_rect, icon_button, section_scroll, short_name,
 };
+use super::history::HistoryKind;
+use super::{ACCENT, INK, MAX_GRID_CELLS, MIN_GRID_CELLS, MUTED, PudduScrollApp, Route, TEXT};
 
 impl PudduScrollApp {
     pub(super) fn toolbar(&mut self, ui: &mut egui::Ui) {
@@ -71,13 +71,11 @@ impl PudduScrollApp {
                     }
                 });
             });
-            let can_add = self.active_canvas.is_some()
-                && self
-                    .layout()
-                    .is_some_and(|layout| layout.canvas_count < MAX_CANVASES);
+            let can_add = self.layout().is_some_and(|layout| {
+                layout.canvas_count > 0 && layout.canvas_count < MAX_CANVASES
+            });
             let chosen = self.removable_canvases();
             ui.horizontal_wrapped(|ui| {
-                ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Extend);
                 let add_left = ui.add_enabled(can_add, egui::Button::new("Add canvas left"));
                 self.remember("add-canvas-left", add_left.rect);
                 if add_left.clicked() && can_add {
@@ -97,7 +95,6 @@ impl PudduScrollApp {
                 }
             });
             ui.horizontal_wrapped(|ui| {
-                ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Extend);
                 let add_frame = ui.button("Add frame");
                 self.remember("add-frame", add_frame.rect);
                 if add_frame.clicked() {
@@ -320,7 +317,7 @@ impl PudduScrollApp {
                     if let Some(to_global) = ui.ctx().layer_transform_to_global(response.layer_id) {
                         swatch = to_global * swatch;
                     }
-                    let rail_left = ui.ctx().content_rect().right() - RAIL_W;
+                    let rail_left = ui.clip_rect().left();
                     let anchor =
                         egui::Rect::from_x_y_ranges(rail_left..=rail_left, swatch.y_range());
                     let mut picked = egui::Color32::from_rgb(rgb[0], rgb[1], rgb[2]);
@@ -451,7 +448,7 @@ impl PudduScrollApp {
             .area(egui::Modal::default_area(modal_id).order(egui::Order::Debug))
             .frame(dialog_frame())
             .show(ctx, |ui| {
-                ui.set_min_width(420.0);
+                ui.set_min_width(dialog_width(ui.ctx(), 420.0));
                 ui.heading("Paste image from link");
                 ui.add_space(6.0);
                 ui.label("Image link");
@@ -501,8 +498,8 @@ impl PudduScrollApp {
             return;
         }
         let view = ctx.content_rect().size();
-        let modal_w = (view.x * 0.70).clamp(640.0, 1280.0);
-        let image_h = (view.y * 0.55).clamp(220.0, (view.y - 340.0).max(220.0));
+        let modal_w = dialog_width(ctx, (view.x * 0.70).min(1280.0));
+        let image_h = (view.y * 0.55).clamp(80.0, (view.y - 160.0).max(80.0));
         let modal_id = egui::Id::unique("export-options");
         let response = egui::Modal::new(modal_id)
             .area(egui::Modal::default_area(modal_id).order(egui::Order::Debug))
@@ -618,7 +615,7 @@ impl PudduScrollApp {
             .area(egui::Modal::default_area(modal_id).order(egui::Order::Debug))
             .frame(dialog_frame())
             .show(ctx, |ui| {
-                ui.set_min_width(420.0);
+                ui.set_min_width(dialog_width(ui.ctx(), 420.0));
                 ui.heading("Overwrite files?");
                 ui.add_space(6.0);
                 let line = if self.overwrite_names.len() == 1 {

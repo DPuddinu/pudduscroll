@@ -1,7 +1,7 @@
 fn main() {
     println!("cargo:rerun-if-changed=assets/icon.ico");
     #[cfg(windows)]
-    {
+    if std::env::var("CARGO_CFG_TARGET_OS").ok().as_deref() == Some("windows") {
         let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR");
         let icon = std::path::Path::new(&manifest_dir)
             .join("assets")

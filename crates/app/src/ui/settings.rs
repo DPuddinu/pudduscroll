@@ -5,7 +5,9 @@ use crate::settings::{
     Command, QUALITY_MAX, QUALITY_MIN, normalize_shortcut, redo_alias, shortcut_rank,
 };
 
-use super::{ACCENT, INK, MUTED, PudduScrollApp, Route};
+#[cfg(not(target_arch = "wasm32"))]
+use super::INK;
+use super::{ACCENT, MUTED, PudduScrollApp, Route};
 
 impl PudduScrollApp {
     pub(super) fn settings_screen(&mut self, ui: &mut egui::Ui, full: egui::Rect) {
@@ -406,9 +408,10 @@ impl PudduScrollApp {
         if count == 0 || count >= pudduscroll_core::MAX_CANVASES {
             return;
         }
-        let Some(active) = self.active_canvas.filter(|index| *index < count) else {
-            return;
-        };
+        let active = self
+            .active_canvas
+            .filter(|index| *index < count)
+            .unwrap_or(0);
         let index = if to_the_right { active + 1 } else { active };
         self.checkpoint();
         let added = self

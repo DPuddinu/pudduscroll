@@ -57,9 +57,12 @@ const CROP_HANDLE_HIT: f32 = 12.0;
 const MENU_H: f32 = 28.0;
 const TOOLBAR_H: f32 = 48.0;
 const RAIL_W: f32 = 320.0;
+const RAIL_ICON_W: f32 = 56.0;
+const RAIL_DOCK_BELOW: f32 = 1180.0;
 const RAIL_PANES: usize = 2;
 const RAIL_SPLIT: f32 = 8.0;
 const HOME_NAV_W: f32 = 168.0;
+const HOME_STACK_BELOW: f32 = 768.0;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum RailTool {
@@ -298,6 +301,7 @@ pub struct PudduScrollApp {
     snap_to_grid: bool,
     grid_cells: i32,
     rail_tool: RailTool,
+    rail_open: bool,
     rail_weights: [f32; RAIL_PANES],
     create_open: bool,
     snapshot_open: bool,

@@ -2,10 +2,10 @@ use eframe::egui;
 use pudduscroll_core::{AspectRatio, CANVAS_PRESETS};
 
 use super::card::{self, CARD_INNER_W, Card, control_row_h};
-use super::draw::{counted, dialog_frame, section_scroll, short_name};
+use super::draw::{counted, dialog_frame, dialog_width, section_scroll, short_name};
 use super::{
-    ACCENT, BG, CANVAS_BG, COVER_EMPTY, Confirm, HOME_NAV_W, HomeAction, HomeSection, INK, MUTED,
-    PANEL, PudduScrollApp, Route, SELECT_BG, TEXT,
+    ACCENT, BG, CANVAS_BG, COVER_EMPTY, Confirm, HOME_NAV_W, HOME_STACK_BELOW, HomeAction,
+    HomeSection, INK, MUTED, PANEL, PudduScrollApp, Route, SELECT_BG, TEXT,
 };
 
 fn left_label(ui: &mut egui::Ui, width: f32, height: f32, text: egui::RichText) {
@@ -26,16 +26,32 @@ impl PudduScrollApp {
         full: egui::Rect,
     ) -> Option<HomeAction> {
         ui.painter().rect_filled(full, 0.0, BG);
-        let nav_rect = egui::Rect::from_min_max(
-            full.left_top(),
-            egui::pos2(full.left() + HOME_NAV_W, full.bottom()),
-        );
-        let main_rect = egui::Rect::from_min_max(
-            egui::pos2(nav_rect.right(), full.top()),
-            full.right_bottom(),
-        );
+        let stacked = full.width() < HOME_STACK_BELOW;
+        let (nav_rect, main_rect) = if stacked {
+            let nav_h = 52.0;
+            (
+                egui::Rect::from_min_max(
+                    full.left_top(),
+                    egui::pos2(full.right(), full.top() + nav_h),
+                ),
+                egui::Rect::from_min_max(
+                    egui::pos2(full.left(), full.top() + nav_h),
+                    full.right_bottom(),
+                ),
+            )
+        } else {
+            let nav_rect = egui::Rect::from_min_max(
+                full.left_top(),
+                egui::pos2(full.left() + HOME_NAV_W, full.bottom()),
+            );
+            let main_rect = egui::Rect::from_min_max(
+                egui::pos2(nav_rect.right(), full.top()),
+                full.right_bottom(),
+            );
+            (nav_rect, main_rect)
+        };
         ui.painter().rect_filled(nav_rect, 0.0, PANEL);
-        self.home_nav(ui, nav_rect);
+        self.home_nav(ui, nav_rect, stacked);
         let mut action = None;
         let mut main = ui.new_child(
             egui::UiBuilder::new()
@@ -62,13 +78,36 @@ impl PudduScrollApp {
         action
     }
 
-    fn home_nav(&mut self, ui: &mut egui::Ui, rect: egui::Rect) {
+    fn home_nav(&mut self, ui: &mut egui::Ui, rect: egui::Rect, stacked: bool) {
         let mut nav = ui.new_child(
             egui::UiBuilder::new()
                 .id_salt("home-nav")
                 .max_rect(rect)
                 .layout(egui::Layout::top_down(egui::Align::Min)),
         );
+        if stacked {
+            nav.add_space(8.0);
+            nav.horizontal(|ui| {
+                ui.add_space(12.0);
+                let gap = 8.0;
+                let width = ((ui.available_width() - 12.0 - gap) * 0.5).max(1.0);
+                ui.spacing_mut().item_spacing.x = gap;
+                for (section, label, id) in [
+                    (HomeSection::Carousels, "Carousels", "nav-carousels"),
+                    (HomeSection::Templates, "Templates", "nav-templates"),
+                ] {
+                    ui.allocate_ui_with_layout(
+                        egui::vec2(width, 36.0),
+                        egui::Layout::top_down(egui::Align::Min),
+                        |ui| {
+                            ui.set_min_width(width);
+                            self.home_nav_item(ui, section, label, id);
+                        },
+                    );
+                }
+            });
+            return;
+        }
         nav.add_space(16.0);
         nav.horizontal(|ui| {
             ui.add_space(12.0);
@@ -442,14 +481,14 @@ impl PudduScrollApp {
             .area(egui::Modal::default_area(modal_id).order(egui::Order::Debug))
             .frame(dialog_frame())
             .show(ctx, |ui| {
-                ui.set_min_width(420.0);
+                ui.set_min_width(dialog_width(ctx, 420.0));
                 ui.heading("New template");
                 ui.add_space(6.0);
                 ui.label("Name");
                 let name = ui.add(
                     egui::TextEdit::singleline(&mut self.create_name)
                         .id_salt("template-name")
-                        .desired_width(360.0),
+                        .desired_width(dialog_width(ctx, 360.0)),
                 );
                 self.remember("template-name", name.rect);
                 ui.add_space(6.0);
@@ -503,7 +542,7 @@ impl PudduScrollApp {
             .area(egui::Modal::default_area(modal_id).order(egui::Order::Debug))
             .frame(dialog_frame())
             .show(ctx, |ui| {
-                ui.set_min_width(420.0);
+                ui.set_min_width(dialog_width(ctx, 420.0));
                 ui.heading(copy.title);
                 ui.add_space(6.0);
                 ui.label(&copy.body);
@@ -548,7 +587,7 @@ impl PudduScrollApp {
             .area(egui::Modal::default_area(modal_id).order(egui::Order::Debug))
             .frame(dialog_frame())
             .show(ctx, |ui| {
-                ui.set_min_width(360.0);
+                ui.set_min_width(dialog_width(ctx, 360.0));
                 ui.heading("PudduScroll");
                 ui.add_space(6.0);
                 ui.label(format!("Version {}", env!("CARGO_PKG_VERSION")));
@@ -582,8 +621,9 @@ impl PudduScrollApp {
             .area(egui::Modal::default_area(modal_id).order(egui::Order::Debug))
             .frame(dialog_frame())
             .show(ctx, |ui| {
-                ui.set_min_width(420.0);
-                ui.set_max_width(520.0);
+                let width = dialog_width(ctx, 420.0);
+                ui.set_min_width(width);
+                ui.set_max_width(width.max(dialog_width(ctx, 520.0)));
                 ui.heading(format!("Version {} is available", offer.version));
                 ui.add_space(6.0);
                 if offer.notes.is_empty() {
@@ -594,7 +634,7 @@ impl PudduScrollApp {
                     egui::ScrollArea::vertical()
                         .max_height(280.0)
                         .show(ui, |ui| {
-                            ui.set_min_width(400.0);
+                            ui.set_min_width(dialog_width(ctx, 400.0));
                             for (index, line) in offer.notes.lines().enumerate() {
                                 if index > 0 && !line.is_empty() {
                                     ui.add_space(6.0);
@@ -749,7 +789,7 @@ impl PudduScrollApp {
             .area(egui::Modal::default_area(modal_id).order(egui::Order::Debug))
             .frame(dialog_frame())
             .show(ctx, |ui| {
-                ui.set_min_width(420.0);
+                ui.set_min_width(dialog_width(ctx, 420.0));
                 ui.heading("New Snapshot");
                 ui.add_space(6.0);
                 ui.horizontal(|ui| {

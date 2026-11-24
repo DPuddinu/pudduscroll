@@ -22,6 +22,10 @@ mod update {
         pub(crate) notes: String,
     }
 
+    #[allow(
+        dead_code,
+        reason = "the desktop updater is the only constructor of these events"
+    )]
     pub(crate) enum Event {
         Available(Offer),
         Installing(String),

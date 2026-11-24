@@ -1,6 +1,6 @@
 use eframe::egui;
 
-use super::{BG, HAIRLINE, HOME_NAV_W, PANEL, SKELETON_BONE};
+use super::{BG, HAIRLINE, HOME_NAV_W, HOME_STACK_BELOW, PANEL, SKELETON_BONE};
 const CARD_INNER_W: f32 = 212.0;
 const CARD_GAP: f32 = 8.0;
 const COVER_H: f32 = 132.0;
@@ -10,14 +10,30 @@ const COVER_RADIUS: f32 = 10.0;
 
 pub(super) fn home(ui: &mut egui::Ui, full: egui::Rect) {
     ui.painter().rect_filled(full, 0.0, BG);
-    let nav_rect = egui::Rect::from_min_max(
-        full.left_top(),
-        egui::pos2(full.left() + HOME_NAV_W, full.bottom()),
-    );
-    let main_rect = egui::Rect::from_min_max(
-        egui::pos2(nav_rect.right(), full.top()),
-        full.right_bottom(),
-    );
+    let stacked = full.width() < HOME_STACK_BELOW;
+    let (nav_rect, main_rect) = if stacked {
+        let nav_h = 52.0;
+        (
+            egui::Rect::from_min_max(
+                full.left_top(),
+                egui::pos2(full.right(), full.top() + nav_h),
+            ),
+            egui::Rect::from_min_max(
+                egui::pos2(full.left(), full.top() + nav_h),
+                full.right_bottom(),
+            ),
+        )
+    } else {
+        let nav_rect = egui::Rect::from_min_max(
+            full.left_top(),
+            egui::pos2(full.left() + HOME_NAV_W, full.bottom()),
+        );
+        let main_rect = egui::Rect::from_min_max(
+            egui::pos2(nav_rect.right(), full.top()),
+            full.right_bottom(),
+        );
+        (nav_rect, main_rect)
+    };
     ui.painter().rect_filled(nav_rect, 0.0, PANEL);
     let mut nav = ui.new_child(
         egui::UiBuilder::new()
@@ -25,16 +41,28 @@ pub(super) fn home(ui: &mut egui::Ui, full: egui::Rect) {
             .max_rect(nav_rect)
             .layout(egui::Layout::top_down(egui::Align::Min)),
     );
-    nav.add_space(16.0);
-    nav.horizontal(|ui| {
-        ui.add_space(12.0);
-        ui.vertical(|ui| {
-            ui.set_width((ui.available_width() - 12.0).max(1.0));
-            ui.spacing_mut().item_spacing = egui::vec2(0.0, 4.0);
-            bone(ui, egui::vec2(ui.available_width().max(1.0), 36.0), 6.0);
-            bone(ui, egui::vec2(ui.available_width().max(1.0), 36.0), 6.0);
+    if stacked {
+        nav.add_space(8.0);
+        nav.horizontal(|ui| {
+            ui.add_space(12.0);
+            let gap = 8.0;
+            let width = ((ui.available_width() - 12.0 - gap) * 0.5).max(1.0);
+            ui.spacing_mut().item_spacing.x = gap;
+            bone(ui, egui::vec2(width, 36.0), 6.0);
+            bone(ui, egui::vec2(width, 36.0), 6.0);
         });
-    });
+    } else {
+        nav.add_space(16.0);
+        nav.horizontal(|ui| {
+            ui.add_space(12.0);
+            ui.vertical(|ui| {
+                ui.set_width((ui.available_width() - 12.0).max(1.0));
+                ui.spacing_mut().item_spacing = egui::vec2(0.0, 4.0);
+                bone(ui, egui::vec2(ui.available_width().max(1.0), 36.0), 6.0);
+                bone(ui, egui::vec2(ui.available_width().max(1.0), 36.0), 6.0);
+            });
+        });
+    }
     let mut main = ui.new_child(
         egui::UiBuilder::new()
             .id_salt("library-skeleton-main")

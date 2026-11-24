@@ -32,6 +32,11 @@ pub(super) fn dialog_frame() -> egui::Frame {
         .stroke(egui::Stroke::new(1.0, HAIRLINE))
 }
 
+pub(super) fn dialog_width(ctx: &egui::Context, want: f32) -> f32 {
+    let room = (ctx.content_rect().width() - 32.0).max(1.0);
+    want.min(room)
+}
+
 pub(super) fn fitted_rect(bounds: egui::Rect, width: f32, height: f32) -> egui::Rect {
     let aspect = width / height.max(1.0);
     let mut fitted_w = bounds.width();

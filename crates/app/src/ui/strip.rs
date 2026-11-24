@@ -234,6 +234,13 @@ impl PudduScrollApp {
         ui.shrink_clip_rect(bounds);
         self.view_rect = Some(bounds);
         self.sync_zoom_basis();
+        if !self.center_strip {
+            let placed = editor_strip_size(bounds, self.editor_zoom, ratio, count);
+            let strip = egui::Rect::from_min_size(bounds.min + self.strip_pan, placed);
+            if !bounds.intersects(strip) {
+                self.center_strip = true;
+            }
+        }
         if self.center_strip {
             self.editor_zoom = fit_editor_zoom(bounds, ratio, count);
         }
@@ -382,19 +389,29 @@ impl PudduScrollApp {
                 pointer.latest_pos(),
             )
         });
+        let touch = ctx.input(egui::InputState::any_touches);
+        let finger_view = |drag: &Drag| matches!(drag, Drag::MoveFrame { .. } | Drag::Pan { .. });
         if self.drag.is_none() && pressed && !Self::space_held(ctx) {
             if let Some(origin) = press.or(interact).or(latest) {
                 if editor.contains(origin) && ctx.layer_id_at(origin).is_none_or(|hit| hit == layer)
                 {
-                    let frame_hit = self.hits_frame_or_handle(rect, origin);
-                    if frame_hit {
-                        self.active_canvas = self.canvas_for_press(rect, origin);
+                    let gesture = self.gesture_at(rect, origin);
+                    let pans = touch && gesture.as_ref().is_none_or(finger_view);
+                    if pans {
+                        self.active_canvas = self
+                            .canvas_index_at(rect, origin)
+                            .or_else(|| self.canvas_for_press(rect, origin));
                     } else {
-                        self.active_canvas = self.canvas_index_at(rect, origin);
-                    }
-                    let hit = self.active_canvas.is_some() || frame_hit;
-                    if hit && !self.plus_hit(origin) {
-                        self.begin_drag(rect, origin);
+                        let frame_hit = self.hits_frame_or_handle(rect, origin);
+                        if frame_hit {
+                            self.active_canvas = self.canvas_for_press(rect, origin);
+                        } else {
+                            self.active_canvas = self.canvas_index_at(rect, origin);
+                        }
+                        let hit = self.active_canvas.is_some() || frame_hit;
+                        if hit && !self.plus_hit(origin) {
+                            self.begin_drag(rect, origin);
+                        }
                     }
                 }
             }
@@ -402,6 +419,28 @@ impl PudduScrollApp {
         if self.drag.is_some() && (down || released) {
             if let Some(pos) = interact.or(latest).or(press) {
                 self.update_drag(rect, pos);
+            }
+        }
+        if self.drag.is_none() && down && !Self::space_held(ctx) {
+            if let Some(origin) = press.filter(|origin| {
+                editor.contains(*origin)
+                    && ctx
+                        .layer_id_at(*origin)
+                        .is_none_or(|hit| hit.order != egui::Order::Debug)
+                    && self
+                        .gesture_at(rect, *origin)
+                        .is_none_or(|drag| touch && finger_view(&drag))
+            }) {
+                if let Some(pos) = latest.or(interact) {
+                    if pos.distance(origin) > 6.0 {
+                        let delta = ctx.input(|input| input.pointer.delta());
+                        if delta != egui::Vec2::ZERO {
+                            self.strip_pan += delta;
+                            self.center_strip = false;
+                            self.gesture = "view".to_string();
+                        }
+                    }
+                }
             }
         }
         match self.drag {

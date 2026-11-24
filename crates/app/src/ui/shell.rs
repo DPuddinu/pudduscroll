@@ -2,7 +2,10 @@ use std::time::Duration;
 
 use eframe::egui;
 
-use super::{BG, MENU_H, PANEL, PudduScrollApp, RAIL_W, Route, TEXT, TOOLBAR_H};
+use super::rail::RailFace;
+use super::{
+    BG, MENU_H, PANEL, PudduScrollApp, RAIL_DOCK_BELOW, RAIL_ICON_W, RAIL_W, Route, TEXT, TOOLBAR_H,
+};
 #[cfg(windows)]
 use super::{HAIRLINE, SELECT_BG};
 
@@ -201,8 +204,14 @@ impl PudduScrollApp {
         if self.route == Route::Home {
             return;
         }
+        let compact = full.width() < RAIL_DOCK_BELOW;
+        let rail_w = if compact {
+            RAIL_ICON_W.min(full.width())
+        } else {
+            RAIL_W
+        };
         let rail_rect = egui::Rect::from_min_max(
-            egui::pos2(full.right() - RAIL_W, full.top() + TOOLBAR_H),
+            egui::pos2(full.right() - rail_w, full.top() + TOOLBAR_H),
             full.right_bottom(),
         );
         let editor_rect = egui::Rect::from_min_max(
@@ -218,7 +227,21 @@ impl PudduScrollApp {
         editor_ui.set_clip_rect(editor_rect);
         editor_ui.painter().rect_filled(editor_rect, 0.0, BG);
         self.editor(&mut editor_ui, editor_rect);
-        self.paint_rail(ui, rail_rect);
+        self.remember("editor", editor_rect);
+        if compact && self.rail_open {
+            let overlay_w = RAIL_W.min((editor_rect.width() - 24.0).max(1.0));
+            let overlay = egui::Rect::from_min_max(
+                egui::pos2(rail_rect.left() - overlay_w, rail_rect.top()),
+                egui::pos2(rail_rect.left(), full.bottom()),
+            );
+            self.paint_rail(ui, overlay, RailFace::Panel);
+        }
+        let face = if compact {
+            RailFace::Icons
+        } else {
+            RailFace::Wide
+        };
+        self.paint_rail(ui, rail_rect, face);
         self.apply_crop_click(ui.ctx(), editor_rect);
     }
 }
@@ -504,11 +527,6 @@ impl eframe::App for PudduScrollApp {
         self.handle_keys(&ctx);
         self.widgets.clear();
         let full = ui.available_rect_before_wrap();
-        if full.width() < 900.0 || full.height() < 640.0 {
-            self.show_toasts(&ctx);
-            window_resize(ui, window);
-            return;
-        }
         if self.settings_open {
             self.settings_screen(ui, full);
         } else {

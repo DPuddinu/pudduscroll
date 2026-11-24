@@ -5,12 +5,24 @@ const EXPORT_PREVIEW_WIDTH: u32 = 1280;
 const TOOL_COUNT: usize = 4;
 const TOOL_COLS: usize = 3;
 const TOOL_CELL_H: f32 = 64.0;
+const ICON_CELL_H: f32 = 48.0;
 
-fn tool_rows(count: usize) -> usize {
-    count.div_ceil(TOOL_COLS)
+fn tool_rows(count: usize, cols: usize) -> usize {
+    count.div_ceil(cols.max(1))
 }
-const TOOL_MIN_H: f32 = 72.0;
+
+fn rail_mins(body: f32) -> [f32; 2] {
+    let split = super::RAIL_SPLIT;
+    if body >= TOOL_KEEP_H + LAYERS_FLOOR_H + split {
+        let layers = LAYERS_MIN_H.min(body - TOOL_KEEP_H - split);
+        return [TOOL_KEEP_H, layers];
+    }
+    let layers = LAYERS_FLOOR_H.min(body * 0.3);
+    [(body - layers - split).max(0.0), layers]
+}
+const TOOL_KEEP_H: f32 = 220.0;
 const LAYERS_MIN_H: f32 = 200.0;
+const LAYERS_FLOOR_H: f32 = 48.0;
 
 use super::draw::{
     Glyph, apply_rail_drag, counted, icon_button, paint_glyph, rail_pane_heights, rail_splitter,
@@ -20,6 +32,13 @@ use super::{
     ACCENT, COVER_EMPTY, HAIRLINE, IncomingPhoto, MUTED, PANEL, PudduScrollApp, RailTool, Route,
     SELECT_BG, TEXT,
 };
+
+#[derive(Clone, Copy)]
+pub(super) enum RailFace {
+    Wide,
+    Icons,
+    Panel,
+}
 
 impl PudduScrollApp {
     pub(super) fn layer_panel(&mut self, ui: &mut egui::Ui) {
@@ -176,7 +195,6 @@ impl PudduScrollApp {
         ui.add_space(4.0);
         section_scroll(ui, "crop-list").show(ui, |ui| {
             ui.horizontal_wrapped(|ui| {
-                ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Extend);
                 for preset in CROP_PRESETS {
                     let armed = self
                         .crop_session
@@ -298,11 +316,19 @@ impl PudduScrollApp {
         ctx.request_repaint();
     }
 
-    pub(super) fn paint_rail(&mut self, ui: &mut egui::Ui, rail_rect: egui::Rect) {
+    pub(super) fn paint_rail(&mut self, ui: &mut egui::Ui, rail_rect: egui::Rect, face: RailFace) {
         if !rail_rect.is_positive() {
             return;
         }
-        let layer = egui::LayerId::debug();
+        let icons = matches!(face, RailFace::Icons);
+        let layer = egui::LayerId::new(
+            egui::Order::Debug,
+            ui.scope_id().with(match face {
+                RailFace::Icons => "rail-icons",
+                RailFace::Panel => "rail-panel",
+                RailFace::Wide => "rail",
+            }),
+        );
         ui.ctx().memory_mut(|mem| {
             mem.areas_mut().set_state(
                 layer,
@@ -317,41 +343,55 @@ impl PudduScrollApp {
         });
         let mut rail_ui = ui.new_child(
             egui::UiBuilder::new()
-                .id_salt("rail-ui")
+                .id_salt(if icons { "rail-icons" } else { "rail-ui" })
                 .max_rect(rail_rect)
                 .layer_id(layer)
                 .layout(egui::Layout::top_down(egui::Align::Min)),
         );
         rail_ui.set_clip_rect(rail_rect);
         rail_ui.painter().rect_filled(rail_rect, 0.0, PANEL);
+        let pad = if icons { 4.0 } else { 12.0 };
         let inner = egui::Rect::from_min_max(
-            egui::pos2(rail_rect.left() + 12.0, rail_rect.top() + 8.0),
-            egui::pos2(rail_rect.right() - 12.0, rail_rect.bottom() - 8.0),
+            egui::pos2(rail_rect.left() + pad, rail_rect.top() + 8.0),
+            egui::pos2(rail_rect.right() - pad, rail_rect.bottom() - 8.0),
         );
         let ctx = rail_ui.ctx().clone();
         let mut content = rail_ui.new_child(
             egui::UiBuilder::new()
-                .id_salt("rail-content")
+                .id_salt(if icons {
+                    "rail-icon-content"
+                } else {
+                    "rail-content"
+                })
                 .max_rect(inner)
                 .layout(egui::Layout::top_down(egui::Align::Min)),
         );
         content.set_clip_rect(inner);
 
-        let tiles_h = tool_rows(TOOL_COUNT) as f32 * TOOL_CELL_H;
-        let tiles_rect = egui::Rect::from_min_size(
-            content.cursor().left_top(),
-            egui::vec2(inner.width(), tiles_h),
-        );
-        self.paint_tool_tiles(&mut content, tiles_rect);
-        content.allocate_rect(tiles_rect, egui::Sense::hover());
-        content.painter().hline(
-            tiles_rect.x_range(),
-            tiles_rect.bottom(),
-            egui::Stroke::new(1.0, HAIRLINE),
-        );
+        let mut spent = 0.0;
+        if !matches!(face, RailFace::Panel) {
+            let cols = if icons { 1 } else { TOOL_COLS };
+            let cell_h = if icons { ICON_CELL_H } else { TOOL_CELL_H };
+            let tiles_h = (tool_rows(TOOL_COUNT, cols) as f32 * cell_h).min(inner.height());
+            let tiles_rect = egui::Rect::from_min_size(
+                content.cursor().left_top(),
+                egui::vec2(inner.width(), tiles_h),
+            );
+            self.paint_tool_tiles(&mut content, tiles_rect, cols, icons);
+            content.allocate_rect(tiles_rect, egui::Sense::hover());
+            spent = tiles_h;
+            if icons {
+                return;
+            }
+            content.painter().hline(
+                tiles_rect.x_range(),
+                tiles_rect.bottom(),
+                egui::Stroke::new(1.0, HAIRLINE),
+            );
+        }
 
-        let mins = [TOOL_MIN_H, LAYERS_MIN_H];
-        let body = (inner.height() - tiles_h).max(0.0);
+        let body = (inner.height() - spent).max(0.0);
+        let mins = rail_mins(body);
         let mut heights = rail_pane_heights(body, self.rail_weights, mins);
         let mut drag = None;
 
@@ -359,6 +399,7 @@ impl PudduScrollApp {
             content.cursor().left_top(),
             egui::vec2(inner.width(), heights[0]),
         );
+        self.remember("rail-tool-body", tool_rect);
         let mut tool_ui = content.new_child(
             egui::UiBuilder::new()
                 .id_salt("rail-tool-body")
@@ -407,62 +448,75 @@ impl PudduScrollApp {
         }
     }
 
-    fn paint_tool_tiles(&mut self, ui: &mut egui::Ui, rect: egui::Rect) {
+    fn paint_tool_tiles(&mut self, ui: &mut egui::Ui, rect: egui::Rect, cols: usize, icons: bool) {
         let tools = [
             (RailTool::Canvas, "canvas", Glyph::ToolFrame),
             (RailTool::Photo, "photo", Glyph::ToolPhoto),
             (RailTool::Crop, "crop", Glyph::ToolCrop),
             (RailTool::Snapshots, "snapshots", Glyph::ToolSnapshot),
         ];
-        let rows = tool_rows(tools.len());
-        let grid_h = (rows as f32 * TOOL_CELL_H).min(rect.height());
+        let cell_h = if icons { ICON_CELL_H } else { TOOL_CELL_H };
+        let rows = tool_rows(tools.len(), cols);
+        let grid_h = (rows as f32 * cell_h).min(rect.height());
         let grid_rect = egui::Rect::from_min_size(rect.min, egui::vec2(rect.width(), grid_h));
-        let cell_w = grid_rect.width() / TOOL_COLS as f32;
+        let cell_w = grid_rect.width() / cols.max(1) as f32;
         for (index, (tool, label, glyph)) in tools.into_iter().enumerate() {
-            let col = index % TOOL_COLS;
-            let row = index / TOOL_COLS;
+            let col = index % cols.max(1);
+            let row = index / cols.max(1);
             let cell = egui::Rect::from_min_size(
                 egui::pos2(
                     grid_rect.left() + col as f32 * cell_w,
-                    grid_rect.top() + row as f32 * TOOL_CELL_H,
+                    grid_rect.top() + row as f32 * cell_h,
                 ),
-                egui::vec2(cell_w, TOOL_CELL_H),
+                egui::vec2(cell_w, cell_h),
             );
             if cell.bottom() > rect.bottom() + 0.5 {
                 continue;
             }
-            let selected = self.rail_tool == tool;
+            let selected = self.rail_tool == tool && (!icons || self.rail_open);
             let response = ui.interact(
                 cell,
                 ui.scope_id().with(("rail-tool", label)),
                 egui::Sense::click(),
             );
             if response.clicked() {
-                self.rail_tool = tool;
+                if icons && self.rail_tool == tool {
+                    self.rail_open = !self.rail_open;
+                } else {
+                    self.rail_tool = tool;
+                    self.rail_open = true;
+                }
             }
             response
                 .clone()
-                .on_hover_cursor(egui::CursorIcon::PointingHand);
+                .on_hover_cursor(egui::CursorIcon::PointingHand)
+                .on_hover_text(label);
             if selected {
                 ui.painter().rect_filled(cell.shrink(2.0), 6.0, SELECT_BG);
             }
-            let icon = egui::Rect::from_center_size(
-                egui::pos2(cell.center().x, cell.top() + 22.0),
-                egui::vec2(22.0, 22.0),
-            );
+            let icon = if icons {
+                egui::Rect::from_center_size(cell.center(), egui::vec2(22.0, 22.0))
+            } else {
+                egui::Rect::from_center_size(
+                    egui::pos2(cell.center().x, cell.top() + 22.0),
+                    egui::vec2(22.0, 22.0),
+                )
+            };
             paint_glyph(
                 ui.painter(),
                 icon,
                 glyph,
                 if selected { ACCENT } else { TEXT },
             );
-            ui.painter().text(
-                egui::pos2(cell.center().x, cell.bottom() - 14.0),
-                egui::Align2::CENTER_CENTER,
-                label,
-                egui::FontId::proportional(13.0),
-                if selected { ACCENT } else { MUTED },
-            );
+            if !icons {
+                ui.painter().text(
+                    egui::pos2(cell.center().x, cell.bottom() - 14.0),
+                    egui::Align2::CENTER_CENTER,
+                    label,
+                    egui::FontId::proportional(13.0),
+                    if selected { ACCENT } else { MUTED },
+                );
+            }
             self.remember(format!("rail-tool-{label}"), cell);
         }
     }

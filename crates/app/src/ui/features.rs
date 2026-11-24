@@ -16,9 +16,18 @@ fn ready() -> (egui::Context, PudduScrollApp) {
 }
 
 fn paint(app: &mut PudduScrollApp, ctx: &egui::Context, events: Vec<egui::Event>) {
+    paint_view(app, ctx, events, VIEW);
+}
+
+fn paint_view(
+    app: &mut PudduScrollApp,
+    ctx: &egui::Context,
+    events: Vec<egui::Event>,
+    view: egui::Vec2,
+) {
     let mut host = eframe::Frame::_new_kittest();
     let raw = egui::RawInput {
-        screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, VIEW)),
+        screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, view)),
         time: Some(0.0),
         predicted_dt: 1.0 / 60.0,
         focused: true,
@@ -100,29 +109,23 @@ fn empty_frames_hold_a_visible_plus(app: &PudduScrollApp) {
 }
 
 fn click_at(app: &mut PudduScrollApp, ctx: &egui::Context, pos: egui::Pos2) {
-    paint(
+    click_view(app, ctx, VIEW, pos);
+}
+
+fn click_view(app: &mut PudduScrollApp, ctx: &egui::Context, view: egui::Vec2, pos: egui::Pos2) {
+    let press = |pressed| egui::Event::PointerButton {
+        pos,
+        button: egui::PointerButton::Primary,
+        pressed,
+        modifiers: egui::Modifiers::NONE,
+    };
+    paint_view(
         app,
         ctx,
-        vec![
-            egui::Event::PointerMoved(pos),
-            egui::Event::PointerButton {
-                pos,
-                button: egui::PointerButton::Primary,
-                pressed: true,
-                modifiers: egui::Modifiers::NONE,
-            },
-        ],
+        vec![egui::Event::PointerMoved(pos), press(true)],
+        view,
     );
-    paint(
-        app,
-        ctx,
-        vec![egui::Event::PointerButton {
-            pos,
-            button: egui::PointerButton::Primary,
-            pressed: false,
-            modifiers: egui::Modifiers::NONE,
-        }],
-    );
+    paint_view(app, ctx, vec![press(false)], view);
 }
 
 fn tap(app: &mut PudduScrollApp, ctx: &egui::Context, key: egui::Key) {
@@ -169,7 +172,7 @@ fn canvas_starts_inactive_and_activates_on_click() {
     assert!(shown(&app, "add-canvas-left"));
     click(&mut app, &ctx, "add-canvas-left");
     settle(&mut app, &ctx);
-    assert_eq!(app.layout().expect("layout").canvas_count, count);
+    assert_eq!(app.layout().expect("layout").canvas_count, count + 1);
     let (index, pos) = visible_canvas_hit(&app);
     click_at(&mut app, &ctx, pos);
     settle(&mut app, &ctx);
@@ -185,10 +188,10 @@ fn canvas_starts_inactive_and_activates_on_click() {
     click_at(&mut app, &ctx, outside);
     settle(&mut app, &ctx);
     assert_eq!(app.active_canvas, None);
-    assert_eq!(app.layout().expect("layout").canvas_count, count);
+    assert_eq!(app.layout().expect("layout").canvas_count, count + 1);
     click(&mut app, &ctx, "add-canvas");
     settle(&mut app, &ctx);
-    assert_eq!(app.layout().expect("layout").canvas_count, count);
+    assert_eq!(app.layout().expect("layout").canvas_count, count + 2);
 }
 
 #[test]
@@ -330,6 +333,177 @@ fn new_carousel_starts_from_one_canvas() {
 }
 
 #[test]
+fn shell_stays_visible_on_a_short_narrow_screen() {
+    let (ctx, mut app) = ready();
+    let view = egui::vec2(800.0, 520.0);
+    paint_view(&mut app, &ctx, Vec::new(), view);
+    assert!(shown(&app, "nav-carousels"));
+    assert!(shown(&app, "new-carousel"));
+    app.new_carousel(&ctx);
+    paint_view(&mut app, &ctx, Vec::new(), view);
+    assert!(shown(&app, "home"));
+    assert!(shown(&app, "export"));
+}
+
+#[test]
+fn narrow_editor_keeps_the_strip_beside_an_icon_rail() {
+    let (ctx, mut app) = ready();
+    app.new_carousel(&ctx);
+    paint_view(&mut app, &ctx, Vec::new(), egui::vec2(900.0, 720.0));
+    let editor = rect(&app, "editor");
+    assert!(editor.width() > 800.0, "{}", editor.width());
+    let canvas = rect(&app, "rail-tool-canvas");
+    assert!(canvas.left() > editor.right() - 8.0);
+    paint_view(&mut app, &ctx, Vec::new(), egui::vec2(1440.0, 900.0));
+    let wide = rect(&app, "editor");
+    assert!(wide.width() < 1200.0, "{}", wide.width());
+    assert!(wide.width() > 1000.0, "{}", wide.width());
+    paint_view(&mut app, &ctx, Vec::new(), egui::vec2(390.0, 844.0));
+    let view = app.view_rect.expect("view");
+    let strip = app.strip_rect.expect("strip");
+    assert!(view.intersects(strip));
+}
+
+#[test]
+fn home_nav_stacks_on_a_narrow_screen() {
+    let (ctx, mut app) = ready();
+    paint_view(&mut app, &ctx, Vec::new(), egui::vec2(700.0, 800.0));
+    let carousels = rect(&app, "nav-carousels");
+    let templates = rect(&app, "nav-templates");
+    assert!((carousels.top() - templates.top()).abs() < 1.0);
+    assert!(templates.left() > carousels.right());
+}
+
+fn open_canvas_panel(app: &mut PudduScrollApp, ctx: &egui::Context, view: egui::Vec2) {
+    paint_view(app, ctx, Vec::new(), view);
+    paint_view(app, ctx, Vec::new(), view);
+    click_view(app, ctx, view, rect(app, "rail-tool-canvas").center());
+    paint_view(app, ctx, Vec::new(), view);
+}
+
+#[test]
+fn a_phone_tap_adds_a_canvas_on_either_side() {
+    let (ctx, mut app) = ready();
+    app.new_carousel(&ctx);
+    let view = egui::vec2(390.0, 844.0);
+    paint_view(&mut app, &ctx, Vec::new(), view);
+    paint_view(&mut app, &ctx, Vec::new(), view);
+    let (_, pos) = visible_canvas_hit(&app);
+    click_view(&mut app, &ctx, view, pos);
+    open_canvas_panel(&mut app, &ctx, view);
+    let left = rect(&app, "add-canvas-left");
+    let right = rect(&app, "add-canvas");
+    assert!(left.height() >= 18.0, "{left:?}");
+    assert!(right.height() >= 18.0, "{right:?}");
+    click_view(&mut app, &ctx, view, right.center());
+    assert_eq!(app.layout().expect("layout").canvas_count, 2);
+    let left_again = rect(&app, "add-canvas-left");
+    click_view(&mut app, &ctx, view, left_again.center());
+    assert_eq!(app.layout().expect("layout").canvas_count, 3);
+}
+
+#[test]
+fn a_rotated_phone_keeps_the_canvas_options_readable() {
+    let (ctx, mut app) = ready();
+    app.new_carousel(&ctx);
+    let view = egui::vec2(844.0, 390.0);
+    open_canvas_panel(&mut app, &ctx, view);
+    app.active_canvas = Some(0);
+    paint_view(&mut app, &ctx, Vec::new(), view);
+    let left = rect(&app, "add-canvas-left");
+    let right = rect(&app, "add-canvas");
+    assert!(
+        left.top() < 260.0 && left.bottom() < view.y - 36.0,
+        "canvas actions are crushed: {left:?}"
+    );
+    assert!((left.center().y - right.center().y).abs() < 4.0 || right.top() > left.bottom());
+    assert!(left.height() >= 18.0 && right.height() >= 18.0);
+    let body = rect(&app, "rail-tool-body");
+    assert!(body.height() >= 160.0, "tool pane {body:?}");
+    click_view(&mut app, &ctx, view, right.center());
+    assert_eq!(app.layout().expect("layout").canvas_count, 2);
+}
+
+#[test]
+fn space_drag_pans_the_strip_on_a_narrow_screen() {
+    let (ctx, mut app) = ready();
+    app.new_carousel(&ctx);
+    let view = egui::vec2(390.0, 844.0);
+    paint_view(&mut app, &ctx, Vec::new(), view);
+    paint_view(&mut app, &ctx, Vec::new(), view);
+    let from = app.view_rect.expect("view").center();
+    let to = from + egui::vec2(0.0, -80.0);
+    let before = app.strip_pan;
+    let space = egui::Event::Key {
+        key: egui::Key::Space,
+        physical_key: None,
+        pressed: true,
+        repeat: false,
+        modifiers: egui::Modifiers::NONE,
+    };
+    let press = |pos, pressed| egui::Event::PointerButton {
+        pos,
+        button: egui::PointerButton::Primary,
+        pressed,
+        modifiers: egui::Modifiers::NONE,
+    };
+    paint_view(
+        &mut app,
+        &ctx,
+        vec![space.clone(), egui::Event::PointerMoved(from)],
+        view,
+    );
+    paint_view(&mut app, &ctx, vec![space.clone(), press(from, true)], view);
+    paint_view(
+        &mut app,
+        &ctx,
+        vec![space, egui::Event::PointerMoved(to)],
+        view,
+    );
+    assert!(
+        (app.strip_pan.y - before.y).abs() > 40.0,
+        "pan {:?} -> {:?}",
+        before,
+        app.strip_pan
+    );
+}
+
+#[test]
+fn dragging_an_empty_canvas_pans_the_strip() {
+    let (ctx, mut app) = ready();
+    app.new_carousel(&ctx);
+    let view = egui::vec2(390.0, 844.0);
+    paint_view(&mut app, &ctx, Vec::new(), view);
+    paint_view(&mut app, &ctx, Vec::new(), view);
+    app.edit_frame = false;
+    let (_, from) = visible_canvas_hit(&app);
+    let to = from + egui::vec2(0.0, -80.0);
+    let before = app.strip_pan;
+    let press = |pos, pressed| egui::Event::PointerButton {
+        pos,
+        button: egui::PointerButton::Primary,
+        pressed,
+        modifiers: egui::Modifiers::NONE,
+    };
+    paint_view(
+        &mut app,
+        &ctx,
+        vec![egui::Event::PointerMoved(from), press(from, true)],
+        view,
+    );
+    paint_view(&mut app, &ctx, vec![egui::Event::PointerMoved(to)], view);
+    assert!(
+        (app.strip_pan.y - before.y).abs() > 40.0,
+        "pan {:?} -> {:?} gesture {} from {:?} view {:?}",
+        before,
+        app.strip_pan,
+        app.gesture,
+        from,
+        app.view_rect
+    );
+}
+
+#[test]
 fn an_empty_carousel_frame_shows_a_plus() {
     let (ctx, mut app) = ready();
     app.new_carousel(&ctx);
@@ -358,7 +532,7 @@ fn an_empty_carousel_frame_shows_a_plus() {
     let canvases = app.layout().expect("layout").canvas_count;
     click(&mut app, &ctx, "add-canvas");
     settle(&mut app, &ctx);
-    assert_eq!(app.layout().expect("layout").canvas_count, canvases);
+    assert_eq!(app.layout().expect("layout").canvas_count, canvases + 1);
     app.active_canvas = Some(0);
     settle(&mut app, &ctx);
     let preset = rect(&app, "canvas-1:1");

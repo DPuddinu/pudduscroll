@@ -1,4 +1,4 @@
-PudduScroll 0.6.0 adds a 16:9 canvas and lines up the cards on Home.
+PudduScroll 0.6.1 shows the canvas when the window is narrow.
 
 ## Downloads
 
@@ -28,8 +28,8 @@ Templates and carousels are saved on this machine:
 
 ## New
 
-- A 16:9 canvas is in the ratio list.
-- Cover photos fill the home card.
-- Captions on a row of cards start at the same left edge.
-- Move left or right swaps two frames that span more than one canvas.
-- A wide frame steps into the empty canvas past its edge.
+- A narrow window shows the canvas.
+- Side tools shrink to icons you tap to open.
+- The canvas controls stay readable when you turn the phone.
+- Add canvas left and Add canvas right add a canvas.
+- On a phone, a drag moves the canvases.

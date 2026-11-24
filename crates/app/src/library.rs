@@ -1338,6 +1338,7 @@ fn fill_covers(library: &mut Library, jobs: Vec<CoverJob>) -> Result<(), String>
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 enum CoverKind {
     Template(usize),
     Carousel(usize),

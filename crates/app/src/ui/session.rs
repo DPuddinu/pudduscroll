@@ -116,6 +116,7 @@ impl PudduScrollApp {
             snap_to_grid: true,
             grid_cells: DEFAULT_GRID_CELLS,
             rail_tool: RailTool::Canvas,
+            rail_open: false,
             rail_weights,
             create_open: false,
             snapshot_open: false,
